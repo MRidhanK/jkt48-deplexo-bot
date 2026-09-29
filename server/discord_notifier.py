@@ -23,18 +23,24 @@ TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0") or 0)
 GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID", "0") or 0)
 VIP_USER_ID = os.environ.get("VIP_USER_ID", "").strip()
-VIP_FALLBACK_TEXT = "@muhammadridhankhoirullah"
+VIP_FALLBACK_TEXT = os.environ.get("VIP_FALLBACK_TEXT", "")
 SPAM_INTERVAL = float(os.environ.get("SPAM_INTERVAL", "4"))
-SPAM_MAX = int(os.environ.get("SPAM_MAX", "100"))
-STALE_SECONDS = 150  # hentikan ping jika extension berhenti melapor
+SPAM_MAX = int(os.environ.get("SPAM_MAX", "20"))          # batas spam per restock
+STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "150"))
+
+# Rate limiter global untuk Discord
+MIN_SEND_GAP = float(os.environ.get("MIN_SEND_GAP", "1.2"))
+MAX_CONCURRENT_SPAM = int(os.environ.get("MAX_CONCURRENT_SPAM", "5"))
+
+# Cooldown restock per lane (detik) — cegah spam ulang karena fluktuasi
+RESTOCK_COOLDOWN = int(os.environ.get("RESTOCK_COOLDOWN", "300"))
 
 EVENTS = {"EX5B99": "2 Shoot", "EX24AE": "MNG"}
 
 # ------------------------------------------------------------------ poller server-side
-# Server memanggil API JKT48 sendiri, jadi tetap jalan walau laptop/browser mati.
 POLL_ENABLED = os.environ.get("POLL_ENABLED", "1") != "0"
-POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "20"))        # detik antar putaran
-POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))       # gagal berturut-turut -> alert
+POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "20"))
+POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))
 POLL_EVENTS = [
     c.strip().upper()
     for c in os.environ.get("POLL_EVENTS", ",".join(EVENTS)).split(",")
@@ -43,22 +49,18 @@ POLL_EVENTS = [
 API_URL = os.environ.get(
     "JKT48_API_URL", "https://jkt48.com/api/v1/exclusives/{code}/bonus?lang=id"
 )
-# Isi jika API butuh login: salin header Cookie dari DevTools (Network -> request bonus).
 JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
 JKT48_USER_AGENT = os.environ.get(
     "JKT48_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
 )
-# Proxy opsional (mis. http://user:pass@host:port) jika IP server diblokir.
 JKT48_PROXY = os.environ.get("JKT48_PROXY", "").strip() or None
-# Header tambahan (mis. Authorization / X-CSRF-TOKEN) dalam bentuk JSON object.
 try:
     JKT48_EXTRA_HEADERS = json.loads(os.environ.get("JKT48_EXTRA_HEADERS", "") or "{}")
 except json.JSONDecodeError:
     JKT48_EXTRA_HEADERS = {}
 
-# Member VIP: di-ping berulang saat restock, untuk 2 Shoot dan MNG.
 VIP_NAMES = [
     "Fiony Alveria", "Aurhel Alana", "Michelle Alexandra",
     "Hillary Abigail", "Adeline Wijaya", "Oline Manuel",
@@ -67,12 +69,13 @@ VIP_NAMES = [
 ]
 
 VIP_MEMBERS = {
-    "EX5B99": VIP_NAMES,  # 2 Shoot
-    "EX24AE": VIP_NAMES,  # MNG
+    "EX5B99": VIP_NAMES,
+    "EX24AE": VIP_NAMES,
 }
 
 SEED_FILE = Path(__file__).with_name("subscriptions.json")
 SUBS_FILE = Path(os.environ.get("SUBS_FILE") or SEED_FILE)
+STATE_FILE = Path(os.environ.get("STATE_FILE") or SUBS_FILE.with_name("state.json"))
 
 COLOR_GREEN = 0x2ECC71
 COLOR_RED = 0xE74C3C
@@ -106,15 +109,19 @@ def hhmm(value):
 
 # ------------------------------------------------------------------ state
 lock = threading.Lock()
-quota_state = {}      # (code, session_detail_code) -> quota
-baselined = set()     # code yang sudah pernah dipindai
-last_report = {}      # code -> epoch terakhir menerima laporan
-known_members = {}    # code -> set nama member
-spam_tasks = {}       # (code, session_detail_code) -> asyncio.Task
-lane_state = {}       # (code, session_detail_code) -> data jalur terakhir (untuk cek stok)
+quota_state = {}
+baselined = set()
+last_report = {}
+known_members = {}
+last_restock = {}     # (code, sdc) -> epoch kapan terakhir notif restock dikirim
+lane_state = {}
+spam_tasks = {}       # (code, sdc) -> asyncio.Task
 
 subs_lock = threading.Lock()
-poll_status = {}      # code -> {"ok": bool, "at": epoch, "error": str, "fails": int}
+poll_status = {}
+
+_send_lock = threading.Lock()
+_last_send_time = [0.0]
 
 
 def load_subs():
@@ -130,11 +137,64 @@ def save_subs(data):
     tmp.replace(SUBS_FILE)
 
 
+def load_state():
+    global quota_state, baselined, last_restock
+    try:
+        raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        quota_state = {}
+        for k, v in (raw.get("quota_state") or {}).items():
+            code, _, sdc = k.partition("|")
+            quota_state[(code, sdc)] = v
+        baselined = set(raw.get("baselined") or [])
+        last_restock = {}
+        for k, v in (raw.get("last_restock") or {}).items():
+            code, _, sdc = k.partition("|")
+            last_restock[(code, sdc)] = v
+        print(f"[STATE] Dimuat: {len(quota_state)} lane, {len(baselined)} event")
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+
+def save_state():
+    try:
+        with lock:
+            raw = {
+                "quota_state": {f"{c}|{s}": q for (c, s), q in quota_state.items()},
+                "baselined": list(baselined),
+                "last_restock": {f"{c}|{s}": t for (c, s), t in last_restock.items()},
+            }
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except Exception:
+        traceback.print_exc()
+
+
 # ------------------------------------------------------------------ embeds
-def restock_embed(code, lane):
+def restock_embed(code, lane, delta=None):
     quota = parse_quota(lane.get("available_quota"))
+    desc = f"**{EVENTS.get(code, code)}** · {lane.get('label')}"
+    if delta is not None and delta > 0:
+        desc += f"  ·  📈 **+{delta} tiket**"
     return discord.Embed(
         title=f"🟢 RESTOCK · {lane.get('member_name')}",
+        color=COLOR_GREEN,
+        description=desc,
+    ).add_field(name="🗓️ Sesi", value=str(lane.get("session_label") or "-"), inline=True
+    ).add_field(name="📅 Tanggal", value=str(lane.get("session_date") or "-"), inline=True
+    ).add_field(
+        name="🕒 Waktu",
+        value=f"{hhmm(lane.get('session_start_time'))} - {hhmm(lane.get('session_end_time'))}",
+        inline=True,
+    ).add_field(name="📊 Kuota", value=f"`{quota}`", inline=True
+    ).add_field(name="💰 Harga", value=format_rupiah(lane.get("price")), inline=True
+    ).add_field(name="🧩 Kode sesi", value=f"`{lane.get('session_detail_code')}`", inline=False)
+
+
+def new_session_embed(code, lane):
+    quota = parse_quota(lane.get("available_quota"))
+    return discord.Embed(
+        title=f"🆕 SESI BARU · {lane.get('member_name')}",
         color=COLOR_GREEN,
         description=f"**{EVENTS.get(code, code)}** · {lane.get('label')}",
     ).add_field(name="🗓️ Sesi", value=str(lane.get("session_label") or "-"), inline=True
@@ -159,6 +219,7 @@ class RadarBot(discord.Client):
         self.main_loop = asyncio.get_running_loop()
         if POLL_ENABLED and POLL_EVENTS:
             self.poll_task = asyncio.create_task(poll_loop())
+        self.save_task = asyncio.create_task(save_state_loop())
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -219,12 +280,11 @@ async def pantau(interaction: discord.Interaction, member: str,
     await add_subscription(interaction, member, event.value if event else "*")
 
 
-STOCK_CHUNK = 3800   # batas karakter deskripsi per embed
+STOCK_CHUNK = 3800
 STOCK_MAX_EMBEDS = 5
 
 
 def stock_pages(lanes):
-    """Susun baris stok, lalu pecah jadi beberapa halaman."""
     lanes = sorted(
         lanes,
         key=lambda l: (
@@ -369,6 +429,31 @@ async def daftar(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
+# ------------------------------------------------------------------ rate-limited send
+async def safe_send(channel, **kwargs):
+    """Kirim pesan dengan rate limit global. Retry sekali jika kena 429."""
+    now = time.time()
+    wait = _last_send_time[0] + MIN_SEND_GAP - now
+    if wait > 0:
+        await asyncio.sleep(wait)
+    try:
+        await channel.send(**kwargs)
+    except discord.HTTPException as e:
+        if e.status == 429:
+            retry = getattr(e, "retry_after", None) or 5.0
+            print(f"[RATE] 429, tunggu {retry:.1f}s")
+            await asyncio.sleep(retry)
+            try:
+                await channel.send(**kwargs)
+            except discord.HTTPException as e2:
+                print(f"[RATE] Gagal setelah retry: {e2}")
+                raise
+        else:
+            raise
+    finally:
+        _last_send_time[0] = time.time()
+
+
 # ------------------------------------------------------------------ notifikasi
 async def get_channel():
     channel = bot.get_channel(CHANNEL_ID)
@@ -391,63 +476,20 @@ def is_vip(code, lane):
     return norm(lane.get("member_name")) in VIP_SET.get(code, set())
 
 
-async def notify_restocks(code, lanes, new_sessions=None):
-    """Mention subscriber biasa. Ping VIP ditangani spam_loop."""
+async def notify_subscribers(code, lanes, deltas=None):
+    """Mention subscriber yang cocok. 1x per restock (tidak spam)."""
+    if not lanes:
+        return
     channel = await get_channel()
     subs = load_subs()
-    new_sessions = new_sessions or []
-    new_session_keys = {(l.get("session_detail_code"), norm(l.get("member_name"))) for l in new_sessions}
-
-    per_user = {}
-    for lane in lanes:
-        name = norm(lane.get("member_name"))
-        is_new = (lane.get("session_detail_code"), name) in new_session_keys
-
-        for uid, items in subs.items():
-            if uid == VIP_USER_ID and is_vip(code, lane):
-                continue  # sudah dapat ping berulang
-            for item in items:
-                if item["event"] not in ("*", code):
-                    continue
-                # Cocokkan member
-                if item["member"] in ("*", name) or (
-                    item["member"] != "*" and item["member"] in name
-                ):
-                    per_user.setdefault(uid, []).append(lane)
-                    break
-
-    # Untuk 2 Shoot: kirim juga notifikasi sesi baru ke channel umum
-    # (tanpa mention user tertentu, atau mention VIP)
-    if code == "EX5B99" and new_sessions:
-        # Kirim notifikasi sesi baru ke channel (tanpa mention subscriber)
-        for lane in new_sessions:
-            if is_vip(code, lane):
-                continue  # VIP sudah ditangani spam_loop
-            await channel.send(
-                content=f"🆕 **Sesi/Jalur baru terdeteksi di 2 Shoot!**",
-                embed=restock_embed(code, lane),
-            )
-
-    for uid, user_lanes in per_user.items():
-        for start in range(0, len(user_lanes), 10):
-            chunk = user_lanes[start:start + 10]
-            await channel.send(
-                content=f"<@{uid}> 🔔 **Restock!**",
-                embeds=[restock_embed(code, lane) for lane in chunk],
-                allowed_mentions=discord.AllowedMentions(
-                    users=[discord.Object(id=int(uid))]
-                ),
-            )
-    """Mention subscriber biasa. Ping VIP ditangani spam_loop."""
-    channel = await get_channel()
-    subs = load_subs()
+    deltas = deltas or {}
 
     per_user = {}
     for lane in lanes:
         name = norm(lane.get("member_name"))
         for uid, items in subs.items():
             if uid == VIP_USER_ID and is_vip(code, lane):
-                continue  # sudah dapat ping berulang
+                continue  # VIP di-notify terpisah
             for item in items:
                 if item["event"] not in ("*", code):
                     continue
@@ -460,16 +502,45 @@ async def notify_restocks(code, lanes, new_sessions=None):
     for uid, user_lanes in per_user.items():
         for start in range(0, len(user_lanes), 10):
             chunk = user_lanes[start:start + 10]
-            await channel.send(
+            sdc = str(chunk[0].get("session_detail_code") or "")
+            delta = deltas.get((code, sdc))
+            await safe_send(
+                channel,
                 content=f"<@{uid}> 🔔 **Restock!**",
-                embeds=[restock_embed(code, lane) for lane in chunk],
+                embeds=[restock_embed(code, lane, delta) for lane in chunk],
                 allowed_mentions=discord.AllowedMentions(
                     users=[discord.Object(id=int(uid))]
                 ),
             )
 
 
-async def spam_loop(code, lane):
+async def notify_new_sessions(code, lanes):
+    """Kirim notif sesi/jalur baru (khusus EX5B99)."""
+    if not lanes:
+        return
+    channel = await get_channel()
+    for lane in lanes[:10]:
+        await safe_send(
+            channel,
+            content=f"🆕 **Sesi/Jalur baru terdeteksi di {EVENTS.get(code, code)}!**",
+            embed=new_session_embed(code, lane),
+        )
+    if len(lanes) > 10:
+        await safe_send(
+            channel,
+            content=f"…dan {len(lanes) - 10} sesi baru lainnya.",
+        )
+
+
+# --------------- SPAM KHUSUS 2 SHOOT (hanya saat kuota nambah) ---------------
+async def spam_loop_2shoot(code, lane, delta):
+    """
+    Spam VIP untuk 2 Shoot HANYA saat kuota nambah.
+    Berhenti jika:
+      - kuota turun/habis
+      - data basi
+      - mencapai SPAM_MAX
+    """
     key = (code, lane["session_detail_code"])
     sent = 0
     reason = "cap"
@@ -479,38 +550,39 @@ async def spam_loop(code, lane):
 
         while sent < SPAM_MAX:
             with lock:
-                quota = quota_state.get(key, 0)
+                quota_now = quota_state.get(key, 0)
                 age = time.time() - last_report.get(code, 0)
 
-            if quota <= 0:
+            if quota_now <= 0:
                 reason = "so"
                 break
             if age > STALE_SECONDS:
                 reason = "stale"
                 break
 
-            lane_now = {**lane, "available_quota": quota}
-            await channel.send(
+            lane_now = {**lane, "available_quota": quota_now}
+            await safe_send(
+                channel,
                 content=(
-                    f"{vip_mention()} 🚨 **RESTOCK {EVENTS.get(code, code)}** · "
-                    f"{lane['member_name']} · {lane['label']} ({lane.get('session_label')})"
+                    f"{vip_mention()} 🚨 **RESTOCK 2 SHOOT** · "
+                    f"{lane['member_name']} · {lane['label']} "
+                    f"({lane.get('session_label')}) · 📈 +{delta}"
                 ),
-                embed=restock_embed(code, lane_now),
+                embed=restock_embed(code, lane_now, delta),
                 allowed_mentions=vip_allowed(),
             )
             sent += 1
             await asyncio.sleep(SPAM_INTERVAL)
 
         texts = {
-            "so": f"🔴 **{lane['member_name']}** · {lane['label']} "
-                  f"({EVENTS.get(code, code)}, {lane.get('session_label')}) sold out kembali. "
-                  f"Ping dihentikan ({sent}x).",
-            "stale": f"⚠️ Ping **{lane['member_name']}** dihentikan: sumber data berhenti melapor "
-                     f"(status terakhir masih tersedia).",
-            "cap": f"⚠️ Ping **{lane['member_name']}** dihentikan di batas {SPAM_MAX}x, "
+            "so": f"🔴 **{lane['member_name']}** · {lane['label']} sold out kembali. "
+                  f"Spam dihentikan ({sent}x).",
+            "stale": f"⚠️ Spam **{lane['member_name']}** dihentikan: sumber data berhenti melapor.",
+            "cap": f"⚠️ Spam **{lane['member_name']}** dihentikan di batas {SPAM_MAX}x, "
                    f"tiket masih tersedia.",
         }
-        await channel.send(
+        await safe_send(
+            channel,
             content=f"{vip_mention()} {texts[reason]}",
             allowed_mentions=vip_allowed(),
         )
@@ -520,11 +592,18 @@ async def spam_loop(code, lane):
         spam_tasks.pop(key, None)
 
 
-def ensure_spam(code, lane):
+def ensure_spam_2shoot(code, lane, delta):
+    """Buat task spam untuk 2 Shoot kalau belum ada."""
+    if code != "EX5B99":
+        return
     key = (code, lane["session_detail_code"])
     if key in spam_tasks and not spam_tasks[key].done():
         return
-    spam_tasks[key] = asyncio.create_task(spam_loop(code, lane))
+    active = sum(1 for t in spam_tasks.values() if not t.done())
+    if active >= MAX_CONCURRENT_SPAM:
+        print(f"[SPAM] Skip {key}: sudah {active} task aktif")
+        return
+    spam_tasks[key] = asyncio.create_task(spam_loop_2shoot(code, lane, delta))
 
 
 # ------------------------------------------------------------------ poller
@@ -533,7 +612,6 @@ class PollError(Exception):
 
 
 def flatten_sessions(payload):
-    """Ubah respons API (data[].session_members[]) menjadi daftar jalur datar."""
     lanes = []
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, list):
@@ -581,7 +659,7 @@ async def fetch_event(http, code):
             mitigated = resp.headers.get("cf-mitigated", "")
             snippet = " ".join(text.split())[:160]
             if mitigated or "just a moment" in text.lower() or "cloudflare" in text.lower():
-                hint = "DIBLOKIR CLOUDFLARE (IP server/challenge), cookie biasa tidak cukup"
+                hint = "DIBLOKIR CLOUDFLARE"
             elif resp.status == 401 or "login" in text.lower() or "unauth" in text.lower():
                 hint = "kemungkinan butuh login: isi JKT48_COOKIE"
             else:
@@ -593,7 +671,7 @@ async def fetch_event(http, code):
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        raise PollError("Respons bukan JSON (kemungkinan halaman verifikasi/Cloudflare)")
+        raise PollError("Respons bukan JSON")
 
     lanes = flatten_sessions(payload)
     if not lanes:
@@ -605,7 +683,11 @@ async def fetch_event(http, code):
 async def poll_alert(text):
     try:
         channel = await get_channel()
-        await channel.send(content=f"{vip_mention()} {text}", allowed_mentions=vip_allowed())
+        await safe_send(
+            channel,
+            content=f"{vip_mention()} {text}",
+            allowed_mentions=vip_allowed(),
+        )
     except Exception:
         traceback.print_exc()
 
@@ -622,9 +704,9 @@ async def poll_loop():
             for code in POLL_EVENTS:
                 try:
                     lanes = await fetch_event(http, code)
-                    restocks, vip = process_report(code, lanes)
+                    restocks, new_sessions, vip = process_report(code, lanes)
                     poll_status[code] = {"ok": True, "at": time.time(), "error": "", "fails": 0}
-                    print(f"[POLL] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} vip_aktif={vip}")
+                    print(f"[POLL] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
 
                     if code in alerted:
                         alerted.discard(code)
@@ -645,21 +727,29 @@ async def poll_loop():
                             f"⚠️ Pemantauan **{EVENTS[code]}** gagal {fails[code]}x berturut-turut: "
                             f"{reason}. Cek JKT48_COOKIE / akses server."
                         )
-                await asyncio.sleep(random.uniform(1.0, 2.5))  # jeda kecil antar event
+                await asyncio.sleep(random.uniform(1.0, 2.5))
 
             await asyncio.sleep(POLL_INTERVAL + random.uniform(0, 3) + extra_sleep)
 
 
 # ------------------------------------------------------------------ proses laporan
 def process_report(code, lanes):
+    """
+    Return: (jumlah_restock, jumlah_sesi_baru, jumlah_vip)
+
+    Restock = kuota NAIK dari nilai sebelumnya (termasuk dari 0).
+    Spam VIP hanya untuk EX5B99 dan hanya saat kuota naik.
+    """
     restocks = []
-    vip_active = []
-    new_sessions = []  # jalur/sesi baru yang belum pernah terdeteksi
+    new_sessions = []
+    vip_active = []          # list of (lane, delta)
+    deltas = {}              # (code, sdc) -> delta
+    now = time.time()
 
     with lock:
         first_scan = code not in baselined
         baselined.add(code)
-        last_report[code] = time.time()
+        last_report[code] = now
         members = known_members.setdefault(code, set())
 
         for lane in lanes:
@@ -678,40 +768,72 @@ def process_report(code, lanes):
             quota_state[key] = quota
             lane_state[key] = {**lane, "available_quota": quota}
 
-            # Deteksi jalur/sesi baru (belum pernah terdeteksi)
             is_new_session = prev is None and not first_scan
 
+            # RESTOCK = kuota NAIK (dari 0 ke >0, atau naik dari nilai sebelumnya)
+            delta = 0
+            is_restock = False
             if quota > 0:
-                # Restock: kuota naik dari 0, atau sesi baru dengan kuota > 0
-                if prev == 0 or is_new_session:
-                    restocks.append(lane)
-                if is_vip(code, lane):
-                    vip_active.append(lane)
+                if prev is None:
+                    if not first_scan:
+                        # sesi baru dengan kuota > 0
+                        is_restock = True
+                        delta = quota
+                elif quota > prev:
+                    is_restock = True
+                    delta = quota - prev
 
-            if is_new_session:
+            if is_restock:
+                last = last_restock.get(key, 0)
+                if now - last >= RESTOCK_COOLDOWN:
+                    restocks.append(lane)
+                    deltas[key] = delta
+                    last_restock[key] = now
+
+                    # Spam VIP HANYA untuk 2 Shoot
+                    if code == "EX5B99" and is_vip(code, lane):
+                        vip_active.append((lane, delta))
+
+            if is_new_session and quota > 0:
                 new_sessions.append(lane)
 
     if bot.main_loop is None or not bot.is_ready():
-        return len(restocks), len(vip_active)
+        return len(restocks), len(new_sessions), len(vip_active)
 
-    # Filter notifikasi berdasarkan aturan event
-    if code == "EX24AE":
-        # MNG: hanya kirim jika ada penambahan tiket (restock) atau sesi baru
-        if restocks or new_sessions:
+    # ---- Aturan notifikasi per event ----
+    if code == "EX5B99":
+        # 2 Shoot: notif subscriber + sesi baru + SPAM VIP (hanya saat nambah)
+        if restocks:
             asyncio.run_coroutine_threadsafe(
-                notify_restocks(code, restocks, new_sessions), bot.main_loop
+                notify_subscribers(code, restocks, deltas), bot.main_loop
             )
-    else:
-        # 2 Shoot: kirim restock biasa + sesi baru (walau member tidak dipilih)
-        if restocks or new_sessions:
+        if new_sessions:
             asyncio.run_coroutine_threadsafe(
-                notify_restocks(code, restocks, new_sessions), bot.main_loop
+                notify_new_sessions(code, new_sessions), bot.main_loop
             )
+        for lane, delta in vip_active:
+            bot.main_loop.call_soon_threadsafe(
+                ensure_spam_2shoot, code, dict(lane), delta
+            )
+    elif code == "EX24AE":
+        # MNG: HANYA notif biasa. TIDAK ADA SPAM.
+        if restocks or new_sessions:
+            combined = restocks + [l for l in new_sessions if l not in restocks]
+            if combined:
+                asyncio.run_coroutine_threadsafe(
+                    notify_subscribers(code, combined, deltas), bot.main_loop
+                )
+        # vip_active untuk MNG sengaja diabaikan (tidak spam)
 
-    for lane in vip_active:
-        bot.main_loop.call_soon_threadsafe(ensure_spam, code, dict(lane))
+    return len(restocks), len(new_sessions), len(vip_active)
 
-    return len(restocks), len(vip_active)
+
+async def save_state_loop():
+    await bot.wait_until_ready()
+    while True:
+        await asyncio.sleep(60)
+        save_state()
+
 
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
@@ -727,7 +849,6 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self):
-        # Health check untuk platform hosting.
         self.send_json(200, {
             "ok": True, "service": "jkt48-notifier",
             "poller": {"enabled": POLL_ENABLED, "events": POLL_EVENTS, "status": poll_status},
@@ -762,12 +883,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"ok": False, "error": "Daftar jalur tidak valid."})
 
             lanes = [l for l in lanes if isinstance(l, dict)]
-            restocks, vip = process_report(code, lanes)
+            restocks, new_sessions, vip = process_report(code, lanes)
 
-            print(f"[JKT48] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} vip_aktif={vip}")
+            print(f"[JKT48] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
             self.send_json(200, {
                 "ok": True, "code": code, "laneCount": len(lanes),
-                "restocks": restocks, "vipActive": vip,
+                "restocks": restocks, "newSessions": new_sessions, "vipActive": vip,
             })
         except Exception as error:
             traceback.print_exc()
@@ -784,10 +905,12 @@ def main():
     if not TOKEN or not CHANNEL_ID or not NOTIFY_SECRET:
         raise SystemExit("Set DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, dan NOTIFY_SECRET terlebih dahulu.")
 
-    # Salin data awal ke lokasi penyimpanan jika belum ada.
     if not SUBS_FILE.exists() and SEED_FILE.exists() and SEED_FILE != SUBS_FILE:
         SUBS_FILE.parent.mkdir(parents=True, exist_ok=True)
         SUBS_FILE.write_text(SEED_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    load_state()
+
     if not VIP_USER_ID:
         print("[WARNING] VIP_USER_ID belum diatur: tag VIP tidak akan benar-benar mem-ping.")
 
