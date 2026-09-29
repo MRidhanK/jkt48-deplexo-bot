@@ -391,7 +391,53 @@ def is_vip(code, lane):
     return norm(lane.get("member_name")) in VIP_SET.get(code, set())
 
 
-async def notify_restocks(code, lanes):
+async def notify_restocks(code, lanes, new_sessions=None):
+    """Mention subscriber biasa. Ping VIP ditangani spam_loop."""
+    channel = await get_channel()
+    subs = load_subs()
+    new_sessions = new_sessions or []
+    new_session_keys = {(l.get("session_detail_code"), norm(l.get("member_name"))) for l in new_sessions}
+
+    per_user = {}
+    for lane in lanes:
+        name = norm(lane.get("member_name"))
+        is_new = (lane.get("session_detail_code"), name) in new_session_keys
+
+        for uid, items in subs.items():
+            if uid == VIP_USER_ID and is_vip(code, lane):
+                continue  # sudah dapat ping berulang
+            for item in items:
+                if item["event"] not in ("*", code):
+                    continue
+                # Cocokkan member
+                if item["member"] in ("*", name) or (
+                    item["member"] != "*" and item["member"] in name
+                ):
+                    per_user.setdefault(uid, []).append(lane)
+                    break
+
+    # Untuk 2 Shoot: kirim juga notifikasi sesi baru ke channel umum
+    # (tanpa mention user tertentu, atau mention VIP)
+    if code == "EX5B99" and new_sessions:
+        # Kirim notifikasi sesi baru ke channel (tanpa mention subscriber)
+        for lane in new_sessions:
+            if is_vip(code, lane):
+                continue  # VIP sudah ditangani spam_loop
+            await channel.send(
+                content=f"🆕 **Sesi/Jalur baru terdeteksi di 2 Shoot!**",
+                embed=restock_embed(code, lane),
+            )
+
+    for uid, user_lanes in per_user.items():
+        for start in range(0, len(user_lanes), 10):
+            chunk = user_lanes[start:start + 10]
+            await channel.send(
+                content=f"<@{uid}> 🔔 **Restock!**",
+                embeds=[restock_embed(code, lane) for lane in chunk],
+                allowed_mentions=discord.AllowedMentions(
+                    users=[discord.Object(id=int(uid))]
+                ),
+            )
     """Mention subscriber biasa. Ping VIP ditangani spam_loop."""
     channel = await get_channel()
     subs = load_subs()
@@ -608,6 +654,7 @@ async def poll_loop():
 def process_report(code, lanes):
     restocks = []
     vip_active = []
+    new_sessions = []  # jalur/sesi baru yang belum pernah terdeteksi
 
     with lock:
         first_scan = code not in baselined
@@ -631,23 +678,40 @@ def process_report(code, lanes):
             quota_state[key] = quota
             lane_state[key] = {**lane, "available_quota": quota}
 
+            # Deteksi jalur/sesi baru (belum pernah terdeteksi)
+            is_new_session = prev is None and not first_scan
+
             if quota > 0:
-                if prev == 0 or (prev is None and not first_scan):
+                # Restock: kuota naik dari 0, atau sesi baru dengan kuota > 0
+                if prev == 0 or is_new_session:
                     restocks.append(lane)
                 if is_vip(code, lane):
                     vip_active.append(lane)
 
+            if is_new_session:
+                new_sessions.append(lane)
+
     if bot.main_loop is None or not bot.is_ready():
         return len(restocks), len(vip_active)
 
-    if restocks:
-        asyncio.run_coroutine_threadsafe(notify_restocks(code, restocks), bot.main_loop)
+    # Filter notifikasi berdasarkan aturan event
+    if code == "EX24AE":
+        # MNG: hanya kirim jika ada penambahan tiket (restock) atau sesi baru
+        if restocks or new_sessions:
+            asyncio.run_coroutine_threadsafe(
+                notify_restocks(code, restocks, new_sessions), bot.main_loop
+            )
+    else:
+        # 2 Shoot: kirim restock biasa + sesi baru (walau member tidak dipilih)
+        if restocks or new_sessions:
+            asyncio.run_coroutine_threadsafe(
+                notify_restocks(code, restocks, new_sessions), bot.main_loop
+            )
 
     for lane in vip_active:
         bot.main_loop.call_soon_threadsafe(ensure_spam, code, dict(lane))
 
     return len(restocks), len(vip_active)
-
 
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
