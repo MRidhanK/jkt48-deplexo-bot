@@ -1,22 +1,3 @@
-"""
-JKT48 Ticket Radar - notifier berbasis bot Discord.
-
-- Hanya mengirim notifikasi RESTOCK (kuota 0 -> >0).
-- Slash command: /pantau, /berhenti, /daftar
-- Member VIP: ping berulang sampai sold out kembali.
-
-Kebutuhan:  pip install -U discord.py
-Environment:
-  DISCORD_BOT_TOKEN   token bot (wajib)
-  DISCORD_CHANNEL_ID  ID channel tujuan notifikasi (wajib)
-  VIP_USER_ID         ID numerik akun yang di-ping berulang (wajib agar benar-benar ter-ping)
-  NOTIFY_SECRET       kunci rahasia yang harus dikirim ekstensi (wajib)
-  PORT                port HTTP (default 8765)
-  SUBS_FILE           lokasi subscriptions.json (opsional, mis. /data/subscriptions.json)
-  DISCORD_GUILD_ID    (opsional) ID server, supaya command langsung muncul
-  SPAM_INTERVAL       detik antar ping VIP (default 4)
-  SPAM_MAX            maksimal ping per restock per jalur (default 100)
-"""
 import asyncio
 import hmac
 import json
@@ -100,6 +81,7 @@ baselined = set()     # code yang sudah pernah dipindai
 last_report = {}      # code -> epoch terakhir menerima laporan
 known_members = {}    # code -> set nama member
 spam_tasks = {}       # (code, session_detail_code) -> asyncio.Task
+lane_state = {}       # (code, session_detail_code) -> data jalur terakhir (untuk cek stok)
 
 subs_lock = threading.Lock()
 
@@ -173,30 +155,143 @@ async def member_autocomplete(interaction: discord.Interaction, current: str):
     return [app_commands.Choice(name=n, value=n) for n in matches]
 
 
-@bot.tree.command(name="pantau", description="Notifikasi saat tiket member restock")
-@app_commands.describe(member="Nama member (atau 'semua')", event="Event yang dipantau")
-@app_commands.choices(event=EVENT_CHOICES)
-@app_commands.autocomplete(member=member_autocomplete)
-async def pantau(interaction: discord.Interaction, member: str,
-                 event: app_commands.Choice[str] = None):
+async def add_subscription(interaction: discord.Interaction, member: str, ev: str):
     key = "*" if norm(member) in ("semua", "*", "all") else norm(member)
-    ev = event.value if event else "*"
     uid = str(interaction.user.id)
 
     with subs_lock:
         data = load_subs()
         items = data.setdefault(uid, [])
         entry = {"member": key, "event": ev}
-        if entry not in items:
+        already = entry in items
+        if not already:
             items.append(entry)
         save_subs(data)
 
     ev_name = "semua event" if ev == "*" else EVENTS[ev]
     who = "semua member" if key == "*" else member
+    prefix = "ℹ️ Sudah terdaftar sebelumnya. " if already else "✅ "
     await interaction.response.send_message(
-        f"✅ Kamu akan di-mention saat **{who}** restock di **{ev_name}**.",
+        f"{prefix}Kamu akan di-mention saat **{who}** restock di **{ev_name}**.",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="pantau", description="Notifikasi saat tiket member restock")
+@app_commands.describe(member="Nama member (atau 'semua')", event="Event yang dipantau")
+@app_commands.choices(event=EVENT_CHOICES)
+@app_commands.autocomplete(member=member_autocomplete)
+async def pantau(interaction: discord.Interaction, member: str,
+                 event: app_commands.Choice[str] = None):
+    await add_subscription(interaction, member, event.value if event else "*")
+
+
+STOCK_CHUNK = 3800   # batas karakter deskripsi per embed
+STOCK_MAX_EMBEDS = 5
+
+
+def stock_pages(lanes):
+    """Susun baris stok, lalu pecah jadi beberapa halaman."""
+    lanes = sorted(
+        lanes,
+        key=lambda l: (
+            norm(l.get("member_name")), str(l.get("session_date") or ""),
+            str(l.get("session_start_time") or ""), str(l.get("label") or ""),
+        ),
+    )
+    lines, last_member = [], None
+    for lane in lanes:
+        name = str(lane.get("member_name") or "-")
+        if name != last_member:
+            lines.append(f"\n**{name}**")
+            last_member = name
+        quota = parse_quota(lane.get("available_quota")) or 0
+        icon = "🟢" if quota > 0 else "🔴"
+        lines.append(
+            f"{icon} {lane.get('session_label') or '-'} · {lane.get('session_date') or '-'} "
+            f"{hhmm(lane.get('session_start_time'))}-{hhmm(lane.get('session_end_time'))} · "
+            f"{lane.get('label') or '-'} — kuota **{quota}** · {format_rupiah(lane.get('price'))}"
+        )
+
+    pages, current = [], ""
+    for line in lines:
+        if len(current) + len(line) + 1 > STOCK_CHUNK:
+            pages.append(current)
+            current = ""
+        current += line + "\n"
+    if current.strip():
+        pages.append(current)
+    return pages
+
+
+async def show_stock(interaction: discord.Interaction, code: str, member: str):
+    ev_name = EVENTS[code]
+    show_all = norm(member) in ("semua", "*", "all")
+    query = "" if show_all else norm(member)
+
+    with lock:
+        lanes = [
+            dict(v) for (c, _), v in lane_state.items()
+            if c == code and (show_all or query in norm(v.get("member_name")))
+        ]
+        reported = last_report.get(code)
+
+    await interaction.response.defer(ephemeral=True)
+
+    if reported is None:
+        await interaction.followup.send(
+            f"Belum ada data **{ev_name}**. Buka halaman event di browser "
+            f"yang memakai ekstensi, lalu coba lagi.",
+            ephemeral=True,
+        )
+        return
+    if not lanes:
+        await interaction.followup.send(
+            f"Tidak ada jalur **{ev_name}** untuk \"{member}\". "
+            f"Cek ejaan nama, atau pakai `semua`.",
+            ephemeral=True,
+        )
+        return
+
+    available = sum(1 for l in lanes if (parse_quota(l.get("available_quota")) or 0) > 0)
+    age = time.time() - reported
+    header = (
+        f"Tersedia **{available}** dari **{len(lanes)}** jalur · "
+        f"diperbarui <t:{int(reported)}:R>"
+    )
+    if age > STALE_SECONDS:
+        header += "\n⚠️ Data sudah lama, ekstensi mungkin berhenti melapor."
+
+    pages = stock_pages(lanes)
+    who = "Semua member" if show_all else member
+    for i, page in enumerate(pages[:STOCK_MAX_EMBEDS]):
+        embed = discord.Embed(
+            title=f"📊 Stok {ev_name} · {who}",
+            description=(header + "\n" if i == 0 else "") + page,
+            color=COLOR_GREEN if available else COLOR_RED,
+        )
+        if len(pages) > 1:
+            embed.set_footer(text=f"Halaman {i + 1}/{min(len(pages), STOCK_MAX_EMBEDS)}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    if len(pages) > STOCK_MAX_EMBEDS:
+        await interaction.followup.send(
+            "Hasil terlalu panjang, sebutkan nama member yang lebih spesifik.",
+            ephemeral=True,
+        )
+
+
+@bot.tree.command(name="2shoot", description="Lihat stok tiket member di event 2 Shoot")
+@app_commands.describe(member="Nama member (atau 'semua')")
+@app_commands.autocomplete(member=member_autocomplete)
+async def cmd_2shoot(interaction: discord.Interaction, member: str):
+    await show_stock(interaction, "EX5B99", member)
+
+
+@bot.tree.command(name="mng", description="Lihat stok tiket member di event MNG")
+@app_commands.describe(member="Nama member (atau 'semua')")
+@app_commands.autocomplete(member=member_autocomplete)
+async def cmd_mng(interaction: discord.Interaction, member: str):
+    await show_stock(interaction, "EX24AE", member)
 
 
 @bot.tree.command(name="berhenti", description="Berhenti memantau member")
@@ -378,6 +473,7 @@ def process_report(code, lanes):
             key = (code, sdc)
             prev = quota_state.get(key)
             quota_state[key] = quota
+            lane_state[key] = {**lane, "available_quota": quota}
 
             if quota > 0:
                 if prev == 0 or (prev is None and not first_scan):
