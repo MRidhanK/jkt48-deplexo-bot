@@ -50,6 +50,8 @@ JKT48_USER_AGENT = os.environ.get(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
 )
+# Proxy opsional (mis. http://user:pass@host:port) jika IP server diblokir.
+JKT48_PROXY = os.environ.get("JKT48_PROXY", "").strip() or None
 # Header tambahan (mis. Authorization / X-CSRF-TOKEN) dalam bentuk JSON object.
 try:
     JKT48_EXTRA_HEADERS = json.loads(os.environ.get("JKT48_EXTRA_HEADERS", "") or "{}")
@@ -522,14 +524,24 @@ async def fetch_event(http, code):
         headers["Cookie"] = JKT48_COOKIE
 
     async with http.get(
-        API_URL.format(code=code), headers=headers,
+        API_URL.format(code=code), headers=headers, proxy=JKT48_PROXY,
         timeout=aiohttp.ClientTimeout(total=15),
     ) as resp:
         text = await resp.text()
         if resp.status == 429:
             raise PollError("HTTP 429 (kena rate limit)")
         if resp.status in (401, 403):
-            raise PollError(f"HTTP {resp.status} (butuh login/cookie atau IP diblokir)")
+            server = resp.headers.get("Server", "-")
+            mitigated = resp.headers.get("cf-mitigated", "")
+            snippet = " ".join(text.split())[:160]
+            if mitigated or "just a moment" in text.lower() or "cloudflare" in text.lower():
+                hint = "DIBLOKIR CLOUDFLARE (IP server/challenge), cookie biasa tidak cukup"
+            elif resp.status == 401 or "login" in text.lower() or "unauth" in text.lower():
+                hint = "kemungkinan butuh login: isi JKT48_COOKIE"
+            else:
+                hint = "penyebab tidak jelas"
+            print(f"[POLL] {code} HTTP {resp.status} server={server} cf-mitigated={mitigated!r} body={snippet!r}")
+            raise PollError(f"HTTP {resp.status} - {hint} (server={server})")
         if resp.status != 200:
             raise PollError(f"HTTP {resp.status}")
     try:
