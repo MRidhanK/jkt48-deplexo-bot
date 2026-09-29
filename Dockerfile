@@ -1,0 +1,11 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+
+RUN pip install --no-cache-dir -U discord.py
+
+COPY server/discord_notifier.py server/subscriptions.json ./
+
+EXPOSE 8765
+CMD ["python", "-u", "discord_notifier.py"]
