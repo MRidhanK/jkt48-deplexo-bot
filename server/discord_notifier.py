@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import json
 import os
+import random
 import threading
 import time
 import traceback
@@ -9,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+import aiohttp
 import discord
 from discord import app_commands
 
@@ -27,6 +29,32 @@ SPAM_MAX = int(os.environ.get("SPAM_MAX", "100"))
 STALE_SECONDS = 150  # hentikan ping jika extension berhenti melapor
 
 EVENTS = {"EX5B99": "2 Shoot", "EX24AE": "MNG"}
+
+# ------------------------------------------------------------------ poller server-side
+# Server memanggil API JKT48 sendiri, jadi tetap jalan walau laptop/browser mati.
+POLL_ENABLED = os.environ.get("POLL_ENABLED", "1") != "0"
+POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "20"))        # detik antar putaran
+POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))       # gagal berturut-turut -> alert
+POLL_EVENTS = [
+    c.strip().upper()
+    for c in os.environ.get("POLL_EVENTS", ",".join(EVENTS)).split(",")
+    if c.strip().upper() in EVENTS
+]
+API_URL = os.environ.get(
+    "JKT48_API_URL", "https://jkt48.com/api/v1/exclusives/{code}/bonus?lang=id"
+)
+# Isi jika API butuh login: salin header Cookie dari DevTools (Network -> request bonus).
+JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
+JKT48_USER_AGENT = os.environ.get(
+    "JKT48_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+)
+# Header tambahan (mis. Authorization / X-CSRF-TOKEN) dalam bentuk JSON object.
+try:
+    JKT48_EXTRA_HEADERS = json.loads(os.environ.get("JKT48_EXTRA_HEADERS", "") or "{}")
+except json.JSONDecodeError:
+    JKT48_EXTRA_HEADERS = {}
 
 # Member VIP: di-ping berulang saat restock, untuk 2 Shoot dan MNG.
 VIP_NAMES = [
@@ -84,6 +112,7 @@ spam_tasks = {}       # (code, session_detail_code) -> asyncio.Task
 lane_state = {}       # (code, session_detail_code) -> data jalur terakhir (untuk cek stok)
 
 subs_lock = threading.Lock()
+poll_status = {}      # code -> {"ok": bool, "at": epoch, "error": str, "fails": int}
 
 
 def load_subs():
@@ -126,6 +155,8 @@ class RadarBot(discord.Client):
 
     async def setup_hook(self):
         self.main_loop = asyncio.get_running_loop()
+        if POLL_ENABLED and POLL_EVENTS:
+            self.poll_task = asyncio.create_task(poll_loop())
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -240,8 +271,8 @@ async def show_stock(interaction: discord.Interaction, code: str, member: str):
 
     if reported is None:
         await interaction.followup.send(
-            f"Belum ada data **{ev_name}**. Buka halaman event di browser "
-            f"yang memakai ekstensi, lalu coba lagi.",
+            f"Belum ada data **{ev_name}**. Tunggu beberapa detik sampai poller "
+            f"selesai memindai, lalu coba lagi.",
             ephemeral=True,
         )
         return
@@ -260,7 +291,7 @@ async def show_stock(interaction: discord.Interaction, code: str, member: str):
         f"diperbarui <t:{int(reported)}:R>"
     )
     if age > STALE_SECONDS:
-        header += "\n⚠️ Data sudah lama, ekstensi mungkin berhenti melapor."
+        header += "\n⚠️ Data sudah lama, sumber data mungkin berhenti melapor."
 
     pages = stock_pages(lanes)
     who = "Semua member" if show_all else member
@@ -426,7 +457,7 @@ async def spam_loop(code, lane):
             "so": f"🔴 **{lane['member_name']}** · {lane['label']} "
                   f"({EVENTS.get(code, code)}, {lane.get('session_label')}) sold out kembali. "
                   f"Ping dihentikan ({sent}x).",
-            "stale": f"⚠️ Ping **{lane['member_name']}** dihentikan: extension berhenti melapor "
+            "stale": f"⚠️ Ping **{lane['member_name']}** dihentikan: sumber data berhenti melapor "
                      f"(status terakhir masih tersedia).",
             "cap": f"⚠️ Ping **{lane['member_name']}** dihentikan di batas {SPAM_MAX}x, "
                    f"tiket masih tersedia.",
@@ -446,6 +477,119 @@ def ensure_spam(code, lane):
     if key in spam_tasks and not spam_tasks[key].done():
         return
     spam_tasks[key] = asyncio.create_task(spam_loop(code, lane))
+
+
+# ------------------------------------------------------------------ poller
+class PollError(Exception):
+    pass
+
+
+def flatten_sessions(payload):
+    """Ubah respons API (data[].session_members[]) menjadi daftar jalur datar."""
+    lanes = []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return lanes
+    for sess in data:
+        if not isinstance(sess, dict):
+            continue
+        for m in sess.get("session_members") or []:
+            if not isinstance(m, dict) or not m.get("session_detail_code"):
+                continue
+            lanes.append({
+                "label": str(m.get("label") or "-"),
+                "price": m.get("price"),
+                "member_name": " ".join(str(m.get("member_name") or "").split()),
+                "session_detail_code": str(m["session_detail_code"]).strip(),
+                "available_quota": m.get("available_quota"),
+                "session_label": str(sess.get("label") or "-"),
+                "session_date": str(sess.get("date") or "-"),
+                "session_start_time": str(sess.get("start_time") or ""),
+                "session_end_time": str(sess.get("end_time") or ""),
+            })
+    return lanes
+
+
+async def fetch_event(http, code):
+    headers = {
+        "User-Agent": JKT48_USER_AGENT,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+        "Referer": f"https://jkt48.com/purchase/exclusive?code={code}",
+        **JKT48_EXTRA_HEADERS,
+    }
+    if JKT48_COOKIE:
+        headers["Cookie"] = JKT48_COOKIE
+
+    async with http.get(
+        API_URL.format(code=code), headers=headers,
+        timeout=aiohttp.ClientTimeout(total=15),
+    ) as resp:
+        text = await resp.text()
+        if resp.status == 429:
+            raise PollError("HTTP 429 (kena rate limit)")
+        if resp.status in (401, 403):
+            raise PollError(f"HTTP {resp.status} (butuh login/cookie atau IP diblokir)")
+        if resp.status != 200:
+            raise PollError(f"HTTP {resp.status}")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        raise PollError("Respons bukan JSON (kemungkinan halaman verifikasi/Cloudflare)")
+
+    lanes = flatten_sessions(payload)
+    if not lanes:
+        msg = payload.get("message") if isinstance(payload, dict) else ""
+        raise PollError(f"Tidak ada data jalur di respons ({str(msg)[:80]})")
+    return lanes
+
+
+async def poll_alert(text):
+    try:
+        channel = await get_channel()
+        await channel.send(content=f"{vip_mention()} {text}", allowed_mentions=vip_allowed())
+    except Exception:
+        traceback.print_exc()
+
+
+async def poll_loop():
+    await bot.wait_until_ready()
+    print(f"[POLL] Aktif: {', '.join(POLL_EVENTS)} tiap ~{POLL_INTERVAL:.0f}s")
+    fails = {c: 0 for c in POLL_EVENTS}
+    alerted = set()
+
+    async with aiohttp.ClientSession() as http:
+        while True:
+            extra_sleep = 0.0
+            for code in POLL_EVENTS:
+                try:
+                    lanes = await fetch_event(http, code)
+                    restocks, vip = process_report(code, lanes)
+                    poll_status[code] = {"ok": True, "at": time.time(), "error": "", "fails": 0}
+                    print(f"[POLL] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} vip_aktif={vip}")
+
+                    if code in alerted:
+                        alerted.discard(code)
+                        await poll_alert(f"✅ Pemantauan **{EVENTS[code]}** pulih kembali.")
+                    fails[code] = 0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    fails[code] += 1
+                    reason = str(error) if isinstance(error, PollError) else f"{type(error).__name__}: {error}"
+                    poll_status[code] = {"ok": False, "at": time.time(), "error": reason, "fails": fails[code]}
+                    print(f"[POLL] {EVENTS[code]} gagal ({fails[code]}x): {reason}")
+                    if "429" in reason:
+                        extra_sleep = max(extra_sleep, 60.0)
+                    if fails[code] >= POLL_FAIL_ALERT and code not in alerted:
+                        alerted.add(code)
+                        await poll_alert(
+                            f"⚠️ Pemantauan **{EVENTS[code]}** gagal {fails[code]}x berturut-turut: "
+                            f"{reason}. Cek JKT48_COOKIE / akses server."
+                        )
+                await asyncio.sleep(random.uniform(1.0, 2.5))  # jeda kecil antar event
+
+            await asyncio.sleep(POLL_INTERVAL + random.uniform(0, 3) + extra_sleep)
 
 
 # ------------------------------------------------------------------ proses laporan
@@ -508,7 +652,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         # Health check untuk platform hosting.
-        self.send_json(200, {"ok": True, "service": "jkt48-notifier"})
+        self.send_json(200, {
+            "ok": True, "service": "jkt48-notifier",
+            "poller": {"enabled": POLL_ENABLED, "events": POLL_EVENTS, "status": poll_status},
+        })
 
     def do_POST(self):
         secret = self.headers.get("X-Notify-Secret", "")
