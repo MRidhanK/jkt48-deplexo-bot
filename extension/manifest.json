@@ -8,7 +8,7 @@
   ],
   "host_permissions": [
     "https://jkt48.com/*",
-    "https://GANTI-SUBDOMAIN-DEPLEXO/*"
+    "https://jkt-bot-2shoot.de.deplexo.com/*"
   ],
   "background": {
     "service_worker": "background.js"
