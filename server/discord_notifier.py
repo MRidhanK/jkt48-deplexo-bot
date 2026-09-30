@@ -6,8 +6,6 @@ import random
 import threading
 import time
 import traceback
-from collections import defaultdict
-from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -16,30 +14,9 @@ import aiohttp
 import discord
 from discord import app_commands
 
-# ------------------------------------------------------------------ FITUR BARU: load .env
-def _load_dotenv():
-    env_path = Path(__file__).with_name(".env")
-    if not env_path.is_file():
-        return
-    try:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            val = val.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = val
-    except Exception:
-        traceback.print_exc()
-
-_load_dotenv()
-
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
 NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "").strip()
-INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "").strip()  # FITUR BARU
 MAX_BODY_SIZE = 500_000
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
@@ -54,12 +31,10 @@ STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "150"))
 MIN_SEND_GAP = float(os.environ.get("MIN_SEND_GAP", "1.2"))
 MAX_CONCURRENT_SPAM = int(os.environ.get("MAX_CONCURRENT_SPAM", "5"))
 RESTOCK_COOLDOWN = int(os.environ.get("RESTOCK_COOLDOWN", "300"))
-USER_NOTIFY_COOLDOWN = int(os.environ.get("USER_NOTIFY_COOLDOWN", "60"))  # FITUR BARU
-
-LOG_DIR = Path(os.environ.get("LOG_DIR", "logs"))  # FITUR BARU
 
 EVENTS = {"EX5B99": "2 Shoot", "EX24AE": "MNG"}
 
+# ------------------------------------------------------------------ poller server-side
 POLL_ENABLED = os.environ.get("POLL_ENABLED", "1") != "0"
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "20"))
 POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))
@@ -101,55 +76,36 @@ STATE_FILE = Path(os.environ.get("STATE_FILE") or SUBS_FILE.with_name("state.jso
 
 DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()
 
-
-# ------------------------------------------------------------------ FITUR BARU: logging
-def setup_logging():
-    LOG_DIR.mkdir(exist_ok=True)
-    log_file = LOG_DIR / f"jkt48-{datetime.now():%Y-%m-%d}.log"
-
-    def _log(msg):
-        line = f"[{datetime.now():%H:%M:%S}] {msg}"
-        print(line)
-        try:
-            with log_file.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except Exception:
-            pass
-
-    return _log
-
-log = setup_logging()
-
-
+# ------------------------------------------------------------------ FIX: cari dashboard.html di beberapa lokasi
 def _resolve_dashboard_file() -> Path:
+    # 1. Env var eksplisit
     env_path = os.environ.get("DASHBOARD_FILE", "").strip()
     if env_path:
         p = Path(env_path)
         if p.is_file():
             return p
-        log(f"[WARN] DASHBOARD_FILE={env_path} tidak ditemukan, fallback.")
+        print(f"[WARN] DASHBOARD_FILE={env_path} tidak ditemukan, fallback ke pencarian otomatis.")
 
     here = Path(__file__).resolve().parent
     candidates = [
-        here / "dashboard.html",
-        here / "server" / "dashboard.html",
-        here.parent / "server" / "dashboard.html",
-        here.parent / "dashboard.html",
-        Path.cwd() / "dashboard.html",
+        here / "dashboard.html",                 # sebelah script
+        here / "server" / "dashboard.html",      # script di root, dashboard di server/
+        here.parent / "server" / "dashboard.html",  # script di subfolder, dashboard di ../server/
+        here.parent / "dashboard.html",          # dashboard di parent
+        Path.cwd() / "dashboard.html",           # current working dir
         Path.cwd() / "server" / "dashboard.html",
     ]
     for c in candidates:
         if c.is_file():
             return c
-    return candidates[0]
+    return candidates[0]  # default: sebelah script (untuk pesan error)
 
 
 DASHBOARD_FILE = _resolve_dashboard_file()
-log(f"[INIT] Dashboard file: {DASHBOARD_FILE} (exists={DASHBOARD_FILE.is_file()})")
+print(f"[INIT] Dashboard file: {DASHBOARD_FILE} (exists={DASHBOARD_FILE.is_file()})")
 
 COLOR_GREEN = 0x2ECC71
 COLOR_RED = 0xE74C3C
-COLOR_GOLD = 0xF1C40F  # FITUR BARU: warna VIP
 
 
 def norm(text):
@@ -187,17 +143,12 @@ known_members = {}
 last_restock = {}
 lane_state = {}
 spam_tasks = {}
-restock_history = defaultdict(list)  # FITUR BARU: riwayat restock per event
 
 subs_lock = threading.Lock()
 poll_status = {}
 
 _send_lock = threading.Lock()
 _last_send_time = [0.0]
-
-# FITUR BARU: cooldown notifikasi per user
-_user_last_notify = {}
-_user_last_command = {}  # FITUR BARU: rate limit command per user
 
 
 def load_subs():
@@ -214,7 +165,7 @@ def save_subs(data):
 
 
 def load_state():
-    global quota_state, baselined, last_restock, restock_history
+    global quota_state, baselined, last_restock
     try:
         raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         quota_state = {}
@@ -226,11 +177,7 @@ def load_state():
         for k, v in (raw.get("last_restock") or {}).items():
             code, _, sdc = k.partition("|")
             last_restock[(code, sdc)] = v
-        # FITUR BARU: restore history
-        restock_history = defaultdict(list)
-        for code, items in (raw.get("restock_history") or {}).items():
-            restock_history[code] = items[-200:]
-        log(f"[STATE] Dimuat: {len(quota_state)} lane, {len(baselined)} event")
+        print(f"[STATE] Dimuat: {len(quota_state)} lane, {len(baselined)} event")
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
@@ -242,7 +189,6 @@ def save_state():
                 "quota_state": {f"{c}|{s}": q for (c, s), q in quota_state.items()},
                 "baselined": list(baselined),
                 "last_restock": {f"{c}|{s}": t for (c, s), t in last_restock.items()},
-                "restock_history": {c: v[-200:] for c, v in restock_history.items()},
             }
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
@@ -252,18 +198,15 @@ def save_state():
 
 
 # ------------------------------------------------------------------ embeds
-def restock_embed(code, lane, delta=None, vip=False):
+def restock_embed(code, lane, delta=None):
     quota = parse_quota(lane.get("available_quota"))
     desc = f"**{EVENTS.get(code, code)}** · {lane.get('label')}"
     if delta is not None and delta > 0:
         desc += f"  ·  📈 **+{delta} tiket**"
-    title = f"🟢 RESTOCK · {lane.get('member_name')}"
-    color = COLOR_GREEN
-    if vip:
-        title = f"⭐ VIP RESTOCK · {lane.get('member_name')}"
-        color = COLOR_GOLD
     return discord.Embed(
-        title=title, color=color, description=desc,
+        title=f"🟢 RESTOCK · {lane.get('member_name')}",
+        color=COLOR_GREEN,
+        description=desc,
     ).add_field(name="🗓️ Sesi", value=str(lane.get("session_label") or "-"), inline=True
     ).add_field(name="📅 Tanggal", value=str(lane.get("session_date") or "-"), inline=True
     ).add_field(
@@ -300,7 +243,6 @@ class RadarBot(discord.Client):
         self.main_loop = None
         self.poll_task = None
         self.save_task = None
-        self.started_at = time.time()
 
     async def setup_hook(self):
         self.main_loop = asyncio.get_running_loop()
@@ -315,7 +257,7 @@ class RadarBot(discord.Client):
             await self.tree.sync()
 
     async def on_ready(self):
-        log(f"[JKT48] Bot aktif sebagai {self.user}")
+        print(f"[JKT48] Bot aktif sebagai {self.user}")
 
 
 bot = RadarBot()
@@ -334,16 +276,6 @@ async def member_autocomplete(interaction: discord.Interaction, current: str):
     query = norm(current)
     matches = sorted(n for n in names if query in norm(n))[:25]
     return [app_commands.Choice(name=n, value=n) for n in matches]
-
-
-# FITUR BARU: rate limit command per user
-def check_command_rate(uid: str, min_gap: float = 2.0):
-    now = time.time()
-    last = _user_last_command.get(uid, 0)
-    if now - last < min_gap:
-        return False
-    _user_last_command[uid] = now
-    return True
 
 
 async def add_subscription(interaction: discord.Interaction, member: str, ev: str):
@@ -374,10 +306,6 @@ async def add_subscription(interaction: discord.Interaction, member: str, ev: st
 @app_commands.autocomplete(member=member_autocomplete)
 async def pantau(interaction: discord.Interaction, member: str,
                  event: app_commands.Choice[str] = None):
-    if not check_command_rate(str(interaction.user.id)):
-        return await interaction.response.send_message(
-            "⏳ Terlalu cepat, coba lagi sebentar.", ephemeral=True
-        )
     await add_subscription(interaction, member, event.value if event else "*")
 
 
@@ -435,13 +363,15 @@ async def show_stock(interaction: discord.Interaction, code: str, member: str):
     if reported is None:
         await interaction.followup.send(
             f"Belum ada data **{ev_name}**. Tunggu beberapa detik sampai poller "
-            f"selesai memindai, lalu coba lagi.", ephemeral=True,
+            f"selesai memindai, lalu coba lagi.",
+            ephemeral=True,
         )
         return
     if not lanes:
         await interaction.followup.send(
             f"Tidak ada jalur **{ev_name}** untuk \"{member}\". "
-            f"Cek ejaan nama, atau pakai `semua`.", ephemeral=True,
+            f"Cek ejaan nama, atau pakai `semua`.",
+            ephemeral=True,
         )
         return
 
@@ -487,32 +417,20 @@ async def cmd_mng(interaction: discord.Interaction, member: str):
 
 
 @bot.tree.command(name="berhenti", description="Berhenti memantau member")
-@app_commands.describe(
-    member="Nama member (atau 'semua' untuk menghapus semua)",
-    event="Hapus hanya untuk event ini (opsional)",
-)
-@app_commands.choices(event=EVENT_CHOICES)
+@app_commands.describe(member="Nama member (atau 'semua' untuk menghapus semua)")
 @app_commands.autocomplete(member=member_autocomplete)
-async def berhenti(interaction: discord.Interaction, member: str,
-                   event: app_commands.Choice[str] = None):
+async def berhenti(interaction: discord.Interaction, member: str):
     uid = str(interaction.user.id)
     clear_all = norm(member) in ("semua", "*", "all")
-    ev_filter = event.value if event else None
 
     with subs_lock:
         data = load_subs()
         items = data.get(uid, [])
         before = len(items)
-        if clear_all and not ev_filter:
+        if clear_all:
             items = []
-        elif clear_all and ev_filter:
-            items = [i for i in items if i["event"] != ev_filter]
         else:
-            target = norm(member)
-            items = [
-                i for i in items
-                if not (i["member"] == target and (ev_filter is None or i["event"] == ev_filter))
-            ]
+            items = [i for i in items if i["member"] != norm(member)]
         data[uid] = items
         save_subs(data)
 
@@ -540,78 +458,6 @@ async def daftar(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
-# FITUR BARU: /riwayat
-@bot.tree.command(name="riwayat", description="Riwayat restock terakhir per event")
-@app_commands.describe(event="Event yang ingin dilihat riwayatnya", limit="Jumlah (1-20)")
-@app_commands.choices(event=[
-    app_commands.Choice(name="2 Shoot", value="EX5B99"),
-    app_commands.Choice(name="MNG", value="EX24AE"),
-])
-async def riwayat(interaction: discord.Interaction, event: app_commands.Choice[str],
-                  limit: app_commands.Range[int, 1, 20] = 10):
-    with lock:
-        items = list(restock_history.get(event.value, []))[-limit:]
-    if not items:
-        return await interaction.response.send_message(
-            f"Belum ada riwayat restock untuk **{EVENTS[event.value]}**.",
-            ephemeral=True,
-        )
-    lines = []
-    for it in reversed(items):
-        ts = it.get("at", 0)
-        lines.append(
-            f"<t:{int(ts)}:R> · **{it.get('member', '?')}** · "
-            f"{it.get('lane', '?')} · +{it.get('delta', 0)}"
-        )
-    embed = discord.Embed(
-        title=f"📜 Riwayat restock · {EVENTS[event.value]}",
-        description="\n".join(lines),
-        color=COLOR_GREEN,
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-# FITUR BARU: /cari
-@bot.tree.command(name="cari", description="Cari member di semua event sekaligus")
-@app_commands.describe(member="Nama member")
-@app_commands.autocomplete(member=member_autocomplete)
-async def cari(interaction: discord.Interaction, member: str):
-    query = norm(member)
-    await interaction.response.defer(ephemeral=True)
-    embeds = []
-    for code, name in EVENTS.items():
-        with lock:
-            lanes = [
-                dict(v) for (c, _), v in lane_state.items()
-                if c == code and query in norm(v.get("member_name"))
-            ]
-        if not lanes:
-            continue
-        available = sum(1 for l in lanes if (parse_quota(l.get("available_quota")) or 0) > 0)
-        lines = []
-        for l in sorted(lanes, key=lambda x: str(x.get("session_date") or "")):
-            q = parse_quota(l.get("available_quota")) or 0
-            icon = "🟢" if q > 0 else "🔴"
-            lines.append(
-                f"{icon} {l.get('session_label') or '-'} · {l.get('session_date') or '-'} · "
-                f"{l.get('label') or '-'} — **{q}**"
-            )
-        embed = discord.Embed(
-            title=f"🔍 {name} · {member}",
-            description=(
-                f"Tersedia **{available}** / **{len(lanes)}** jalur\n\n"
-                + "\n".join(lines[:30])
-            ),
-            color=COLOR_GREEN if available else COLOR_RED,
-        )
-        embeds.append(embed)
-    if not embeds:
-        return await interaction.followup.send(
-            f"Tidak ditemukan **{member}** di event manapun.", ephemeral=True
-        )
-    await interaction.followup.send(embeds=embeds[:5], ephemeral=True)
-
-
 @bot.tree.command(name="status", description="Cek kondisi poller")
 async def status_cmd(interaction: discord.Interaction):
     lines = []
@@ -624,11 +470,6 @@ async def status_cmd(interaction: discord.Interaction):
         if not s["ok"]:
             txt += f"\n   ↳ gagal {s['fails']}x: {s['error']}"
         lines.append(txt)
-    # FITUR BARU: uptime
-    up = time.time() - bot.started_at
-    h, m = divmod(int(up), 3600)
-    m //= 60
-    lines.append(f"\n⏱️ Uptime: **{h}j {m}m**")
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
@@ -643,12 +484,12 @@ async def safe_send(channel, **kwargs):
     except discord.HTTPException as e:
         if e.status == 429:
             retry = getattr(e, "retry_after", None) or 5.0
-            log(f"[RATE] 429, tunggu {retry:.1f}s")
+            print(f"[RATE] 429, tunggu {retry:.1f}s")
             await asyncio.sleep(retry)
             try:
                 await channel.send(**kwargs)
             except discord.HTTPException as e2:
-                log(f"[RATE] Gagal setelah retry: {e2}")
+                print(f"[RATE] Gagal setelah retry: {e2}")
                 raise
         else:
             raise
@@ -700,14 +541,7 @@ async def notify_subscribers(code, lanes, deltas=None):
                     per_user.setdefault(uid, []).append(lane)
                     break
 
-    # FITUR BARU: cooldown per-user
-    now = time.time()
     for uid, user_lanes in per_user.items():
-        last = _user_last_notify.get(uid, 0)
-        if now - last < USER_NOTIFY_COOLDOWN:
-            continue
-        _user_last_notify[uid] = now
-
         for start in range(0, len(user_lanes), 10):
             chunk = user_lanes[start:start + 10]
             sdc = str(chunk[0].get("session_detail_code") or "")
@@ -739,7 +573,7 @@ async def notify_new_sessions(code, lanes):
         )
 
 
-# --------------- SPAM KHUSUS 2 SHOOT ---------------
+# --------------- SPAM KHUSUS 2 SHOOT (hanya saat kuota nambah) ---------------
 async def spam_loop_2shoot(code, lane, delta):
     key = (code, lane["session_detail_code"])
     sent = 0
@@ -768,7 +602,7 @@ async def spam_loop_2shoot(code, lane, delta):
                     f"{lane['member_name']} · {lane['label']} "
                     f"({lane.get('session_label')}) · 📈 +{delta}"
                 ),
-                embed=restock_embed(code, lane_now, delta, vip=True),
+                embed=restock_embed(code, lane_now, delta),
                 allowed_mentions=vip_allowed(),
             )
             sent += 1
@@ -800,7 +634,7 @@ def ensure_spam_2shoot(code, lane, delta):
         return
     active = sum(1 for t in spam_tasks.values() if not t.done())
     if active >= MAX_CONCURRENT_SPAM:
-        log(f"[SPAM] Skip {key}: sudah {active} task aktif")
+        print(f"[SPAM] Skip {key}: sudah {active} task aktif")
         return
     spam_tasks[key] = asyncio.create_task(spam_loop_2shoot(code, lane, delta))
 
@@ -863,8 +697,7 @@ async def fetch_event(http, code):
                 hint = "kemungkinan butuh login: isi JKT48_COOKIE"
             else:
                 hint = "penyebab tidak jelas"
-            log(f"[POLL] {code} HTTP {resp.status} server={server} "
-                f"cf-mitigated={mitigated!r} body={snippet!r}")
+            print(f"[POLL] {code} HTTP {resp.status} server={server} cf-mitigated={mitigated!r} body={snippet!r}")
             raise PollError(f"HTTP {resp.status} - {hint} (server={server})")
         if resp.status != 200:
             raise PollError(f"HTTP {resp.status}")
@@ -894,68 +727,44 @@ async def poll_alert(text):
 
 async def poll_loop():
     await bot.wait_until_ready()
-    log(f"[POLL] Aktif: {', '.join(POLL_EVENTS)} tiap ~{POLL_INTERVAL:.0f}s")
+    print(f"[POLL] Aktif: {', '.join(POLL_EVENTS)} tiap ~{POLL_INTERVAL:.0f}s")
     fails = {c: 0 for c in POLL_EVENTS}
     alerted = set()
 
-    while True:
-        try:
-            async with aiohttp.ClientSession() as http:
-                while True:
-                    extra_sleep = 0.0
-                    for code in POLL_EVENTS:
-                        try:
-                            lanes = await fetch_event(http, code)
-                            restocks, new_sessions, vip = process_report(code, lanes)
-                            poll_status[code] = {
-                                "ok": True, "at": time.time(), "error": "", "fails": 0
-                            }
-                            log(f"[POLL] {EVENTS[code]}: jalur={len(lanes)} "
-                                f"restock={restocks} baru={new_sessions} vip={vip}")
+    async with aiohttp.ClientSession() as http:
+        while True:
+            extra_sleep = 0.0
+            for code in POLL_EVENTS:
+                try:
+                    lanes = await fetch_event(http, code)
+                    restocks, new_sessions, vip = process_report(code, lanes)
+                    poll_status[code] = {"ok": True, "at": time.time(), "error": "", "fails": 0}
+                    print(f"[POLL] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
 
-                            if code in alerted:
-                                alerted.discard(code)
-                                await poll_alert(
-                                    f"✅ Pemantauan **{EVENTS[code]}** pulih kembali."
-                                )
-                            fails[code] = 0
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as error:
-                            fails[code] += 1
-                            reason = (
-                                str(error) if isinstance(error, PollError)
-                                else f"{type(error).__name__}: {error}"
-                            )
-                            poll_status[code] = {
-                                "ok": False, "at": time.time(),
-                                "error": reason, "fails": fails[code],
-                            }
-                            log(f"[POLL] {EVENTS[code]} gagal ({fails[code]}x): {reason}")
-                            if "429" in reason:
-                                extra_sleep = max(extra_sleep, 60.0)
-                            if "403" in reason:
-                                extra_sleep = max(
-                                    extra_sleep,
-                                    min(600.0, 30.0 * 2 ** (fails[code] - 1)),
-                                )
-                            if fails[code] >= POLL_FAIL_ALERT and code not in alerted:
-                                alerted.add(code)
-                                await poll_alert(
-                                    f"⚠️ Pemantauan **{EVENTS[code]}** gagal "
-                                    f"{fails[code]}x berturut-turut: {reason}. "
-                                    f"Cek JKT48_COOKIE / akses server."
-                                )
-                        await asyncio.sleep(random.uniform(1.0, 2.5))
+                    if code in alerted:
+                        alerted.discard(code)
+                        await poll_alert(f"✅ Pemantauan **{EVENTS[code]}** pulih kembali.")
+                    fails[code] = 0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    fails[code] += 1
+                    reason = str(error) if isinstance(error, PollError) else f"{type(error).__name__}: {error}"
+                    poll_status[code] = {"ok": False, "at": time.time(), "error": reason, "fails": fails[code]}
+                    print(f"[POLL] {EVENTS[code]} gagal ({fails[code]}x): {reason}")
+                    if "429" in reason:
+                        extra_sleep = max(extra_sleep, 60.0)
+                    if "403" in reason:
+                        extra_sleep = max(extra_sleep, min(600.0, 30.0 * 2 ** (fails[code] - 1)))
+                    if fails[code] >= POLL_FAIL_ALERT and code not in alerted:
+                        alerted.add(code)
+                        await poll_alert(
+                            f"⚠️ Pemantauan **{EVENTS[code]}** gagal {fails[code]}x berturut-turut: "
+                            f"{reason}. Cek JKT48_COOKIE / akses server."
+                        )
+                await asyncio.sleep(random.uniform(1.0, 2.5))
 
-                    await asyncio.sleep(
-                        POLL_INTERVAL + random.uniform(0, 3) + extra_sleep
-                    )
-        except Exception:
-            # FITUR BARU: auto-restart poller jika crash
-            log("[POLL] Poller crash, restart dalam 10s...")
-            traceback.print_exc()
-            await asyncio.sleep(10)
+            await asyncio.sleep(POLL_INTERVAL + random.uniform(0, 3) + extra_sleep)
 
 
 # ------------------------------------------------------------------ proses laporan
@@ -1007,13 +816,6 @@ def process_report(code, lanes):
                     restocks.append(lane)
                     deltas[key] = delta
                     last_restock[key] = now
-                    # FITUR BARU: simpan history
-                    restock_history[code].append({
-                        "at": now, "member": name,
-                        "lane": lane.get("label"), "delta": delta,
-                        "session": lane.get("session_label"),
-                    })
-                    restock_history[code] = restock_history[code][-200:]
 
                     if code == "EX5B99" and is_vip(code, lane):
                         vip_active.append((lane, delta))
@@ -1051,9 +853,7 @@ def process_report(code, lanes):
 def record_remote_poll(code, error=""):
     prev = poll_status.get(code) or {}
     fails = prev.get("fails", 0) + 1 if error else 0
-    poll_status[code] = {
-        "ok": not error, "at": time.time(), "error": error, "fails": fails,
-    }
+    poll_status[code] = {"ok": not error, "at": time.time(), "error": error, "fails": fails}
 
     if bot.main_loop is None or not bot.is_ready():
         return
@@ -1074,7 +874,7 @@ async def save_state_loop():
 
 
 # ------------------------------------------------------------------ dashboard API
-def snapshot(compact=False):
+def snapshot():
     now = time.time()
     with lock:
         events = {}
@@ -1083,61 +883,31 @@ def snapshot(compact=False):
             for (c, sdc), v in lane_state.items():
                 if c != code:
                     continue
-                if compact:
-                    lanes.append({
-                        "m": v.get("member_name"), "l": v.get("label"),
-                        "q": parse_quota(v.get("available_quota")) or 0,
-                        "s": sdc, "se": v.get("session_label"),
-                    })
-                else:
-                    lanes.append({
-                        "member": v.get("member_name"), "lane": v.get("label"),
-                        "quota": parse_quota(v.get("available_quota")) or 0,
-                        "price": v.get("price"), "sdc": sdc,
-                        "session": v.get("session_label"),
-                        "date": v.get("session_date"),
-                        "start": hhmm(v.get("session_start_time")),
-                        "end": hhmm(v.get("session_end_time")),
-                        "restock_at": last_restock.get((c, sdc)),
-                        "vip": is_vip(code, v),
-                    })
-            events[code] = {
-                "name": name, "updated": last_report.get(code), "lanes": lanes,
-            }
-    if compact:
-        return {"now": now, "events": events}
-    return {
-        "now": now, "stale_after": STALE_SECONDS, "events": events,
-        "poller": {"enabled": POLL_ENABLED, "status": poll_status},
-    }
-
-
-# FITUR BARU: statistik global
-def stats_snapshot():
-    with lock:
-        total_lanes = len(lane_state)
-        total_restock = sum(len(v) for v in restock_history.values())
-        per_event = {c: len(restock_history.get(c, [])) for c in EVENTS}
-    return {
-        "uptime_seconds": time.time() - bot.started_at,
-        "total_lanes": total_lanes,
-        "total_restock_events": total_restock,
-        "restock_per_event": per_event,
-        "poll_status": poll_status,
-    }
+                lanes.append({
+                    "member": v.get("member_name"), "lane": v.get("label"),
+                    "quota": parse_quota(v.get("available_quota")) or 0,
+                    "price": v.get("price"), "sdc": sdc,
+                    "session": v.get("session_label"), "date": v.get("session_date"),
+                    "start": hhmm(v.get("session_start_time")),
+                    "end": hhmm(v.get("session_end_time")),
+                    "restock_at": last_restock.get((c, sdc)),
+                    "vip": is_vip(code, v),
+                })
+            events[code] = {"name": name, "updated": last_report.get(code), "lanes": lanes}
+    return {"now": now, "stale_after": STALE_SECONDS, "events": events,
+            "poller": {"enabled": POLL_ENABLED, "status": poll_status}}
 
 
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        pass  # FITUR BARU: senyapkan log HTTP default
+        print("[HTTP]", fmt % args)
 
     def send_json(self, status, body):
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1149,52 +919,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _read_json(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0 or length > MAX_BODY_SIZE:
-            return None, "Ukuran payload tidak valid."
-        try:
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            return None, f"JSON tidak valid: {e}"
-        if not isinstance(data, dict):
-            return None, "Payload harus JSON object."
-        return data, None
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Notify-Secret, X-Ingest-Token")
-        self.end_headers()
-
     def do_GET(self):
         url = urlparse(self.path)
-        qs = parse_qs(url.query)
-
         if url.path == "/health":
             return self.send_json(200, {
                 "ok": True, "service": "jkt48-notifier",
-                "poller": {"enabled": POLL_ENABLED, "events": POLL_EVENTS,
-                           "status": poll_status},
+                "poller": {"enabled": POLL_ENABLED, "events": POLL_EVENTS, "status": poll_status},
             })
 
-        if url.path == "/api/stats":  # FITUR BARU
-            if DASHBOARD_KEY:
-                given = (qs.get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
-                if not hmac.compare_digest(given, DASHBOARD_KEY):
-                    return self.send_json(401, {"ok": False, "error": "Key salah."})
-            return self.send_json(200, stats_snapshot())
-
         if DASHBOARD_KEY:
-            given = (qs.get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
+            given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
             if not hmac.compare_digest(given, DASHBOARD_KEY):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
         if url.path == "/api/lanes":
-            compact = qs.get("compact", ["0"])[0] in ("1", "true", "yes")
-            return self.send_json(200, snapshot(compact=compact))
-
+            return self.send_json(200, snapshot())
         if url.path in ("/", "/index.html"):
             try:
                 return self.send_html(200, DASHBOARD_FILE.read_bytes())
@@ -1206,84 +945,63 @@ class Handler(BaseHTTPRequestHandler):
                     f"atau taruh dashboard.html di folder yang sama dengan script ini."
                 )
                 return self.send_html(500, msg.encode("utf-8"))
-
         self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
 
-    def _process_event_payload(self, code, page_url, lanes, remote_error):
-        """Shared handler untuk /notify dan /ingest."""
-        if code not in EVENTS:
-            return 400, {"ok": False, "error": f"Kode event tidak diizinkan: {code}"}
-        if not page_url.startswith("https://jkt48.com/purchase/exclusive"):
-            return 400, {"ok": False, "error": "URL halaman tidak diizinkan."}
-        if remote_error:
-            record_remote_poll(code, " ".join(str(remote_error).split())[:200])
-            return 200, {"ok": True, "code": code, "recorded": "error"}
-        if not isinstance(lanes, list) or len(lanes) > 1000:
-            return 400, {"ok": False, "error": "Daftar jalur tidak valid."}
-
-        lanes = [l for l in lanes if isinstance(l, dict)]
-        restocks, new_sessions, vip = process_report(code, lanes)
-        record_remote_poll(code)
-        log(f"[JKT48] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} "
-            f"baru={new_sessions} vip={vip}")
-        return 200, {
-            "ok": True, "code": code, "laneCount": len(lanes),
-            "restocks": restocks, "newSessions": new_sessions, "vipActive": vip,
-        }
-
     def do_POST(self):
-        path = urlparse(self.path).path
+        secret = self.headers.get("X-Notify-Secret", "")
+        if not NOTIFY_SECRET or not hmac.compare_digest(secret, NOTIFY_SECRET):
+            return self.send_json(401, {"ok": False, "error": "Unauthorized."})
 
-        if path == "/notify":
-            secret = self.headers.get("X-Notify-Secret", "")
-            if not NOTIFY_SECRET or not hmac.compare_digest(secret, NOTIFY_SECRET):
-                return self.send_json(401, {"ok": False, "error": "Unauthorized."})
-        elif path == "/ingest":  # FITUR BARU
-            if INGEST_TOKEN:
-                token = (
-                    self.headers.get("X-Ingest-Token", "")
-                    or (parse_qs(urlparse(self.path).query).get("token") or [""])[0]
-                )
-                if not hmac.compare_digest(token, INGEST_TOKEN):
-                    return self.send_json(401, {"ok": False, "error": "Ingest token salah."})
-        else:
+        if urlparse(self.path).path != "/notify":
             return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
 
         try:
-            data, err = self._read_json()
-            if err:
-                return self.send_json(400, {"ok": False, "error": err})
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_BODY_SIZE:
+                return self.send_json(413, {"ok": False, "error": "Ukuran payload tidak valid."})
+
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(data, dict):
+                return self.send_json(400, {"ok": False, "error": "Payload harus JSON object."})
 
             code = str(data.get("code") or "").strip().upper()
             page_url = str(data.get("pageUrl") or "")
             lanes = data.get("lanes")
-            remote_error = data.get("error")
 
-            status, body = self._process_event_payload(
-                code, page_url, lanes, remote_error
-            )
-            self.send_json(status, body)
+            if code not in EVENTS:
+                return self.send_json(400, {"ok": False, "error": f"Kode event tidak diizinkan: {code}"})
+            if not page_url.startswith("https://jkt48.com/purchase/exclusive"):
+                return self.send_json(400, {"ok": False, "error": "URL halaman tidak diizinkan."})
+            if data.get("error"):
+                record_remote_poll(code, " ".join(str(data["error"]).split())[:200])
+                return self.send_json(200, {"ok": True, "code": code, "recorded": "error"})
+            if not isinstance(lanes, list) or len(lanes) > 1000:
+                return self.send_json(400, {"ok": False, "error": "Daftar jalur tidak valid."})
+
+            lanes = [l for l in lanes if isinstance(l, dict)]
+            restocks, new_sessions, vip = process_report(code, lanes)
+            record_remote_poll(code)
+
+            print(f"[JKT48] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
+            self.send_json(200, {
+                "ok": True, "code": code, "laneCount": len(lanes),
+                "restocks": restocks, "newSessions": new_sessions, "vipActive": vip,
+            })
         except Exception as error:
             traceback.print_exc()
-            self.send_json(500, {
-                "ok": False,
-                "error": f"{type(error).__name__}: {str(error)[:300]}",
-            })
+            self.send_json(500, {"ok": False, "error": f"{type(error).__name__}: {str(error)[:300]}"})
 
 
 def run_http():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    log(f"[JKT48] Notifier aktif di http://{HOST}:{PORT}/notify")
-    log(f"[JKT48] Ingest endpoint: http://{HOST}:{PORT}/ingest")
-    log(f"[JKT48] Dashboard di http://{HOST}:{PORT}/")
+    print(f"[JKT48] Notifier aktif di http://{HOST}:{PORT}/notify")
+    print(f"[JKT48] Dashboard di http://{HOST}:{PORT}/")
     server.serve_forever()
 
 
 def main():
     if not TOKEN or not CHANNEL_ID or not NOTIFY_SECRET:
-        raise SystemExit(
-            "Set DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, dan NOTIFY_SECRET terlebih dahulu."
-        )
+        raise SystemExit("Set DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, dan NOTIFY_SECRET terlebih dahulu.")
 
     if not SUBS_FILE.exists() and SEED_FILE.exists() and SEED_FILE != SUBS_FILE:
         SUBS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1292,10 +1010,11 @@ def main():
     load_state()
 
     if not VIP_USER_ID:
-        log("[WARNING] VIP_USER_ID belum diatur.")
+        print("[WARNING] VIP_USER_ID belum diatur: tag VIP tidak akan benar-benar mem-ping.")
 
     if not DASHBOARD_FILE.is_file():
-        log(f"[WARNING] dashboard.html tidak ditemukan di {DASHBOARD_FILE}")
+        print(f"[WARNING] dashboard.html tidak ditemukan di {DASHBOARD_FILE}")
+        print("[WARNING] Set env DASHBOARD_FILE ke path lengkap file dashboard.html")
 
     threading.Thread(target=run_http, daemon=True).start()
     bot.run(TOKEN)
