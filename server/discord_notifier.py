@@ -254,26 +254,79 @@ def save_state():
     except Exception:
         traceback.print_exc()
 
+from datetime import datetime, timezone
+
+COLOR_AMBER = 0xF1C40F
+LOW_QUOTA = 3
+HARI = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
+BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+         "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
+def pretty_date(value):
+    try:
+        d = datetime.strptime(str(value), "%Y-%m-%d")
+        return f"{HARI[d.weekday()]}, {d.day} {BULAN[d.month - 1]}"
+    except ValueError:
+        return str(value or "-")
+
+
+def status_icon(q):
+    if q <= 0:
+        return "🔴"
+    return "🟡" if q <= LOW_QUOTA else "🟢"
+
+
+def quota_bar(q, peak, size=8):
+    peak = peak if peak and peak > 0 else max(q, 1)
+    filled = round(size * min(q, peak) / peak)
+    if q > 0 and filled == 0:
+        filled = 1
+    return "▰" * filled + "▱" * (size - filled)
+
+
+def peak_of(code, sdc, quota):
+    with lock:
+        dq = history.get((code, sdc))
+        return max([quota] + [q for _, q in dq]) if dq else quota
 
 # ------------------------------------------------------------------ embeds
 def restock_embed(code, lane, delta=None):
-    quota = parse_quota(lane.get("available_quota"))
-    desc = f"**{EVENTS.get(code, code)}** · {lane.get('label')}"
-    if delta is not None and delta > 0:
-        desc += f"  ·  📈 **+{delta} tiket**"
-    return discord.Embed(
+    quota = parse_quota(lane.get("available_quota")) or 0
+    sdc = str(lane.get("session_detail_code") or "")
+    peak = peak_of(code, sdc, quota)
+
+    desc = f"### {status_icon(quota)} {quota} tiket tersedia"
+    if delta:
+        desc += f"  ·  📈 +{delta}"
+    desc += f"\n{quota_bar(quota, peak, 12)}"
+
+    embed = discord.Embed(
         title=f"🟢 RESTOCK · {lane.get('member_name')}",
-        color=COLOR_GREEN,
+        url=buy_url(code),
         description=desc,
-    ).add_field(name="🗓️ Sesi", value=str(lane.get("session_label") or "-"), inline=True
-    ).add_field(name="📅 Tanggal", value=str(lane.get("session_date") or "-"), inline=True
-    ).add_field(
+        color=COLOR_AMBER if quota <= LOW_QUOTA else COLOR_GREEN,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_author(name=f"{EVENTS.get(code, code)} · {lane.get('label')}")
+    embed.add_field(name="🗓️ Sesi", value=str(lane.get("session_label") or "-"), inline=True)
+    embed.add_field(name="📅 Tanggal", value=pretty_date(lane.get("session_date")), inline=True)
+    embed.add_field(
         name="🕒 Waktu",
-        value=f"{hhmm(lane.get('session_start_time'))} - {hhmm(lane.get('session_end_time'))}",
+        value=f"{hhmm(lane.get('session_start_time'))}–{hhmm(lane.get('session_end_time'))}",
         inline=True,
-    ).add_field(name="📊 Kuota", value=f"`{quota}`", inline=True
-    ).add_field(name="💰 Harga", value=format_rupiah(lane.get("price")), inline=True
-    ).add_field(name="🧩 Kode sesi", value=f"`{lane.get('session_detail_code')}`", inline=False)
+    )
+    embed.add_field(name="💰 Harga", value=format_rupiah(lane.get("price")), inline=True)
+
+    so = so_after.get((code, sdc))
+    if so:
+        embed.add_field(
+            name="⏱️ Terakhir habis dalam",
+            value=f"~{max(1, round(so / 60))} menit",
+            inline=True,
+        )
+    embed.set_footer(text=f"Kode sesi {sdc}")
+    return embed
 
 
 def new_session_embed(code, lane):
@@ -397,15 +450,20 @@ def stock_pages(lanes):
     for lane in lanes:
         name = str(lane.get("member_name") or "-")
         if name != last_member:
-            lines.append(f"\n**{name}**")
+            lines.append(f"\n👤 **{name}**")
             last_member = name
         quota = parse_quota(lane.get("available_quota")) or 0
-        icon = "🟢" if quota > 0 else "🔴"
-        lines.append(
-            f"{icon} {lane.get('session_label') or '-'} · {lane.get('session_date') or '-'} "
-            f"{hhmm(lane.get('session_start_time'))}-{hhmm(lane.get('session_end_time'))} · "
-            f"{lane.get('label') or '-'} — kuota **{quota}** · {format_rupiah(lane.get('price'))}"
+        head = (
+            f"{status_icon(quota)} **{lane.get('session_label') or '-'}** · "
+            f"{pretty_date(lane.get('session_date'))} · "
+            f"`{hhmm(lane.get('session_start_time'))}–{hhmm(lane.get('session_end_time'))}`"
         )
+        if quota > 0:
+            bar = quota_bar(quota, lane.get("_peak"))
+            tail = f"{lane.get('label') or '-'} · {format_rupiah(lane.get('price'))} · {bar} **{quota}**"
+        else:
+            tail = f"{lane.get('label') or '-'} · {format_rupiah(lane.get('price'))} · habis"
+        lines.append(f"{head}\n-# └ {tail}")
 
     pages, current = [], ""
     for line in lines:
@@ -424,10 +482,13 @@ async def show_stock(interaction: discord.Interaction, code: str, member: str):
     query = "" if show_all else norm(member)
 
     with lock:
-        lanes = [
-            dict(v) for (c, _), v in lane_state.items()
-            if c == code and (show_all or query in norm(v.get("member_name")))
-        ]
+        lanes = []
+        for (c, sdc), v in lane_state.items():
+            if c == code and (show_all or query in norm(v.get("member_name"))):
+                q = parse_quota(v.get("available_quota")) or 0
+                dq = history.get((c, sdc))
+                peak = max([q] + [x for _, x in dq]) if dq else q
+                lanes.append({**v, "_peak": peak})
         reported = last_report.get(code)
 
     await interaction.response.defer(ephemeral=True)
@@ -449,29 +510,38 @@ async def show_stock(interaction: discord.Interaction, code: str, member: str):
 
     available = sum(1 for l in lanes if (parse_quota(l.get("available_quota")) or 0) > 0)
     age = time.time() - reported
+    quotas = [parse_quota(l.get("available_quota")) or 0 for l in lanes]
+    low = sum(1 for q in quotas if 0 < q <= LOW_QUOTA)
+    ready = sum(1 for q in quotas if q > LOW_QUOTA)
+    sold = sum(1 for q in quotas if q <= 0)
+    age = time.time() - reported
+
     header = (
-        f"Tersedia **{available}** dari **{len(lanes)}** jalur · "
-        f"diperbarui <t:{int(reported)}:R>"
+        f"🟢 **{ready}** tersedia · 🟡 **{low}** menipis · 🔴 **{sold}** habis\n"
+        f"🔄 Diperbarui <t:{int(reported)}:R>"
     )
     if age > STALE_SECONDS:
         header += "\n⚠️ Data sudah lama, sumber data mungkin berhenti melapor."
 
+    color = COLOR_GREEN if ready else (COLOR_AMBER if low else COLOR_RED)
     pages = stock_pages(lanes)
-    who = "Semua member" if show_all else member
     shown = pages[:STOCK_MAX_EMBEDS]
+    who = "Semua member" if show_all else member
+
     for i, page in enumerate(shown):
         embed = discord.Embed(
             title=f"📊 Stok {ev_name} · {who}",
+            url=buy_url(code),
             description=(header + "\n" if i == 0 else "") + page,
-            color=COLOR_GREEN if available else COLOR_RED,
+            color=color,
+            timestamp=datetime.fromtimestamp(reported, tz=timezone.utc),
         )
+        footer = "JKT48 Ticket Radar"
         if len(pages) > 1:
-            embed.set_footer(text=f"Halaman {i + 1}/{len(shown)}")
-        await interaction.followup.send(
-            embed=embed,
-            view=buy_view(code),   # <-- tombol ke jkt48.com
-            ephemeral=True,
-        )
+            footer += f" · Halaman {i + 1}/{len(shown)}"
+        embed.set_footer(text=footer)
+        await interaction.followup.send(embed=embed, view=buy_view(code), ephemeral=True)
+
     if len(pages) > STOCK_MAX_EMBEDS:
         await interaction.followup.send(
             "Hasil terlalu panjang, sebutkan nama member yang lebih spesifik.",
