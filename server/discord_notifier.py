@@ -458,15 +458,20 @@ async def show_stock(interaction: discord.Interaction, code: str, member: str):
 
     pages = stock_pages(lanes)
     who = "Semua member" if show_all else member
-    for i, page in enumerate(pages[:STOCK_MAX_EMBEDS]):
+    shown = pages[:STOCK_MAX_EMBEDS]
+    for i, page in enumerate(shown):
         embed = discord.Embed(
             title=f"📊 Stok {ev_name} · {who}",
             description=(header + "\n" if i == 0 else "") + page,
             color=COLOR_GREEN if available else COLOR_RED,
         )
         if len(pages) > 1:
-            embed.set_footer(text=f"Halaman {i + 1}/{min(len(pages), STOCK_MAX_EMBEDS)}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+            embed.set_footer(text=f"Halaman {i + 1}/{len(shown)}")
+        await interaction.followup.send(
+            embed=embed,
+            view=buy_view(code),   # <-- tombol ke jkt48.com
+            ephemeral=True,
+        )
     if len(pages) > STOCK_MAX_EMBEDS:
         await interaction.followup.send(
             "Hasil terlalu panjang, sebutkan nama member yang lebih spesifik.",
