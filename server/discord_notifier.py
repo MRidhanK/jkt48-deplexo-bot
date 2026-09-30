@@ -8,7 +8,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 import discord
@@ -76,6 +76,9 @@ VIP_MEMBERS = {
 SEED_FILE = Path(__file__).with_name("subscriptions.json")
 SUBS_FILE = Path(os.environ.get("SUBS_FILE") or SEED_FILE)
 STATE_FILE = Path(os.environ.get("STATE_FILE") or SUBS_FILE.with_name("state.json"))
+
+DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()   # opsional: buka /?key=XXXX
+DASHBOARD_FILE = Path(__file__).with_name("dashboard.html")
 
 COLOR_GREEN = 0x2ECC71
 COLOR_RED = 0xE74C3C
@@ -835,6 +838,31 @@ async def save_state_loop():
         save_state()
 
 
+# ------------------------------------------------------------------ dashboard API
+def snapshot():
+    now = time.time()
+    with lock:
+        events = {}
+        for code, name in EVENTS.items():
+            lanes = []
+            for (c, sdc), v in lane_state.items():
+                if c != code:
+                    continue
+                lanes.append({
+                    "member": v.get("member_name"), "lane": v.get("label"),
+                    "quota": parse_quota(v.get("available_quota")) or 0,
+                    "price": v.get("price"), "sdc": sdc,
+                    "session": v.get("session_label"), "date": v.get("session_date"),
+                    "start": hhmm(v.get("session_start_time")),
+                    "end": hhmm(v.get("session_end_time")),
+                    "restock_at": last_restock.get((c, sdc)),
+                    "vip": is_vip(code, v),
+                })
+            events[code] = {"name": name, "updated": last_report.get(code), "lanes": lanes}
+    return {"now": now, "stale_after": STALE_SECONDS, "events": events,
+            "poller": {"enabled": POLL_ENABLED, "status": poll_status}}
+
+
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
@@ -848,11 +876,35 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def send_html(self, status, raw):
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def do_GET(self):
-        self.send_json(200, {
-            "ok": True, "service": "jkt48-notifier",
-            "poller": {"enabled": POLL_ENABLED, "events": POLL_EVENTS, "status": poll_status},
-        })
+        url = urlparse(self.path)
+        if url.path == "/health":
+            return self.send_json(200, {
+                "ok": True, "service": "jkt48-notifier",
+                "poller": {"enabled": POLL_ENABLED, "events": POLL_EVENTS, "status": poll_status},
+            })
+
+        if DASHBOARD_KEY:
+            given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
+            if not hmac.compare_digest(given, DASHBOARD_KEY):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+
+        if url.path == "/api/lanes":
+            return self.send_json(200, snapshot())
+        if url.path in ("/", "/index.html"):
+            try:
+                return self.send_html(200, DASHBOARD_FILE.read_bytes())
+            except FileNotFoundError:
+                return self.send_html(500, b"dashboard.html tidak ditemukan di folder yang sama.")
+        self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
 
     def do_POST(self):
         secret = self.headers.get("X-Notify-Secret", "")
