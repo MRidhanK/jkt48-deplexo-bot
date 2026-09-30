@@ -290,6 +290,30 @@ def peak_of(code, sdc, quota):
         dq = history.get((code, sdc))
         return max([quota] + [q for _, q in dq]) if dq else quota
 
+def speed_of(code, sdc, quota):
+    with lock:
+        return speed_stats((code, sdc), quota, time.time())
+
+
+def fmt_minutes(m):
+    if m is None:
+        return "-"
+    if m < 1:
+        return "<1 menit"
+    if m < 60:
+        return f"~{round(m)} menit"
+    return f"~{m / 60:.1f} jam"
+
+
+def speed_label(rate):
+    if rate >= 2:
+        return "🔥 Cepat"
+    if rate >= 0.5:
+        return "⚡ Sedang"
+    if rate > 0:
+        return "🐢 Lambat"
+    return "💤 Belum ada penjualan"
+
 # ------------------------------------------------------------------ embeds
 def restock_embed(code, lane, delta=None):
     quota = parse_quota(lane.get("available_quota")) or 0
@@ -318,7 +342,24 @@ def restock_embed(code, lane, delta=None):
     )
     embed.add_field(name="💰 Harga", value=format_rupiah(lane.get("price")), inline=True)
 
-    so = so_after.get((code, sdc))
+    # ---- kecepatan terjual ----
+    sp = speed_of(code, sdc, quota)
+    if sp["sold_1h"] > 0:
+        lines = [
+            f"{speed_label(sp['rate'])} · **{sp['rate']}** tiket/menit",
+            f"Terjual **{sp['sold_10m']}** (10 mnt) · **{sp['sold_1h']}** (1 jam)",
+        ]
+        if sp["eta"] is not None:
+            lines.append(f"Perkiraan habis dalam **{fmt_minutes(sp['eta'])}**")
+        embed.add_field(name="⚡ Kecepatan", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(
+            name="⚡ Kecepatan",
+            value="💤 Belum ada data penjualan (baru terpantau)",
+            inline=False,
+        )
+
+    so = sp.get("so_after")
     if so:
         embed.add_field(
             name="⏱️ Terakhir habis dalam",
