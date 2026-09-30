@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>JKT48 Ticket Radar</title>
 <style>
-:root{--bg:#f6f7fb;--card:#fff;--text:#1a1d27;--mut:#6b7185;--line:#e3e6ef;--ok:#16a34a;--no:#dc2626;--acc:#e11d48;--warn:#d97706;
+:root{--bg:#f6f7fb;--card:#fff;--text:#1a1d27;--mut:#6b7185;--line:#e3e6ef;--ok:#16a34a;--no:#dc2626;--acc:#e11d48;--warn:#d97706;--soft:#f0f2f8;
 padding-top:env(safe-area-inset-top,0);padding-bottom:env(safe-area-inset-bottom,0)}
-@media(prefers-color-scheme:dark){:root{--bg:#0f1117;--card:#181b25;--text:#eceef5;--mut:#8b91a7;--line:#262a38}}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1117;--card:#181b25;--text:#eceef5;--mut:#8b91a7;--line:#262a38;--soft:#1f2330}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:12px 16px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:1000px;margin:0 auto}
 h1{font-size:17px;margin:0;flex:1;min-width:140px}
@@ -17,23 +17,58 @@ h1 b{color:var(--acc)}
 .pill{font-size:12px;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mut)}
 .pill.ok{color:var(--ok);border-color:var(--ok)}.pill.bad{color:var(--no);border-color:var(--no)}.pill.warn{color:var(--warn);border-color:var(--warn)}
 .tabs{display:flex;gap:6px}
-.tab,.btn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:6px 12px;font:inherit;cursor:pointer}
+.tab,.btn,select{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:6px 12px;font:inherit;cursor:pointer}
 .tab.on{background:var(--acc);border-color:var(--acc);color:#fff}
 input[type=search]{flex:1;min-width:150px;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit}
 main{max-width:1000px;margin:0 auto;padding:14px 16px 40px}
-.sum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+
+.sum{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+@media(max-width:600px){.sum{grid-template-columns:repeat(2,1fr)}}
 .sum div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .sum b{display:block;font-size:22px}.sum span{color:var(--mut);font-size:12px}
+
+.help{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:14px}
+.help>summary{cursor:pointer;padding:10px 14px;font-weight:600;list-style:none}
+.help>summary::-webkit-details-marker{display:none}
+.help .body{padding:0 14px 12px;color:var(--mut);font-size:13px}
+.help dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px}
+.help dt{font-weight:600;color:var(--text);white-space:nowrap}
+.help dd{margin:0}
+
 .m{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:10px;overflow:hidden}
-.m>summary{list-style:none;cursor:pointer;padding:11px 14px;display:flex;gap:8px;align-items:center}
+.m>summary{list-style:none;cursor:pointer;padding:10px 14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .m>summary::-webkit-details-marker{display:none}
-.m .n{font-weight:600;flex:1}
-.vip{color:var(--acc);font-size:12px}
-.cnt{font-size:12px;font-weight:600;padding:2px 9px;border-radius:99px;background:var(--line);color:var(--mut)}
-.cnt.has{background:var(--ok);color:#fff}
-.tw{overflow-x:auto;border-top:1px solid var(--line)}
-table{width:100%;border-collapse:collapse;min-width:520px}
-th,td{padding:7px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+.m[open]>summary{border-bottom:1px solid var(--line)}
+.av{position:relative;flex:none;overflow:hidden;background:var(--soft);color:var(--mut);display:flex;align-items:center;justify-content:center;font-weight:700}
+.av img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.av.s{width:42px;height:42px;border-radius:50%}
+.av.l{width:96px;height:128px;border-radius:12px;font-size:28px}
+.who{flex:1;min-width:150px}
+.n{font-weight:600;font-size:15px}
+.vip{color:var(--acc);font-size:12px;margin-left:6px;font-weight:600}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px}
+.chip{font-size:12px;padding:2px 9px;border-radius:99px;background:var(--soft);color:var(--mut);white-space:nowrap}
+.chip.has{background:var(--ok);color:#fff;font-weight:600}
+.chip.none{background:rgba(220,38,38,.12);color:var(--no)}
+.arrow{color:var(--mut);transition:transform .15s}
+.m[open] .arrow{transform:rotate(90deg)}
+
+.detail{padding:14px}
+.hero{display:flex;gap:16px;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap}
+.hero .txt{flex:1;min-width:200px}
+.hero h2{margin:0 0 4px;font-size:18px}
+.hero p{margin:0 0 8px;color:var(--mut);font-size:13px}
+.kpis{display:flex;gap:8px;flex-wrap:wrap}
+.kpi{background:var(--soft);border-radius:10px;padding:6px 12px}
+.kpi b{font-size:18px;display:block}.kpi span{font-size:11px;color:var(--mut)}
+
+.sess{border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
+.sess-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--soft);padding:8px 12px}
+.sess-h .t{font-weight:600;flex:1;min-width:160px}
+.sess-h .s{color:var(--mut);font-size:12px}
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:360px}
+th,td{padding:6px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
 th{color:var(--mut);font-weight:500;font-size:12px}
 tr:last-child td{border-bottom:0}
 .q{font-weight:700}.q.ok{color:var(--ok)}.q.no{color:var(--no)}
@@ -51,16 +86,36 @@ tr:last-child td{border-bottom:0}
   <div class="row" style="margin-top:10px">
     <div class="tabs" id="tabs"></div>
     <input type="search" id="q" placeholder="Cari member…">
+    <select id="sort" title="Urutkan">
+      <option value="avail">Urut: tersedia dulu</option>
+      <option value="tix">Urut: tiket terbanyak</option>
+      <option value="name">Urut: nama A–Z</option>
+    </select>
     <label class="pill"><input type="checkbox" id="only"> hanya tersedia</label>
     <label class="pill"><input type="checkbox" id="beep"> 🔔 suara</label>
   </div>
 </header>
 <main>
   <div class="sum">
-    <div><b id="s-lanes">-</b><span>jalur</span></div>
-    <div><b id="s-av">-</b><span>tersedia</span></div>
-    <div><b id="s-tix">-</b><span>total kuota</span></div>
+    <div><b id="s-mem">-</b><span>member</span></div>
+    <div><b id="s-ses">-</b><span>sesi (tersedia / total)</span></div>
+    <div><b id="s-av">-</b><span>jalur tersedia</span></div>
+    <div><b id="s-tix">-</b><span>total tiket tersisa</span></div>
   </div>
+
+  <details class="help">
+    <summary>ℹ️ Cara membaca dashboard</summary>
+    <div class="body"><dl>
+      <dt>Jalur</dt><dd>Satu slot antrean/pilihan tiket milik seorang member pada sebuah sesi. Satu member bisa punya banyak jalur di banyak sesi.</dd>
+      <dt>Sesi</dt><dd>Satu jadwal (tanggal + jam). Angka <b>tersedia/total</b> = jumlah sesi yang masih punya minimal satu jalur dengan kuota.</dd>
+      <dt>Kuota / 🎟</dt><dd>Jumlah tiket yang masih bisa dibeli. <b>SO</b> berarti sold out (kuota 0).</dd>
+      <dt>Hijau / merah</dt><dd>Hijau = masih ada tiket. Merah = habis semua.</dd>
+      <dt>▲ restock</dt><dd>Baris berlatar hijau muda = kuota bertambah dalam 10 menit terakhir.</dd>
+      <dt>★ VIP</dt><dd>Member yang masuk daftar prioritas notifikasi Discord.</dd>
+      <dt>● live</dt><dd>Data diperbarui otomatis tiap 10 detik. Kalau “data lama”, poller di server berhenti mendapat data dari jkt48.com.</dd>
+    </dl></div>
+  </details>
+
   <div id="list"></div>
 </main>
 <script>
@@ -68,25 +123,58 @@ tr:last-child td{border-bottom:0}
 const $ = id => document.getElementById(id);
 const KEY = new URLSearchParams(location.search).get("key");
 const API = "/api/lanes" + (KEY ? "?key=" + encodeURIComponent(KEY) : "");
-const NEW_WINDOW = 600; // detik: tandai "restock baru"
+const NEW_WINDOW = 600;
 let data = null, tab = null, prevQuota = new Map(), firstLoad = true;
 const openMembers = new Set();
 
 const rp = v => Number.isFinite(+v) ? "Rp" + (+v).toLocaleString("id-ID") : "-";
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const norm = s => String(s || "").split(/\s+/).join(" ").trim().toLowerCase();
+const initials = n => String(n).split(" ").filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase();
 
+function fdate(s) {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(s))) return s;
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleDateString("id-ID", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
 function ago(ts, now) {
   if (!ts) return "belum ada data";
   const s = Math.max(0, Math.round(now - ts));
   return s < 60 ? s + " dtk lalu" : Math.round(s / 60) + " mnt lalu";
 }
-
 function beep() {
   try {
     const c = new (window.AudioContext || window.webkitAudioContext)(), o = c.createOscillator(), g = c.createGain();
     o.connect(g); g.connect(c.destination); o.frequency.value = 880; g.gain.value = .15;
     o.start(); o.stop(c.currentTime + .25);
   } catch {}
+}
+
+// Foto: gambar hanya menggantikan inisial kalau berhasil dimuat.
+function avatar(name, url, size) {
+  const box = el("div", "av " + size), fb = el("span", "", initials(name) || "?");
+  box.append(fb);
+  if (url) {
+    const img = new Image();
+    img.referrerPolicy = "no-referrer"; img.alt = name; img.loading = "lazy";
+    img.onload = () => { fb.remove(); box.append(img); };
+    img.src = url;
+  }
+  return box;
+}
+
+function stats(lanes) {
+  const sessions = new Map();
+  let tix = 0, avail = 0;
+  for (const l of lanes) {
+    tix += l.quota; if (l.quota > 0) avail++;
+    const sk = [l.date, l.start, l.end, l.session].join("|");
+    if (!sessions.has(sk)) sessions.set(sk, []);
+    sessions.get(sk).push(l);
+  }
+  let sesAvail = 0;
+  for (const ls of sessions.values()) if (ls.some(l => l.quota > 0)) sesAvail++;
+  return { tix, avail, sessions, sesAvail };
 }
 
 function render() {
@@ -101,15 +189,17 @@ function render() {
   }
 
   const ev = data.events[tab], now = data.now, query = $("q").value.trim().toLowerCase(), only = $("only").checked;
+  const photos = data.photos || {};
   const age = ev.updated ? now - ev.updated : null;
   const st = $("status");
   st.className = "pill " + (age == null ? "bad" : age > data.stale_after ? "warn" : "ok");
   st.textContent = age == null ? "belum ada data" : (age > data.stale_after ? "⚠ data lama · " : "● live · ") + ago(ev.updated, now);
 
-  const all = ev.lanes;
-  $("s-lanes").textContent = all.length;
-  $("s-av").textContent = all.filter(l => l.quota > 0).length;
-  $("s-tix").textContent = all.reduce((a, l) => a + l.quota, 0);
+  const all = ev.lanes, tot = stats(all);
+  $("s-mem").textContent = new Set(all.map(l => l.member)).size;
+  $("s-ses").textContent = tot.sesAvail + " / " + tot.sessions.size;
+  $("s-av").textContent = tot.avail + " / " + all.length;
+  $("s-tix").textContent = tot.tix.toLocaleString("id-ID");
 
   const groups = new Map();
   for (const l of all) {
@@ -122,37 +212,80 @@ function render() {
   const list = $("list"); list.textContent = "";
   if (!groups.size) { list.append(el("div", "empty", all.length ? "Tidak ada yang cocok." : "Menunggu data dari poller/worker…")); return; }
 
+  const info = new Map([...groups].map(([n, ls]) => [n, stats(ls)]));
+  const mode = $("sort").value;
   const names = [...groups.keys()].sort((a, b) => {
-    const sa = groups.get(a).reduce((x, l) => x + (l.quota > 0), 0), sb = groups.get(b).reduce((x, l) => x + (l.quota > 0), 0);
-    return (sb > 0) - (sa > 0) || a.localeCompare(b);
+    const A = info.get(a), B = info.get(b);
+    if (mode === "tix") return B.tix - A.tix || a.localeCompare(b);
+    if (mode === "name") return a.localeCompare(b);
+    return (B.avail > 0) - (A.avail > 0) || a.localeCompare(b);
   });
 
   for (const name of names) {
-    const lanes = groups.get(name).sort((a, b) => (a.date + a.start + a.lane).localeCompare(b.date + b.start + b.lane));
-    const avail = lanes.filter(l => l.quota > 0).length;
+    const lanes = groups.get(name), s = info.get(name);
+    const photo = (lanes.find(l => l.photo) || {}).photo || photos[norm(name)] || null;
+    const isVip = !!lanes[0].vip;
+
     const d = el("details", "m");
     const key = tab + "|" + name;
     d.open = openMembers.has(key) || !!query;
     d.ontoggle = () => d.open ? openMembers.add(key) : openMembers.delete(key);
+
+    // ----- baris ringkas
     const sm = el("summary");
-    sm.append(el("span", "n", name));
-    if (lanes[0].vip) sm.append(el("span", "vip", "★ VIP"));
-    sm.append(el("span", "cnt" + (avail ? " has" : ""), avail + "/" + lanes.length));
+    sm.append(avatar(name, photo, "s"));
+    const who = el("div", "who"), nm = el("div", "n", name);
+    if (isVip) nm.append(el("span", "vip", "★ VIP"));
+    const chips = el("div", "chips");
+    chips.append(
+      el("span", "chip " + (s.tix > 0 ? "has" : "none"), "🎟 " + s.tix + " tiket"),
+      el("span", "chip", "🗓 " + s.sesAvail + "/" + s.sessions.size + " sesi"),
+      el("span", "chip", s.avail + "/" + lanes.length + " jalur")
+    );
+    who.append(nm, chips);
+    sm.append(who, el("span", "arrow", "›"));
     d.append(sm);
 
-    const tw = el("div", "tw"), t = el("table"), thead = el("thead"), hr = el("tr");
-    ["Sesi", "Tanggal", "Waktu", "Jalur", "Harga", "Kuota"].forEach(h => hr.append(el("th", "", h)));
-    thead.append(hr); t.append(thead);
-    const tb = el("tbody");
-    for (const l of lanes) {
-      const tr = el("tr", l.restock_at && now - l.restock_at < NEW_WINDOW && l.quota > 0 ? "new" : "");
-      tr.append(el("td", "", l.session), el("td", "", l.date), el("td", "", l.start + "–" + l.end), el("td", "", l.lane), el("td", "", rp(l.price)));
-      const q = el("td"), qs = el("span", "q " + (l.quota > 0 ? "ok" : "no"), l.quota > 0 ? l.quota : "SO");
-      q.append(qs);
-      if (tr.className) q.append(el("span", "tag", "▲ restock " + ago(l.restock_at, now)));
-      tr.append(q); tb.append(tr);
+    // ----- isi detail
+    const det = el("div", "detail");
+    const hero = el("div", "hero");
+    hero.append(avatar(name, photo, "l"));
+    const txt = el("div", "txt");
+    txt.append(el("h2", "", name));
+    txt.append(el("p", "", s.tix > 0
+      ? "Masih ada " + s.tix + " tiket di " + s.sesAvail + " dari " + s.sessions.size + " sesi. Ketuk sesi di bawah untuk melihat jalur yang tersedia."
+      : "Semua jalur untuk member ini sedang sold out. Aktifkan /pantau di Discord agar dapat notifikasi saat restock."));
+    const kp = el("div", "kpis");
+    for (const [v, lab] of [[s.tix, "tiket tersisa"], [s.sesAvail + "/" + s.sessions.size, "sesi tersedia"], [s.avail + "/" + lanes.length, "jalur tersedia"]]) {
+      const k = el("div", "kpi"); k.append(el("b", "", String(v)), el("span", "", lab)); kp.append(k);
     }
-    t.append(tb); tw.append(t); d.append(tw); list.append(d);
+    txt.append(kp); hero.append(txt); det.append(hero);
+
+    const sessList = [...s.sessions.values()].sort((a, b) =>
+      (a[0].date + a[0].start).localeCompare(b[0].date + b[0].start));
+    for (const ls of sessList) {
+      ls.sort((a, b) => a.lane.localeCompare(b.lane, "id", { numeric: true }));
+      const f = ls[0], sTix = ls.reduce((x, l) => x + l.quota, 0);
+      const box = el("div", "sess"), h = el("div", "sess-h");
+      h.append(el("span", "t", (f.session || "Sesi") + " · " + fdate(f.date) + " · " + f.start + "–" + f.end));
+      h.append(el("span", "chip " + (sTix > 0 ? "has" : "none"), "🎟 " + sTix));
+      box.append(h);
+
+      const tw = el("div", "tw"), t = el("table"), hr = el("tr");
+      ["Jalur", "Harga", "Kuota"].forEach(x => hr.append(el("th", "", x)));
+      const th = el("thead"); th.append(hr); t.append(th);
+      const tb = el("tbody");
+      for (const l of ls) {
+        const fresh = l.restock_at && now - l.restock_at < NEW_WINDOW && l.quota > 0;
+        const tr = el("tr", fresh ? "new" : "");
+        tr.append(el("td", "", l.lane), el("td", "", rp(l.price)));
+        const q = el("td"); q.append(el("span", "q " + (l.quota > 0 ? "ok" : "no"), l.quota > 0 ? String(l.quota) : "SO"));
+        if (fresh) q.append(el("span", "tag", "▲ restock " + ago(l.restock_at, now)));
+        tr.append(q); tb.append(tr);
+      }
+      t.append(tb); tw.append(t); box.append(tw); det.append(box);
+    }
+    d.append(det); list.append(d);
   }
 }
 
@@ -183,7 +316,7 @@ async function load() {
   }
 }
 
-$("q").oninput = $("only").onchange = render;
+$("q").oninput = $("only").onchange = $("sort").onchange = render;
 document.addEventListener("visibilitychange", () => { if (!document.hidden) document.title = "JKT48 Ticket Radar"; });
 load(); setInterval(load, 10000);
 </script>
