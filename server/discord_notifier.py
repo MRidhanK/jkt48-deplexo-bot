@@ -25,14 +25,11 @@ GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID", "0") or 0)
 VIP_USER_ID = os.environ.get("VIP_USER_ID", "").strip()
 VIP_FALLBACK_TEXT = os.environ.get("VIP_FALLBACK_TEXT", "")
 SPAM_INTERVAL = float(os.environ.get("SPAM_INTERVAL", "4"))
-SPAM_MAX = int(os.environ.get("SPAM_MAX", "20"))          # batas spam per restock
+SPAM_MAX = int(os.environ.get("SPAM_MAX", "20"))
 STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "150"))
 
-# Rate limiter global untuk Discord
 MIN_SEND_GAP = float(os.environ.get("MIN_SEND_GAP", "1.2"))
 MAX_CONCURRENT_SPAM = int(os.environ.get("MAX_CONCURRENT_SPAM", "5"))
-
-# Cooldown restock per lane (detik) — cegah spam ulang karena fluktuasi
 RESTOCK_COOLDOWN = int(os.environ.get("RESTOCK_COOLDOWN", "300"))
 
 EVENTS = {"EX5B99": "2 Shoot", "EX24AE": "MNG"}
@@ -77,8 +74,35 @@ SEED_FILE = Path(__file__).with_name("subscriptions.json")
 SUBS_FILE = Path(os.environ.get("SUBS_FILE") or SEED_FILE)
 STATE_FILE = Path(os.environ.get("STATE_FILE") or SUBS_FILE.with_name("state.json"))
 
-DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()   # opsional: buka /?key=XXXX
-DASHBOARD_FILE = Path(__file__).with_name("dashboard.html")
+DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()
+
+# ------------------------------------------------------------------ FIX: cari dashboard.html di beberapa lokasi
+def _resolve_dashboard_file() -> Path:
+    # 1. Env var eksplisit
+    env_path = os.environ.get("DASHBOARD_FILE", "").strip()
+    if env_path:
+        p = Path(env_path)
+        if p.is_file():
+            return p
+        print(f"[WARN] DASHBOARD_FILE={env_path} tidak ditemukan, fallback ke pencarian otomatis.")
+
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here / "dashboard.html",                 # sebelah script
+        here / "server" / "dashboard.html",      # script di root, dashboard di server/
+        here.parent / "server" / "dashboard.html",  # script di subfolder, dashboard di ../server/
+        here.parent / "dashboard.html",          # dashboard di parent
+        Path.cwd() / "dashboard.html",           # current working dir
+        Path.cwd() / "server" / "dashboard.html",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return candidates[0]  # default: sebelah script (untuk pesan error)
+
+
+DASHBOARD_FILE = _resolve_dashboard_file()
+print(f"[INIT] Dashboard file: {DASHBOARD_FILE} (exists={DASHBOARD_FILE.is_file()})")
 
 COLOR_GREEN = 0x2ECC71
 COLOR_RED = 0xE74C3C
@@ -116,9 +140,9 @@ quota_state = {}
 baselined = set()
 last_report = {}
 known_members = {}
-last_restock = {}     # (code, sdc) -> epoch kapan terakhir notif restock dikirim
+last_restock = {}
 lane_state = {}
-spam_tasks = {}       # (code, sdc) -> asyncio.Task
+spam_tasks = {}
 
 subs_lock = threading.Lock()
 poll_status = {}
@@ -217,6 +241,8 @@ class RadarBot(discord.Client):
         super().__init__(intents=discord.Intents.default())
         self.tree = app_commands.CommandTree(self)
         self.main_loop = None
+        self.poll_task = None
+        self.save_task = None
 
     async def setup_hook(self):
         self.main_loop = asyncio.get_running_loop()
@@ -434,7 +460,6 @@ async def daftar(interaction: discord.Interaction):
 
 # ------------------------------------------------------------------ rate-limited send
 async def safe_send(channel, **kwargs):
-    """Kirim pesan dengan rate limit global. Retry sekali jika kena 429."""
     now = time.time()
     wait = _last_send_time[0] + MIN_SEND_GAP - now
     if wait > 0:
@@ -480,7 +505,6 @@ def is_vip(code, lane):
 
 
 async def notify_subscribers(code, lanes, deltas=None):
-    """Mention subscriber yang cocok. 1x per restock (tidak spam)."""
     if not lanes:
         return
     channel = await get_channel()
@@ -492,7 +516,7 @@ async def notify_subscribers(code, lanes, deltas=None):
         name = norm(lane.get("member_name"))
         for uid, items in subs.items():
             if uid == VIP_USER_ID and is_vip(code, lane):
-                continue  # VIP di-notify terpisah
+                continue
             for item in items:
                 if item["event"] not in ("*", code):
                     continue
@@ -518,7 +542,6 @@ async def notify_subscribers(code, lanes, deltas=None):
 
 
 async def notify_new_sessions(code, lanes):
-    """Kirim notif sesi/jalur baru (khusus EX5B99)."""
     if not lanes:
         return
     channel = await get_channel()
@@ -537,13 +560,6 @@ async def notify_new_sessions(code, lanes):
 
 # --------------- SPAM KHUSUS 2 SHOOT (hanya saat kuota nambah) ---------------
 async def spam_loop_2shoot(code, lane, delta):
-    """
-    Spam VIP untuk 2 Shoot HANYA saat kuota nambah.
-    Berhenti jika:
-      - kuota turun/habis
-      - data basi
-      - mencapai SPAM_MAX
-    """
     key = (code, lane["session_detail_code"])
     sent = 0
     reason = "cap"
@@ -596,7 +612,6 @@ async def spam_loop_2shoot(code, lane, delta):
 
 
 def ensure_spam_2shoot(code, lane, delta):
-    """Buat task spam untuk 2 Shoot kalau belum ada."""
     if code != "EX5B99":
         return
     key = (code, lane["session_detail_code"])
@@ -737,16 +752,10 @@ async def poll_loop():
 
 # ------------------------------------------------------------------ proses laporan
 def process_report(code, lanes):
-    """
-    Return: (jumlah_restock, jumlah_sesi_baru, jumlah_vip)
-
-    Restock = kuota NAIK dari nilai sebelumnya (termasuk dari 0).
-    Spam VIP hanya untuk EX5B99 dan hanya saat kuota naik.
-    """
     restocks = []
     new_sessions = []
-    vip_active = []          # list of (lane, delta)
-    deltas = {}              # (code, sdc) -> delta
+    vip_active = []
+    deltas = {}
     now = time.time()
 
     with lock:
@@ -773,13 +782,11 @@ def process_report(code, lanes):
 
             is_new_session = prev is None and not first_scan
 
-            # RESTOCK = kuota NAIK (dari 0 ke >0, atau naik dari nilai sebelumnya)
             delta = 0
             is_restock = False
             if quota > 0:
                 if prev is None:
                     if not first_scan:
-                        # sesi baru dengan kuota > 0
                         is_restock = True
                         delta = quota
                 elif quota > prev:
@@ -793,7 +800,6 @@ def process_report(code, lanes):
                     deltas[key] = delta
                     last_restock[key] = now
 
-                    # Spam VIP HANYA untuk 2 Shoot
                     if code == "EX5B99" and is_vip(code, lane):
                         vip_active.append((lane, delta))
 
@@ -803,9 +809,7 @@ def process_report(code, lanes):
     if bot.main_loop is None or not bot.is_ready():
         return len(restocks), len(new_sessions), len(vip_active)
 
-    # ---- Aturan notifikasi per event ----
     if code == "EX5B99":
-        # 2 Shoot: notif subscriber + sesi baru + SPAM VIP (hanya saat nambah)
         if restocks:
             asyncio.run_coroutine_threadsafe(
                 notify_subscribers(code, restocks, deltas), bot.main_loop
@@ -819,14 +823,12 @@ def process_report(code, lanes):
                 ensure_spam_2shoot, code, dict(lane), delta
             )
     elif code == "EX24AE":
-        # MNG: HANYA notif biasa. TIDAK ADA SPAM.
         if restocks or new_sessions:
             combined = restocks + [l for l in new_sessions if l not in restocks]
             if combined:
                 asyncio.run_coroutine_threadsafe(
                     notify_subscribers(code, combined, deltas), bot.main_loop
                 )
-        # vip_active untuk MNG sengaja diabaikan (tidak spam)
 
     return len(restocks), len(new_sessions), len(vip_active)
 
@@ -903,7 +905,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self.send_html(200, DASHBOARD_FILE.read_bytes())
             except FileNotFoundError:
-                return self.send_html(500, b"dashboard.html tidak ditemukan di folder yang sama.")
+                msg = (
+                    f"dashboard.html tidak ditemukan.\n"
+                    f"Lokasi yang dicari: {DASHBOARD_FILE}\n"
+                    f"Set env DASHBOARD_FILE ke path lengkap dashboard.html,\n"
+                    f"atau taruh dashboard.html di folder yang sama dengan script ini."
+                )
+                return self.send_html(500, msg.encode("utf-8"))
         self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
 
     def do_POST(self):
@@ -950,6 +958,7 @@ class Handler(BaseHTTPRequestHandler):
 def run_http():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"[JKT48] Notifier aktif di http://{HOST}:{PORT}/notify")
+    print(f"[JKT48] Dashboard di http://{HOST}:{PORT}/")
     server.serve_forever()
 
 
@@ -965,6 +974,10 @@ def main():
 
     if not VIP_USER_ID:
         print("[WARNING] VIP_USER_ID belum diatur: tag VIP tidak akan benar-benar mem-ping.")
+
+    if not DASHBOARD_FILE.is_file():
+        print(f"[WARNING] dashboard.html tidak ditemukan di {DASHBOARD_FILE}")
+        print("[WARNING] Set env DASHBOARD_FILE ke path lengkap file dashboard.html")
 
     threading.Thread(target=run_http, daemon=True).start()
     bot.run(TOKEN)
