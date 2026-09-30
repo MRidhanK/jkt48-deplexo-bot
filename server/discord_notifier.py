@@ -458,6 +458,21 @@ async def daftar(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
+@bot.tree.command(name="status", description="Cek kondisi poller")
+async def status_cmd(interaction: discord.Interaction):
+    lines = []
+    for code, name in EVENTS.items():
+        s = poll_status.get(code)
+        if not s:
+            lines.append(f"⚪ **{name}** — belum ada data")
+            continue
+        txt = f"{'🟢' if s['ok'] else '🔴'} **{name}** — <t:{int(s['at'])}:R>"
+        if not s["ok"]:
+            txt += f"\n   ↳ gagal {s['fails']}x: {s['error']}"
+        lines.append(txt)
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
 # ------------------------------------------------------------------ rate-limited send
 async def safe_send(channel, **kwargs):
     now = time.time()
@@ -739,6 +754,8 @@ async def poll_loop():
                     print(f"[POLL] {EVENTS[code]} gagal ({fails[code]}x): {reason}")
                     if "429" in reason:
                         extra_sleep = max(extra_sleep, 60.0)
+                    if "403" in reason:
+                        extra_sleep = max(extra_sleep, min(600.0, 30.0 * 2 ** (fails[code] - 1)))
                     if fails[code] >= POLL_FAIL_ALERT and code not in alerted:
                         alerted.add(code)
                         await poll_alert(
@@ -831,6 +848,22 @@ def process_report(code, lanes):
                 )
 
     return len(restocks), len(new_sessions), len(vip_active)
+
+
+def record_remote_poll(code, error=""):
+    prev = poll_status.get(code) or {}
+    fails = prev.get("fails", 0) + 1 if error else 0
+    poll_status[code] = {"ok": not error, "at": time.time(), "error": error, "fails": fails}
+
+    if bot.main_loop is None or not bot.is_ready():
+        return
+    if error and fails == POLL_FAIL_ALERT:
+        text = f"⚠️ Worker gagal mengambil **{EVENTS[code]}** {fails}x berturut-turut: {error}"
+    elif not error and prev.get("fails", 0) >= POLL_FAIL_ALERT:
+        text = f"✅ Pemantauan **{EVENTS[code]}** pulih kembali."
+    else:
+        return
+    asyncio.run_coroutine_threadsafe(poll_alert(text), bot.main_loop)
 
 
 async def save_state_loop():
@@ -939,11 +972,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"ok": False, "error": f"Kode event tidak diizinkan: {code}"})
             if not page_url.startswith("https://jkt48.com/purchase/exclusive"):
                 return self.send_json(400, {"ok": False, "error": "URL halaman tidak diizinkan."})
+            if data.get("error"):
+                record_remote_poll(code, " ".join(str(data["error"]).split())[:200])
+                return self.send_json(200, {"ok": True, "code": code, "recorded": "error"})
             if not isinstance(lanes, list) or len(lanes) > 1000:
                 return self.send_json(400, {"ok": False, "error": "Daftar jalur tidak valid."})
 
             lanes = [l for l in lanes if isinstance(l, dict)]
             restocks, new_sessions, vip = process_report(code, lanes)
+            record_remote_poll(code)
 
             print(f"[JKT48] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
             self.send_json(200, {

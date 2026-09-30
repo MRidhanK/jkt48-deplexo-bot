@@ -50,6 +50,7 @@ main{max-width:1100px;margin:0 auto;padding:14px 16px 90px}
 .help dt{font-weight:600;color:var(--text);white-space:nowrap}
 .help dd{margin:0}
 @media(max-width:600px){.help dl{grid-template-columns:1fr}.help dd{margin-bottom:4px}}
+#pollBanner{padding:10px 14px;color:var(--warn);border-color:var(--warn);font-size:13px}
 .fi{display:flex;gap:8px;padding:6px 0;border-top:1px solid var(--line);cursor:pointer;flex-wrap:wrap;color:var(--text)}
 .fi:first-child{border-top:0}.fi time{color:var(--mut);min-width:44px}.fi b{color:var(--ok)}
 .fi small{color:var(--mut);flex-basis:100%}
@@ -132,12 +133,15 @@ main{max-width:1100px;margin:0 auto;padding:14px 16px 90px}
   <div class="row"><div class="opts">
     <label class="pill"><input type="checkbox" id="only"> hanya tersedia</label>
     <label class="pill"><input type="checkbox" id="favOnly"> ⭐ favorit saja</label>
+    <label class="pill"><input type="checkbox" id="hotOnly"> ▲ restock baru</label>
     <label class="pill"><input type="checkbox" id="beep"> 🔔 suara</label>
     <label class="pill"><input type="checkbox" id="notif"> 📲 notifikasi</label>
     <button class="btn" id="toggleAll" style="padding:3px 10px;font-size:12px">Buka semua</button>
   </div></div>
 </header>
 <main>
+  <div class="help" id="pollBanner" hidden></div>
+
   <div class="sum">
     <div><b id="s-mem">-</b><span>member</span></div>
     <div><b id="s-ses">-</b><span>sesi (tersedia / total)</span></div>
@@ -264,12 +268,16 @@ function render() {
   $("buy").href = "https://jkt48.com/purchase/exclusive?code=" + encodeURIComponent(tab);
 
   const ev = data.events[tab], now = data.now, query = $("q").value.trim().toLowerCase();
-  const only = $("only").checked, favOnly = $("favOnly").checked, dateSel = $("date").value;
+  const only = $("only").checked, favOnly = $("favOnly").checked, hotOnly = $("hotOnly").checked, dateSel = $("date").value;
   const photos = data.photos || {};
   const age = ev.updated ? now - ev.updated : null;
   const st = $("status");
   st.className = "pill " + (age == null ? "bad" : age > data.stale_after ? "warn" : "ok");
   st.textContent = age == null ? "belum ada data" : (age > data.stale_after ? "⚠ data lama · " : "● live · ") + ago(ev.updated, now);
+
+  const ps = ((data.poller || {}).status || {})[tab], pb = $("pollBanner");
+  if (ps && !ps.ok) { pb.hidden = false; pb.textContent = "⚠️ Poller gagal " + ps.fails + "x: " + ps.error; }
+  else pb.hidden = true;
 
   const all = ev.lanes, tot = stats(all);
   $("s-mem").textContent = new Set(all.map(l => l.member)).size;
@@ -294,6 +302,7 @@ function render() {
     if (only && l.quota <= 0) continue;
     if (dateSel && l.date !== dateSel) continue;
     if (favOnly && !favs.has(norm(l.member))) continue;
+    if (hotOnly && !(l.restock_at && now - l.restock_at < NEW_WINDOW && l.quota > 0)) continue;
     if (!groups.has(l.member)) groups.set(l.member, []);
     groups.get(l.member).push(l);
   }
@@ -429,7 +438,7 @@ async function load() {
 }
 
 // ---- preferensi tersimpan
-for (const id of ["only", "favOnly", "beep", "notif"]) {
+for (const id of ["only", "favOnly", "hotOnly", "beep", "notif"]) {
   $(id).checked = !!store.get(id, false);
   $(id).addEventListener("change", () => { store.set(id, $(id).checked); render(); });
 }
