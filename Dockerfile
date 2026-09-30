@@ -5,7 +5,8 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir -U discord.py
 
-COPY server/discord_notifier.py server/subscriptions.json ./
+# Copy SEMUA file dari folder server/ (termasuk dashboard.html)
+COPY server/ ./
 
 EXPOSE 8765
 CMD ["python", "-u", "discord_notifier.py"]
