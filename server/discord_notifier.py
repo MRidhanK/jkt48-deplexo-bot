@@ -6,6 +6,7 @@ import random
 import threading
 import time
 import traceback
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -31,6 +32,10 @@ STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "150"))
 MIN_SEND_GAP = float(os.environ.get("MIN_SEND_GAP", "1.2"))
 MAX_CONCURRENT_SPAM = int(os.environ.get("MAX_CONCURRENT_SPAM", "5"))
 RESTOCK_COOLDOWN = int(os.environ.get("RESTOCK_COOLDOWN", "300"))
+
+# Riwayat kuota (untuk grafik & kecepatan terjual)
+HIST_KEEP_SECONDS = int(os.environ.get("HIST_KEEP_SECONDS", "86400"))  # simpan 24 jam
+HIST_MAXLEN = 1500
 
 EVENTS = {"EX5B99": "2 Shoot", "EX24AE": "MNG"}
 
@@ -76,7 +81,8 @@ STATE_FILE = Path(os.environ.get("STATE_FILE") or SUBS_FILE.with_name("state.jso
 
 DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()
 
-# ------------------------------------------------------------------ FIX: cari dashboard.html di beberapa lokasi
+
+# ------------------------------------------------------------------ cari dashboard.html di beberapa lokasi
 def _resolve_dashboard_file() -> Path:
     # 1. Env var eksplisit
     env_path = os.environ.get("DASHBOARD_FILE", "").strip()
@@ -88,11 +94,11 @@ def _resolve_dashboard_file() -> Path:
 
     here = Path(__file__).resolve().parent
     candidates = [
-        here / "dashboard.html",                 # sebelah script
-        here / "server" / "dashboard.html",      # script di root, dashboard di server/
+        here / "dashboard.html",                    # sebelah script
+        here / "server" / "dashboard.html",         # script di root, dashboard di server/
         here.parent / "server" / "dashboard.html",  # script di subfolder, dashboard di ../server/
-        here.parent / "dashboard.html",          # dashboard di parent
-        Path.cwd() / "dashboard.html",           # current working dir
+        here.parent / "dashboard.html",             # dashboard di parent
+        Path.cwd() / "dashboard.html",              # current working dir
         Path.cwd() / "server" / "dashboard.html",
     ]
     for c in candidates:
@@ -144,11 +150,53 @@ last_restock = {}
 lane_state = {}
 spam_tasks = {}
 
+history = {}     # (code, sdc) -> deque[(ts, quota)]
+so_after = {}    # (code, sdc) -> detik dari restock sampai sold out
+
 subs_lock = threading.Lock()
 poll_status = {}
 
 _send_lock = threading.Lock()
 _last_send_time = [0.0]
+
+
+# ------------------------------------------------------------------ riwayat kuota & kecepatan terjual
+def record_history(key, quota, now):
+    dq = history.setdefault(key, deque(maxlen=HIST_MAXLEN))
+    if not dq or dq[-1][1] != quota:
+        dq.append((now, quota))
+    # buang titik lama, sisakan satu titik sebelum batas sebagai baseline
+    while len(dq) > 1 and dq[1][0] < now - HIST_KEEP_SECONDS:
+        dq.popleft()
+
+
+def sold_in(dq, since):
+    sold, prev = 0, None
+    for ts, q in dq:
+        if prev is not None and ts >= since and q < prev:
+            sold += prev - q
+        prev = q
+    return sold
+
+
+def speed_stats(key, quota, now):
+    dq = history.get(key)
+    if not dq:
+        return {"sold_10m": 0, "sold_1h": 0, "rate": 0, "eta": None,
+                "peak": quota, "pct_sold": 0, "so_after": so_after.get(key)}
+    s10 = sold_in(dq, now - 600)
+    s60 = sold_in(dq, now - 3600)
+    rate = s10 / 10 if s10 else s60 / 60          # tiket per menit
+    peak = max(q for _, q in dq)
+    return {
+        "sold_10m": s10,
+        "sold_1h": s60,
+        "rate": round(rate, 2),
+        "eta": round(quota / rate, 1) if rate > 0 and quota > 0 else None,  # menit
+        "peak": peak,
+        "pct_sold": round((1 - quota / peak) * 100) if peak > 0 else 0,
+        "so_after": so_after.get(key),
+    }
 
 
 def load_subs():
@@ -177,7 +225,13 @@ def load_state():
         for k, v in (raw.get("last_restock") or {}).items():
             code, _, sdc = k.partition("|")
             last_restock[(code, sdc)] = v
-        print(f"[STATE] Dimuat: {len(quota_state)} lane, {len(baselined)} event")
+        history.clear()
+        for k, v in (raw.get("history") or {}).items():
+            code, _, sdc = k.partition("|")
+            history[(code, sdc)] = deque(
+                ((float(t), int(q)) for t, q in v), maxlen=HIST_MAXLEN
+            )
+        print(f"[STATE] Dimuat: {len(quota_state)} lane, {len(baselined)} event, {len(history)} riwayat")
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
@@ -189,6 +243,10 @@ def save_state():
                 "quota_state": {f"{c}|{s}": q for (c, s), q in quota_state.items()},
                 "baselined": list(baselined),
                 "last_restock": {f"{c}|{s}": t for (c, s), t in last_restock.items()},
+                "history": {
+                    f"{c}|{s}": [[round(t), q] for t, q in dq]
+                    for (c, s), dq in history.items()
+                },
             }
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
@@ -233,6 +291,20 @@ def new_session_embed(code, lane):
     ).add_field(name="📊 Kuota", value=f"`{quota}`", inline=True
     ).add_field(name="💰 Harga", value=format_rupiah(lane.get("price")), inline=True
     ).add_field(name="🧩 Kode sesi", value=f"`{lane.get('session_detail_code')}`", inline=False)
+
+
+def buy_url(code):
+    return f"https://jkt48.com/purchase/exclusive?code={code}"
+
+
+def buy_view(code):
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(
+        label="🛒 Beli sekarang",
+        style=discord.ButtonStyle.link,
+        url=buy_url(code),
+    ))
+    return view
 
 
 # ------------------------------------------------------------------ bot
@@ -550,6 +622,7 @@ async def notify_subscribers(code, lanes, deltas=None):
                 channel,
                 content=f"<@{uid}> 🔔 **Restock!**",
                 embeds=[restock_embed(code, lane, delta) for lane in chunk],
+                view=buy_view(code),
                 allowed_mentions=discord.AllowedMentions(
                     users=[discord.Object(id=int(uid))]
                 ),
@@ -565,6 +638,7 @@ async def notify_new_sessions(code, lanes):
             channel,
             content=f"🆕 **Sesi/Jalur baru terdeteksi di {EVENTS.get(code, code)}!**",
             embed=new_session_embed(code, lane),
+            view=buy_view(code),
         )
     if len(lanes) > 10:
         await safe_send(
@@ -603,6 +677,7 @@ async def spam_loop_2shoot(code, lane, delta):
                     f"({lane.get('session_label')}) · 📈 +{delta}"
                 ),
                 embed=restock_embed(code, lane_now, delta),
+                view=buy_view(code),
                 allowed_mentions=vip_allowed(),
             )
             sent += 1
@@ -797,6 +872,15 @@ def process_report(code, lanes):
             quota_state[key] = quota
             lane_state[key] = {**lane, "available_quota": quota}
 
+            # riwayat kuota + durasi sampai sold out
+            record_history(key, quota, now)
+            if prev is not None and prev > 0 and quota == 0:
+                started = last_restock.get(key)
+                if started and now - started < 21600:
+                    so_after[key] = now - started
+            elif quota > 0:
+                so_after.pop(key, None)
+
             is_new_session = prev is None and not first_scan
 
             delta = 0
@@ -883,15 +967,17 @@ def snapshot():
             for (c, sdc), v in lane_state.items():
                 if c != code:
                     continue
+                quota = parse_quota(v.get("available_quota")) or 0
                 lanes.append({
                     "member": v.get("member_name"), "lane": v.get("label"),
-                    "quota": parse_quota(v.get("available_quota")) or 0,
+                    "quota": quota,
                     "price": v.get("price"), "sdc": sdc,
                     "session": v.get("session_label"), "date": v.get("session_date"),
                     "start": hhmm(v.get("session_start_time")),
                     "end": hhmm(v.get("session_end_time")),
                     "restock_at": last_restock.get((c, sdc)),
                     "vip": is_vip(code, v),
+                    **speed_stats((c, sdc), quota, now),
                 })
             events[code] = {"name": name, "updated": last_report.get(code), "lanes": lanes}
     return {"now": now, "stale_after": STALE_SECONDS, "events": events,
@@ -934,6 +1020,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/api/lanes":
             return self.send_json(200, snapshot())
+
+        if url.path == "/api/history":
+            qs = parse_qs(url.query)
+            code = (qs.get("code") or [""])[0]
+            sdc = (qs.get("sdc") or [""])[0]
+            with lock:
+                pts = [[round(t), q] for t, q in history.get((code, sdc), [])]
+            return self.send_json(200, {"now": time.time(), "points": pts})
+
         if url.path in ("/", "/index.html"):
             try:
                 return self.send_html(200, DASHBOARD_FILE.read_bytes())
