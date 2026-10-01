@@ -15,6 +15,8 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+import random
+from curl_cffi import requests as cffi_requests
 
 import discord
 from discord import app_commands
@@ -936,6 +938,82 @@ async def save_state_loop():
         save_state()
 
 
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
+JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
+IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
+
+
+def api_url(code):
+    return f"https://jkt48.com/api/v1/exclusives/{code}/bonus?lang=id"
+
+
+def flatten(payload):
+    lanes = []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    for sess in data if isinstance(data, list) else []:
+        sess = sess or {}
+        for m in sess.get("session_members") or []:
+            if not m or not m.get("session_detail_code"):
+                continue
+            lanes.append({
+                "label": str(m.get("label") or "-"),
+                "price": m.get("price"),
+                "member_name": " ".join(str(m.get("member_name") or "").split()),
+                "session_detail_code": str(m["session_detail_code"]).strip(),
+                "available_quota": m.get("available_quota"),
+                "session_label": str(sess.get("label") or "-"),
+                "session_date": str(sess.get("date") or "-"),
+                "session_start_time": str(sess.get("start_time") or ""),
+                "session_end_time": str(sess.get("end_time") or ""),
+            })
+    return lanes
+
+
+def poll_once(session, code):
+    """Return True jika terdeteksi blokir (403/429/bukan JSON)."""
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+        "Referer": buy_url(code),
+    }
+    if JKT48_COOKIE:
+        headers["Cookie"] = JKT48_COOKIE
+
+    r = session.get(api_url(code), headers=headers, timeout=15)
+    if r.status_code != 200:
+        record_remote_poll(code, f"HTTP {r.status_code}")
+        return r.status_code in (403, 429)
+
+    try:
+        payload = r.json()
+    except ValueError:
+        snippet = " ".join(r.text.split())[:80]
+        record_remote_poll(code, f"bukan JSON: {snippet}")
+        return True
+
+    lanes = flatten(payload)
+    process_report(code, lanes)
+    record_remote_poll(code)
+    print(f"[POLL] {EVENTS[code]}: {len(lanes)} jalur")
+    return False
+
+
+def poll_loop():
+    session = cffi_requests.Session(impersonate=IMPERSONATE)
+    backoff = 0
+    while True:
+        blocked = False
+        for code in EVENTS:
+            try:
+                blocked = poll_once(session, code) or blocked
+            except Exception as e:
+                record_remote_poll(code, f"{type(e).__name__}: {e}"[:200])
+            time.sleep(random.uniform(3, 8))
+
+        # diblokir: mundur bertahap (maks 15 menit); sukses: reset
+        backoff = min(max(backoff * 2, 120), 900) if blocked else 0
+        time.sleep(POLL_INTERVAL + backoff + random.uniform(0, 10))
+
 # ------------------------------------------------------------------ dashboard API
 def poller_info():
     # Dipertahankan agar kompatibel dengan dashboard.html: sumber data = worker.
@@ -1096,6 +1174,7 @@ def main():
         print("[WARNING] Set env DASHBOARD_FILE ke path lengkap file dashboard.html")
 
     threading.Thread(target=run_http, daemon=True).start()
+    threading.Thread(target=poll_loop, daemon=True).start()
     bot.run(TOKEN)
 
 
