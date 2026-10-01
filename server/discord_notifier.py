@@ -40,7 +40,7 @@ HIST_MAXLEN = 1500
 EVENTS = {"EX5B99": "2 Shoot", "EX24AE": "MNG"}
 
 # ------------------------------------------------------------------ poller server-side
-POLL_ENABLED = os.environ.get("POLL_ENABLED", "1") != "0"
+POLL_ENABLED = os.environ.get("POLL_ENABLED", "0") != "0"
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "20"))
 POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))
 POLL_EVENTS = [
@@ -1232,4 +1232,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 
