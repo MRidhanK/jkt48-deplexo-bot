@@ -149,6 +149,8 @@ known_members = {}
 last_restock = {}
 lane_state = {}
 spam_tasks = {}
+recent_notifications = {}
+NOTIFY_DEDUP_SECONDS = 30
 
 history = {}     # (code, sdc) -> deque[(ts, quota)]
 so_after = {}    # (code, sdc) -> detik dari restock sampai sold out
@@ -929,7 +931,13 @@ async def poll_loop():
                 try:
                     lanes = await fetch_event(http, code)
                     restocks, new_sessions, vip = process_report(code, lanes)
-                    poll_status[code] = {"ok": True, "at": time.time(), "error": "", "fails": 0}
+                    poll_status[code] = {
+                        "ok": True,
+                        "at": time.time(),
+                        "error": "",
+                        "fails": 0,
+                        "source": "local"
+                    }
                     print(f"[POLL] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
 
                     if code in alerted:
@@ -941,7 +949,13 @@ async def poll_loop():
                 except Exception as error:
                     fails[code] += 1
                     reason = str(error) if isinstance(error, PollError) else f"{type(error).__name__}: {error}"
-                    poll_status[code] = {"ok": False, "at": time.time(), "error": reason, "fails": fails[code]}
+                    poll_status[code] = {
+                        "ok": False,
+                        "at": time.time(),
+                        "error": reason,
+                        "fails": fails[code],
+                        "source": "local"
+                    }
                     print(f"[POLL] {EVENTS[code]} gagal ({fails[code]}x): {reason}")
                     if "429" in reason:
                         extra_sleep = max(extra_sleep, 60.0)
@@ -957,100 +971,326 @@ async def poll_loop():
 
             await asyncio.sleep(POLL_INTERVAL + random.uniform(0, 3) + extra_sleep)
 
+def should_send_notification(code, sdc, prev, quota, now):
+    notify_key = (
+        code,
+        sdc,
+        prev,
+        quota
+    )
 
+    last_sent = recent_notifications.get(
+        notify_key,
+        0
+    )
+
+    if now - last_sent < NOTIFY_DEDUP_SECONDS:
+        return False
+
+    recent_notifications[
+        notify_key
+    ] = now
+
+    # cleanup cache lama
+    for k, ts in list(
+        recent_notifications.items()
+    ):
+        if now - ts > 600:
+            recent_notifications.pop(
+                k,
+                None
+            )
+
+    return True
 # ------------------------------------------------------------------ proses laporan
 def process_report(code, lanes):
+
     restocks = []
     new_sessions = []
     vip_active = []
     deltas = {}
+
     now = time.time()
 
     with lock:
+
         first_scan = code not in baselined
+
         baselined.add(code)
+
         last_report[code] = now
-        members = known_members.setdefault(code, set())
+
+        members = known_members.setdefault(
+            code,
+            set()
+        )
 
         for lane in lanes:
-            sdc = str(lane.get("session_detail_code") or "").strip()
-            quota = parse_quota(lane.get("available_quota"))
-            name = str(lane.get("member_name") or "").strip()
 
-            if not sdc or sdc == "Tidak diketahui" or quota is None:
+            sdc = str(
+                lane.get(
+                    "session_detail_code"
+                ) or ""
+            ).strip()
+
+            quota = parse_quota(
+                lane.get(
+                    "available_quota"
+                )
+            )
+
+            name = str(
+                lane.get(
+                    "member_name"
+                ) or ""
+            ).strip()
+
+            if (
+                not sdc
+                or sdc == "Tidak diketahui"
+                or quota is None
+            ):
                 continue
 
-            if name and name != "Tidak diketahui":
+            if (
+                name
+                and name != "Tidak diketahui"
+            ):
                 members.add(name)
 
-            key = (code, sdc)
-            prev = quota_state.get(key)
+            key = (
+                code,
+                sdc
+            )
+
+            prev = quota_state.get(
+                key
+            )
+
             quota_state[key] = quota
-            lane_state[key] = {**lane, "available_quota": quota}
 
-            # riwayat kuota + durasi sampai sold out
-            record_history(key, quota, now)
-            if prev is not None and prev > 0 and quota == 0:
-                started = last_restock.get(key)
-                if started and now - started < 21600:
-                    so_after[key] = now - started
+            lane_state[key] = {
+                **lane,
+                "available_quota": quota
+            }
+
+            record_history(
+                key,
+                quota,
+                now
+            )
+
+            if (
+                prev is not None
+                and prev > 0
+                and quota == 0
+            ):
+
+                started = last_restock.get(
+                    key
+                )
+
+                if (
+                    started
+                    and now - started < 21600
+                ):
+                    so_after[key] = (
+                        now - started
+                    )
+
             elif quota > 0:
-                so_after.pop(key, None)
 
-            is_new_session = prev is None and not first_scan
+                so_after.pop(
+                    key,
+                    None
+                )
+
+            is_new_session = (
+                prev is None
+                and not first_scan
+            )
 
             delta = 0
+
             is_restock = False
+
             if quota > 0:
+
                 if prev is None:
+
                     if not first_scan:
+
                         is_restock = True
                         delta = quota
+
                 elif quota > prev:
+
                     is_restock = True
                     delta = quota - prev
 
             if is_restock:
-                last = last_restock.get(key, 0)
-                if now - last >= RESTOCK_COOLDOWN:
-                    restocks.append(lane)
-                    deltas[key] = delta
-                    last_restock[key] = now
 
-                    if code == "EX5B99" and is_vip(code, lane):
-                        vip_active.append((lane, delta))
+                # ==================================
+                # Hybrid Worker + Poller Dedup
+                # ==================================
 
-            if is_new_session and quota > 0:
-                new_sessions.append(lane)
+                if not should_send_notification(
+                    code,
+                    sdc,
+                    prev,
+                    quota,
+                    now
+                ):
+                    continue
 
-    if bot.main_loop is None or not bot.is_ready():
-        return len(restocks), len(new_sessions), len(vip_active)
-
-    if code == "EX5B99":
-        if restocks:
-            asyncio.run_coroutine_threadsafe(
-                notify_subscribers(code, restocks, deltas), bot.main_loop
-            )
-        if new_sessions:
-            asyncio.run_coroutine_threadsafe(
-                notify_new_sessions(code, new_sessions), bot.main_loop
-            )
-        for lane, delta in vip_active:
-            bot.main_loop.call_soon_threadsafe(
-                ensure_spam_2shoot, code, dict(lane), delta
-            )
-    elif code == "EX24AE":
-        if restocks or new_sessions:
-            combined = restocks + [l for l in new_sessions if l not in restocks]
-            if combined:
-                asyncio.run_coroutine_threadsafe(
-                    notify_subscribers(code, combined, deltas), bot.main_loop
+                last = last_restock.get(
+                    key,
+                    0
                 )
 
-    return len(restocks), len(new_sessions), len(vip_active)
+                if (
+                    now - last
+                    >= RESTOCK_COOLDOWN
+                ):
 
+                    restocks.append(
+                        lane
+                    )
 
-def record_remote_poll(code, error=""):
+                    deltas[key] = delta
+
+                    last_restock[key] = now
+
+                    if (
+                        code == "EX5B99"
+                        and is_vip(
+                            code,
+                            lane
+                        )
+                    ):
+                        vip_active.append(
+                            (
+                                lane,
+                                delta
+                            )
+                        )
+
+            if (
+                is_new_session
+                and quota > 0
+            ):
+                new_sessions.append(
+                    lane
+                )
+
+    if (
+        bot.main_loop is None
+        or not bot.is_ready()
+    ):
+        return (
+            len(restocks),
+            len(new_sessions),
+            len(vip_active)
+        )
+
+    if code == "EX5B99":
+
+        if restocks:
+
+            asyncio.run_coroutine_threadsafe(
+                notify_subscribers(
+                    code,
+                    restocks,
+                    deltas
+                ),
+                bot.main_loop
+            )
+
+        if new_sessions:
+
+            asyncio.run_coroutine_threadsafe(
+                notify_new_sessions(
+                    code,
+                    new_sessions
+                ),
+                bot.main_loop
+            )
+
+        for lane, delta in vip_active:
+
+            bot.main_loop.call_soon_threadsafe(
+                ensure_spam_2shoot,
+                code,
+                dict(lane),
+                delta
+            )
+
+    elif code == "EX24AE":
+
+        if (
+            restocks
+            or new_sessions
+        ):
+
+            combined = (
+                restocks
+                + [
+                    l
+                    for l in new_sessions
+                    if l not in restocks
+                ]
+            )
+
+            if combined:
+
+                asyncio.run_coroutine_threadsafe(
+                    notify_subscribers(
+                        code,
+                        combined,
+                        deltas
+                    ),
+                    bot.main_loop
+                )
+
+    return (
+        len(restocks),
+        len(new_sessions),
+        len(vip_active)
+    )
+
+def record_remote_poll(code, source="worker", error=""):
+    prev = poll_status.get(code) or {}
+
+    fails = prev.get("fails", 0) + 1 if error else 0
+
+    poll_status[code] = {
+        "ok": not error,
+        "at": time.time(),
+        "error": error,
+        "fails": fails,
+        "source": source,
+    }
+
+    if bot.main_loop is None or not bot.is_ready():
+        return
+
+    if error and fails == POLL_FAIL_ALERT:
+        text = (
+            f"⚠️ {source.upper()} gagal mengambil "
+            f"**{EVENTS[code]}** {fails}x berturut-turut: {error}"
+        )
+    elif not error and prev.get("fails", 0) >= POLL_FAIL_ALERT:
+        text = (
+            f"✅ Pemantauan **{EVENTS[code]}** pulih kembali "
+            f"({source.upper()})."
+        )
+    else:
+        return
+
+    asyncio.run_coroutine_threadsafe(
+        poll_alert(text),
+        bot.main_loop
+    )
     prev = poll_status.get(code) or {}
     fails = prev.get("fails", 0) + 1 if error else 0
     poll_status[code] = {"ok": not error, "at": time.time(), "error": error, "fails": fails}
@@ -1096,8 +1336,19 @@ def snapshot():
                     **speed_stats((c, sdc), quota, now),
                 })
             events[code] = {"name": name, "updated": last_report.get(code), "lanes": lanes}
-    return {"now": now, "stale_after": STALE_SECONDS, "events": events,
-            "poller": {"enabled": POLL_ENABLED, "status": poll_status}}
+            return {
+                "now": now,
+                "stale_after": STALE_SECONDS,
+                "events": events,
+                "poller": {
+                    "enabled": POLL_ENABLED,
+                    "status": poll_status,
+                    "mode":
+                        "hybrid"
+                        if POLL_ENABLED
+                        else "worker"
+                }
+            }
 
 
 # ------------------------------------------------------------------ HTTP
@@ -1184,14 +1435,23 @@ class Handler(BaseHTTPRequestHandler):
             if not page_url.startswith("https://jkt48.com/purchase/exclusive"):
                 return self.send_json(400, {"ok": False, "error": "URL halaman tidak diizinkan."})
             if data.get("error"):
-                record_remote_poll(code, " ".join(str(data["error"]).split())[:200])
+                record_remote_poll(
+                    code,
+                    source="worker",
+                    error=" ".join(
+                        str(data["error"]).split()
+                    )[:200]
+                )
                 return self.send_json(200, {"ok": True, "code": code, "recorded": "error"})
             if not isinstance(lanes, list) or len(lanes) > 1000:
                 return self.send_json(400, {"ok": False, "error": "Daftar jalur tidak valid."})
 
             lanes = [l for l in lanes if isinstance(l, dict)]
             restocks, new_sessions, vip = process_report(code, lanes)
-            record_remote_poll(code)
+            record_remote_poll(
+                code,
+                source="worker"
+            )
 
             print(f"[JKT48] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
             self.send_json(200, {
