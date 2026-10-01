@@ -1,15 +1,17 @@
 {
   "manifest_version": 3,
   "name": "JKT48 Radar Bridge",
-  "version": "1.0.0",
-  "description": "Meneruskan data kuota dari halaman yang kamu buka ke notifier pribadi.",
-  "permissions": [],
-  "host_permissions": ["https://jkt48.com/*", "https://GANTI-DENGAN-DOMAIN-NOTIFIER/*"],
+  "version": "1.0.1",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://jkt48.com/*",
+    "https://jkt-bot-2shoot.de.deplexo.com/*"
+  ],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
       "matches": ["https://jkt48.com/purchase/exclusive*"],
-      "js": ["hook.js"],
+      "js": ["page_hook.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
