@@ -32,7 +32,7 @@ VIP_FALLBACK_TEXT = os.environ.get("VIP_FALLBACK_TEXT", "")
 SPAM_INTERVAL = float(os.environ.get("SPAM_INTERVAL", "4"))
 SPAM_MAX = int(os.environ.get("SPAM_MAX", "20"))
 # Worker lapor tiap ~1 menit (cron), jadi 150 detik masih aman.
-STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "60"))
+STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "50"))
 
 MIN_SEND_GAP = float(os.environ.get("MIN_SEND_GAP", "1.2"))
 MAX_CONCURRENT_SPAM = int(os.environ.get("MAX_CONCURRENT_SPAM", "5"))
