@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "JKT48 Radar Bridge",
   "version": "1.0.1",
-  "permissions": ["storage","alarms"],
+  "permissions": ["storage"],
   "host_permissions": [
     "https://jkt48.com/*",
     "https://jkt-bot-2shoot.de.deplexo.com/*"
