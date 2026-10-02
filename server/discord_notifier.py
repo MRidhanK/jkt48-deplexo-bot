@@ -987,31 +987,108 @@ def flatten(payload):
 
 
 def poll_once(session, code):
-    """Return True jika terdeteksi blokir (403/429/bukan JSON)."""
+    """
+    Return True jika terdeteksi blokir Cloudflare (403/429/challenge).
+    Return False jika polling berhasil.
+    """
+
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
         "Referer": buy_url(code),
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
+
     if JKT48_COOKIE:
         headers["Cookie"] = JKT48_COOKIE
 
-    r = session.get(api_url(code), headers=headers, timeout=15)
+    try:
+        r = session.get(
+            api_url(code),
+            headers=headers,
+            timeout=15,
+        )
+    except Exception as e:
+        msg = f"{type(e).__name__}: {str(e)[:120]}"
+        record_remote_poll(code, msg)
+        print(f"[POLL] {code} ERROR -> {msg}")
+        return True
+
+    cf = r.headers.get("cf-mitigated", "")
+    ray = r.headers.get("cf-ray", "")
+    server = r.headers.get("server", "")
+
     if r.status_code != 200:
-        record_remote_poll(code, f"HTTP {r.status_code}")
+        msg = f"HTTP {r.status_code}"
+
+        if server:
+            msg += f" server={server}"
+
+        if cf:
+            msg += f" cf={cf}"
+
+        if ray:
+            msg += f" ray={ray}"
+
+        record_remote_poll(code, msg)
+
+        print(
+            f"[POLL] {EVENTS.get(code, code)} "
+            f"-> {msg}"
+        )
+
         return r.status_code in (403, 429)
 
     try:
         payload = r.json()
+
     except ValueError:
-        snippet = " ".join(r.text.split())[:80]
-        record_remote_poll(code, f"bukan JSON: {snippet}")
+        snippet = " ".join(r.text.split())[:120]
+
+        msg = f"200 tapi bukan JSON"
+
+        if cf:
+            msg += f" cf={cf}"
+
+        if ray:
+            msg += f" ray={ray}"
+
+        msg += f" body={snippet}"
+
+        record_remote_poll(code, msg)
+
+        print(
+            f"[POLL] {EVENTS.get(code, code)} "
+            f"-> {msg}"
+        )
+
         return True
 
-    lanes = flatten(payload)
+    try:
+        lanes = flatten(payload)
+
+    except Exception as e:
+        msg = f"flatten error: {type(e).__name__}: {e}"
+        record_remote_poll(code, msg)
+
+        print(
+            f"[POLL] {EVENTS.get(code, code)} "
+            f"-> {msg}"
+        )
+
+        return False
+
     process_report(code, lanes)
+
     record_remote_poll(code)
-    print(f"[POLL] {EVENTS[code]}: {len(lanes)} jalur")
+
+    print(
+        f"[POLL] {EVENTS.get(code, code)} "
+        f"OK lanes={len(lanes)} "
+        f"ray={ray}"
+    )
+
     return False
 
 
