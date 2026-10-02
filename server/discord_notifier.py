@@ -2,9 +2,10 @@
 JKT48 Ticket Radar - bot Discord + dashboard.
 
 Sumber data HANYA dari Cloudflare Worker (atau klien lain) yang POST ke /notify.
-Server ini tidak lagi memanggil jkt48.com sendiri.
+Server ini juga bisa polling langsung ke jkt48.com kalau POLL_ENABLED=1.
 """
 import asyncio
+import concurrent.futures
 import hmac
 import json
 import os
@@ -938,12 +939,18 @@ async def save_state_loop():
         save_state()
 
 
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 
 POLL_ENABLED = os.environ.get("POLL_ENABLED", "1").strip().lower() not in ("0", "false", "no", "")
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
+
+# Jitter kecil supaya tidak terlalu "kaku", tapi tidak bikin interval molor.
+POLL_JITTER_MAX = float(os.environ.get("POLL_JITTER_MAX", "2"))
+# Jeda antar-event DIHAPUS karena polling paralel (thread pool).
+EVENT_GAP_MIN = float(os.environ.get("EVENT_GAP_MIN", "0"))
+EVENT_GAP_MAX = float(os.environ.get("EVENT_GAP_MAX", "0"))
+
 
 def api_url(code):
     return f"https://jkt48.com/api/v1/exclusives/{code}/bonus?lang=id"
@@ -1001,20 +1008,35 @@ def poll_once(session, code):
 
 
 def poll_loop():
+    """
+    Polling paralel untuk semua event supaya siklus konsisten ~POLL_INTERVAL detik.
+    Sebelumnya sequential + jeda 3-8s per event bikin siklus molor 70-90s.
+    """
     session = cffi_requests.Session(impersonate=IMPERSONATE)
     backoff = 0
     while True:
+        started = time.time()
         blocked = False
-        for code in EVENTS:
-            try:
-                blocked = poll_once(session, code) or blocked
-            except Exception as e:
-                record_remote_poll(code, f"{type(e).__name__}: {e}"[:200])
-            time.sleep(random.uniform(3, 8))
+
+        # Polling paralel: 1 thread per event, share session (curl_cffi thread-safe untuk GET).
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(EVENTS)) as ex:
+            futures = {ex.submit(poll_once, session, code): code for code in EVENTS}
+            for fut in concurrent.futures.as_completed(futures):
+                code = futures[fut]
+                try:
+                    blocked = fut.result() or blocked
+                except Exception as e:
+                    record_remote_poll(code, f"{type(e).__name__}: {e}"[:200])
+
+        # Hitung sisa waktu supaya start-to-start = POLL_INTERVAL (minimum 5s).
+        elapsed = time.time() - started
+        jitter = random.uniform(0, POLL_JITTER_MAX)
+        sleep_for = max(5.0, POLL_INTERVAL - elapsed + jitter + backoff)
+        time.sleep(sleep_for)
 
         # diblokir: mundur bertahap (maks 15 menit); sukses: reset
         backoff = min(max(backoff * 2, 120), 900) if blocked else 0
-        time.sleep(POLL_INTERVAL + backoff + random.uniform(0, 10))
+
 
 # ------------------------------------------------------------------ dashboard API
 def poller_info():
@@ -1165,7 +1187,7 @@ def main():
         raise SystemExit("Set DISCORD_BOT_TOKEN dan DISCORD_CHANNEL_ID terlebih dahulu.")
     if not NOTIFY_SECRET:
         print("[INFO] NOTIFY_SECRET kosong: endpoint /notify dinonaktifkan (hanya polling langsung).")
-    ...
+    load_state()
     threading.Thread(target=run_http, daemon=True).start()
     if POLL_ENABLED:
         threading.Thread(target=poll_loop, daemon=True).start()
