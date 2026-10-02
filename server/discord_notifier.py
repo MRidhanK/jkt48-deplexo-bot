@@ -942,6 +942,8 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 
+POLL_ENABLED = os.environ.get("POLL_ENABLED", "1").strip().lower() not in ("0", "false", "no", "")
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 
 def api_url(code):
     return f"https://jkt48.com/api/v1/exclusives/{code}/bonus?lang=id"
@@ -1016,9 +1018,11 @@ def poll_loop():
 
 # ------------------------------------------------------------------ dashboard API
 def poller_info():
-    # Dipertahankan agar kompatibel dengan dashboard.html: sumber data = worker.
-    return {"enabled": True, "mode": "worker", "status": poll_status}
-
+    return {
+        "enabled": POLL_ENABLED,
+        "mode": "direct" if POLL_ENABLED else "worker",
+        "status": poll_status,
+    }
 
 def snapshot():
     now = time.time()
@@ -1157,24 +1161,17 @@ def run_http():
 
 
 def main():
-    if not TOKEN or not CHANNEL_ID or not NOTIFY_SECRET:
-        raise SystemExit("Set DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, dan NOTIFY_SECRET terlebih dahulu.")
-
-    if not SUBS_FILE.exists() and SEED_FILE.exists() and SEED_FILE != SUBS_FILE:
-        SUBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SUBS_FILE.write_text(SEED_FILE.read_text(encoding="utf-8"), encoding="utf-8")
-
-    load_state()
-
-    if not VIP_USER_ID:
-        print("[WARNING] VIP_USER_ID belum diatur: tag VIP tidak akan benar-benar mem-ping.")
-
-    if not DASHBOARD_FILE.is_file():
-        print(f"[WARNING] dashboard.html tidak ditemukan di {DASHBOARD_FILE}")
-        print("[WARNING] Set env DASHBOARD_FILE ke path lengkap file dashboard.html")
-
+    if not TOKEN or not CHANNEL_ID:
+        raise SystemExit("Set DISCORD_BOT_TOKEN dan DISCORD_CHANNEL_ID terlebih dahulu.")
+    if not NOTIFY_SECRET:
+        print("[INFO] NOTIFY_SECRET kosong: endpoint /notify dinonaktifkan (hanya polling langsung).")
+    ...
     threading.Thread(target=run_http, daemon=True).start()
-    threading.Thread(target=poll_loop, daemon=True).start()
+    if POLL_ENABLED:
+        threading.Thread(target=poll_loop, daemon=True).start()
+        print("[JKT48] Polling langsung ke jkt48.com aktif.")
+    else:
+        print("[JKT48] Polling langsung mati, menunggu laporan Worker.")
     bot.run(TOKEN)
 
 
