@@ -940,6 +940,9 @@ async def save_state_loop():
 
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
+POLL_BACKOFF_MIN = int(os.environ.get("POLL_BACKOFF_MIN", "60"))
+POLL_BACKOFF_MAX = int(os.environ.get("POLL_BACKOFF_MAX", "300"))
 JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 # Proxy opsional untuk polling langsung (mis. proxy residensial Indonesia).
