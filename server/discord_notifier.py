@@ -1113,18 +1113,23 @@ def build_session(profile):
 
 def poll_loop():
     """
-    Polling paralel untuk semua event supaya siklus konsisten ~POLL_INTERVAL detik.
-    Sebelumnya sequential + jeda 3-8s per event bikin siklus molor 70-90s.
+    Polling paralel untuk semua event, siklus start-to-start ~POLL_INTERVAL detik.
+
+    Jika diblokir (403/challenge), jeda tambahan (backoff) naik bertahap:
+    POLL_BACKOFF_MIN -> x3 -> ... -> maksimal POLL_BACKOFF_MAX.
+    Backoff dihitung SEBELUM tidur, jadi begitu satu siklus berhasil,
+    siklus berikutnya langsung kembali ke POLL_INTERVAL normal.
     """
     profiles = list(dict.fromkeys([IMPERSONATE] + IMPERSONATE_FALLBACKS))
     profile_idx = 0
     session = build_session(profiles[profile_idx])
     backoff = 0
+
     while True:
         started = time.time()
         blocked = False
 
-        # Polling paralel: 1 thread per event, share session (curl_cffi thread-safe untuk GET).
+        # 1 thread per event, session dipakai bersama (curl_cffi aman untuk GET).
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(EVENTS)) as ex:
             futures = {ex.submit(poll_once, session, code): code for code in EVENTS}
             for fut in concurrent.futures.as_completed(futures):
@@ -1134,22 +1139,29 @@ def poll_loop():
                 except Exception as e:
                     record_remote_poll(code, f"{type(e).__name__}: {e}"[:200])
 
-        # Hitung sisa waktu supaya start-to-start = POLL_INTERVAL (minimum 5s).
+        # Hitung backoff dulu, baru tidur.
+        if blocked:
+            backoff = min(max(backoff * 3, POLL_BACKOFF_MIN), POLL_BACKOFF_MAX)
+        else:
+            backoff = 0
+
         elapsed = time.time() - started
         jitter = random.uniform(0, POLL_JITTER_MAX)
         sleep_for = max(5.0, POLL_INTERVAL - elapsed + jitter + backoff)
+
+        if blocked:
+            print(f"[POLL] Terblokir, tidur {sleep_for:.0f}s (backoff {backoff}s)")
+
         time.sleep(sleep_for)
 
-        # diblokir: mundur bertahap (maks 15 menit); sukses: reset
-        backoff = min(max(backoff * 3, 300), 1800) if blocked else 0
+        # Saat terblokir, coba profil impersonasi berikutnya untuk siklus selanjutnya.
         if blocked and len(profiles) > 1:
             profile_idx = (profile_idx + 1) % len(profiles)
             try:
                 session = build_session(profiles[profile_idx])
-                print(f"[POLL] Terblokir, ganti profil impersonasi ke {profiles[profile_idx]}")
+                print(f"[POLL] Ganti profil impersonasi ke {profiles[profile_idx]}")
             except Exception as e:
                 print(f"[POLL] Gagal memakai profil {profiles[profile_idx]}: {e}")
-
 
 # ------------------------------------------------------------------ dashboard API
 def poller_info():

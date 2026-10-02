@@ -6,6 +6,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN playwright install --with-deps chromium
+
 COPY server/discord_notifier.py \
      server/check_block.py \
      server/dashboard.html \

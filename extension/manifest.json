@@ -5,7 +5,7 @@
   "permissions": ["storage"],
   "host_permissions": [
     "https://jkt48.com/*",
-    "https://jkt-bot-2shoot.de.deplexo.com/*"
+    "https://NAMA-APP.up.railway.app/*"
   ],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

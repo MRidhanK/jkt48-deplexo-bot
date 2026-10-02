@@ -1,7 +1,7 @@
 "use strict";
 
 // GANTI dua nilai ini setelah deploy di Deplexo.
-const NOTIFIER_URL = "https://jkt-bot-2shoot.de.deplexo.com/notify";
+const NOTIFIER_URL = "https://jkt48-deplexo-bot-production.up.railway.app//notify";
 const NOTIFY_SECRET = "mzPgq6wNe6ZwzXT8IiS1JuoYAhLJlKaTEb1dd-QUuMI";
 const ALLOWED_CODES = new Set(["EX5B99", "EX24AE"]);
 
