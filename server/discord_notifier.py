@@ -23,8 +23,6 @@ from discord import app_commands
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
-NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "").strip()
-MAX_BODY_SIZE = 500_000
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0") or 0)
@@ -1017,7 +1015,7 @@ def poll_loop():
 # ------------------------------------------------------------------ dashboard API
 def poller_info():
     # Dipertahankan agar kompatibel dengan dashboard.html: sumber data = worker.
-    return {"enabled": True, "mode": "worker", "status": poll_status}
+    return {"enabled": True, "mode": "direct", "status": poll_status}
 
 
 def snapshot():
@@ -1105,60 +1103,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
 
     def do_POST(self):
-        secret = self.headers.get("X-Notify-Secret", "")
-        if not NOTIFY_SECRET or not hmac.compare_digest(secret, NOTIFY_SECRET):
-            return self.send_json(401, {"ok": False, "error": "Unauthorized."})
-
-        if urlparse(self.path).path != "/notify":
-            return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
-
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_BODY_SIZE:
-                return self.send_json(413, {"ok": False, "error": "Ukuran payload tidak valid."})
-
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-            if not isinstance(data, dict):
-                return self.send_json(400, {"ok": False, "error": "Payload harus JSON object."})
-
-            code = str(data.get("code") or "").strip().upper()
-            page_url = str(data.get("pageUrl") or "")
-            lanes = data.get("lanes")
-
-            if code not in EVENTS:
-                return self.send_json(400, {"ok": False, "error": f"Kode event tidak diizinkan: {code}"})
-            if not page_url.startswith("https://jkt48.com/purchase/exclusive"):
-                return self.send_json(400, {"ok": False, "error": "URL halaman tidak diizinkan."})
-            if data.get("error"):
-                record_remote_poll(code, " ".join(str(data["error"]).split())[:200])
-                return self.send_json(200, {"ok": True, "code": code, "recorded": "error"})
-            if not isinstance(lanes, list) or len(lanes) > 1000:
-                return self.send_json(400, {"ok": False, "error": "Daftar jalur tidak valid."})
-
-            lanes = [l for l in lanes if isinstance(l, dict)]
-            restocks, new_sessions, vip = process_report(code, lanes)
-            record_remote_poll(code)
-
-            print(f"[JKT48] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
-            self.send_json(200, {
-                "ok": True, "code": code, "laneCount": len(lanes),
-                "restocks": restocks, "newSessions": new_sessions, "vipActive": vip,
-            })
-        except Exception as error:
-            traceback.print_exc()
-            self.send_json(500, {"ok": False, "error": f"{type(error).__name__}: {str(error)[:300]}"})
+        self.send_json(404, {"ok": False, "error": "POST endpoint disabled"})
 
 
 def run_http():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"[JKT48] Notifier aktif di http://{HOST}:{PORT}/notify (menunggu laporan worker)")
+    print("[JKT48] Direct poller aktif")
     print(f"[JKT48] Dashboard di http://{HOST}:{PORT}/")
     server.serve_forever()
 
 
 def main():
-    if not TOKEN or not CHANNEL_ID or not NOTIFY_SECRET:
-        raise SystemExit("Set DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, dan NOTIFY_SECRET terlebih dahulu.")
+    if not TOKEN or not CHANNEL_ID:
+        raise SystemExit("Set DISCORD_BOT_TOKEN dan DISCORD_CHANNEL_ID terlebih dahulu.")
 
     if not SUBS_FILE.exists() and SEED_FILE.exists() and SEED_FILE != SUBS_FILE:
         SUBS_FILE.parent.mkdir(parents=True, exist_ok=True)
