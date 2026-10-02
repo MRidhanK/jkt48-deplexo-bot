@@ -936,7 +936,7 @@ async def save_state_loop():
         save_state()
 
 
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 
