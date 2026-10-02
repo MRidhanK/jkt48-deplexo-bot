@@ -32,7 +32,7 @@ VIP_FALLBACK_TEXT = os.environ.get("VIP_FALLBACK_TEXT", "")
 SPAM_INTERVAL = float(os.environ.get("SPAM_INTERVAL", "4"))
 SPAM_MAX = int(os.environ.get("SPAM_MAX", "20"))
 # Worker lapor tiap ~1 menit (cron), jadi 150 detik masih aman.
-STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "150"))
+STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "60"))
 
 MIN_SEND_GAP = float(os.environ.get("MIN_SEND_GAP", "1.2"))
 MAX_CONCURRENT_SPAM = int(os.environ.get("MAX_CONCURRENT_SPAM", "5"))
@@ -999,18 +999,25 @@ def poll_once(session, code):
 def poll_loop():
     session = cffi_requests.Session(impersonate=IMPERSONATE)
     backoff = 0
+
     while True:
         blocked = False
+
         for code in EVENTS:
             try:
                 blocked = poll_once(session, code) or blocked
             except Exception as e:
                 record_remote_poll(code, f"{type(e).__name__}: {e}"[:200])
-            time.sleep(random.uniform(3, 8))
 
-        # diblokir: mundur bertahap (maks 15 menit); sukses: reset
+            time.sleep(random.uniform(1, 3))
+
         backoff = min(max(backoff * 2, 120), 900) if blocked else 0
-        time.sleep(POLL_INTERVAL + backoff + random.uniform(0, 10))
+
+        time.sleep(
+            POLL_INTERVAL +
+            backoff +
+            random.uniform(0, 3)
+        )
 
 # ------------------------------------------------------------------ dashboard API
 def poller_info():
