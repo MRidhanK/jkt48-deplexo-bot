@@ -1006,7 +1006,11 @@ def poll_once(session, code):
     try:
         r = session.get(
             api_url(code),
-            headers=headers,
+            headers={
+                "Referer": buy_url(code),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+            },
             timeout=15,
         )
     except Exception as e:
