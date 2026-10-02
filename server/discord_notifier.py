@@ -1003,16 +1003,24 @@ def poll_once(session, code):
     if JKT48_COOKIE:
         headers["Cookie"] = JKT48_COOKIE
 
+        print("========== DEBUG ==========")
+        print("COOKIE SET =", bool(JKT48_COOKIE))
+        print("COOKIE LEN =", len(JKT48_COOKIE))
+        print("IMPERSONATE =", IMPERSONATE)
+
     try:
-        r = session.get(
-            api_url(code),
-            headers={
-                "Referer": buy_url(code),
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
-            },
-            timeout=15,
-        )
+            r = session.get(
+                api_url(code),
+                headers=headers,
+                timeout=15,
+            )
+
+            print("STATUS =", r.status_code)
+            print("SERVER =", r.headers.get("server"))
+            print("CF =", r.headers.get("cf-mitigated"))
+            print("RAY =", r.headers.get("cf-ray"))
+            print("BODY =", r.text[:300])
+
     except Exception as e:
         msg = f"{type(e).__name__}: {str(e)[:120]}"
         record_remote_poll(code, msg)
