@@ -1,11 +1,17 @@
 FROM python:3.12-slim
-ENV PYTHONUNBUFFERED=1
-WORKDIR /app
 
-COPY requirements.txt ./
+WORKDIR /app
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server/ ./
+COPY discord_notifier.py dashboard.html subscriptions.json entrypoint.sh ./
+RUN chmod +x entrypoint.sh && mkdir -p /data
+
+ENV PYTHONUNBUFFERED=1 \
+    DASHBOARD_FILE=/app/dashboard.html \
+    SUBS_FILE=/data/subscriptions.json \
+    STATE_FILE=/data/state.json
+
+VOLUME ["/data"]
 EXPOSE 8765
-CMD ["python", "-u", "discord_notifier.py"]
-LABEL "deplexo"="true" "deplexo.app"="jkt-bot-2shoot"
+ENTRYPOINT ["/app/entrypoint.sh"]

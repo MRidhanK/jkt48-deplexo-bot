@@ -942,6 +942,14 @@ async def save_state_loop():
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
+# Proxy opsional untuk polling langsung (mis. proxy residensial Indonesia).
+# Format: http://user:pass@host:port  atau  socks5://user:pass@host:port
+POLL_PROXY = os.environ.get("POLL_PROXY", "").strip()
+# Profil impersonasi cadangan (pisahkan koma). Dipakai bergantian saat terdeteksi blokir.
+# Contoh: IMPERSONATE_FALLBACKS=chrome131,chrome124,safari17_0,edge101
+IMPERSONATE_FALLBACKS = [
+    p.strip() for p in os.environ.get("IMPERSONATE_FALLBACKS", "").split(",") if p.strip()
+]
 
 POLL_ENABLED = os.environ.get("POLL_ENABLED", "1").strip().lower() not in ("0", "false", "no", "")
 
@@ -1007,12 +1015,21 @@ def poll_once(session, code):
     return False
 
 
+def build_session(profile):
+    kwargs = {"impersonate": profile}
+    if POLL_PROXY:
+        kwargs["proxies"] = {"http": POLL_PROXY, "https": POLL_PROXY}
+    return cffi_requests.Session(**kwargs)
+
+
 def poll_loop():
     """
     Polling paralel untuk semua event supaya siklus konsisten ~POLL_INTERVAL detik.
     Sebelumnya sequential + jeda 3-8s per event bikin siklus molor 70-90s.
     """
-    session = cffi_requests.Session(impersonate=IMPERSONATE)
+    profiles = list(dict.fromkeys([IMPERSONATE] + IMPERSONATE_FALLBACKS))
+    profile_idx = 0
+    session = build_session(profiles[profile_idx])
     backoff = 0
     while True:
         started = time.time()
@@ -1036,6 +1053,13 @@ def poll_loop():
 
         # diblokir: mundur bertahap (maks 15 menit); sukses: reset
         backoff = min(max(backoff * 3, 300), 1800) if blocked else 0
+        if blocked and len(profiles) > 1:
+            profile_idx = (profile_idx + 1) % len(profiles)
+            try:
+                session = build_session(profiles[profile_idx])
+                print(f"[POLL] Terblokir, ganti profil impersonasi ke {profiles[profile_idx]}")
+            except Exception as e:
+                print(f"[POLL] Gagal memakai profil {profiles[profile_idx]}: {e}")
 
 
 # ------------------------------------------------------------------ dashboard API
@@ -1192,6 +1216,8 @@ def main():
     if POLL_ENABLED:
         threading.Thread(target=poll_loop, daemon=True).start()
         print("[JKT48] Polling langsung ke jkt48.com aktif.")
+        if POLL_PROXY:
+            print("[JKT48] Polling lewat proxy (POLL_PROXY diset).")
     else:
         print("[JKT48] Polling langsung mati, menunggu laporan Worker.")
     bot.run(TOKEN)
