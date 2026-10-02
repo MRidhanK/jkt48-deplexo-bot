@@ -1112,16 +1112,21 @@ def build_session(profile):
     if POLL_PROXY:
         kwargs["proxies"] = {"http": POLL_PROXY, "https": POLL_PROXY}
     return cffi_requests.Session(**kwargs)
+poll_reset_event = threading.Event()
 
+
+def request_poll_reset():
+    """Dipanggil dari endpoint HTTP: kosongkan status & bangunkan poller sekarang."""
+    poll_status.clear()
+    poll_reset_event.set()
 
 def poll_loop():
     """
     Polling paralel untuk semua event, siklus start-to-start ~POLL_INTERVAL detik.
 
-    Jika diblokir (403/challenge), jeda tambahan (backoff) naik bertahap:
-    POLL_BACKOFF_MIN -> x3 -> ... -> maksimal POLL_BACKOFF_MAX.
-    Backoff dihitung SEBELUM tidur, jadi begitu satu siklus berhasil,
-    siklus berikutnya langsung kembali ke POLL_INTERVAL normal.
+    - Diblokir (403/challenge): backoff naik bertahap POLL_BACKOFF_MIN -> x3 -> POLL_BACKOFF_MAX.
+    - Backoff dihitung SEBELUM tidur, jadi siklus sukses langsung kembali normal.
+    - Tidur bisa dibangunkan lewat request_poll_reset() (endpoint /api/poll/reset).
     """
     profiles = list(dict.fromkeys([IMPERSONATE] + IMPERSONATE_FALLBACKS))
     profile_idx = 0
@@ -1132,17 +1137,19 @@ def poll_loop():
         started = time.time()
         blocked = False
 
-        # 1 thread per event, session dipakai bersama (curl_cffi aman untuk GET).
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(EVENTS)) as ex:
-            futures = {ex.submit(poll_once, session, code): code for code in EVENTS}
-            for fut in concurrent.futures.as_completed(futures):
-                code = futures[fut]
-                try:
-                    blocked = fut.result() or blocked
-                except Exception as e:
-                    record_remote_poll(code, f"{type(e).__name__}: {e}"[:200])
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(EVENTS)) as ex:
+                futures = {ex.submit(poll_once, session, code): code for code in EVENTS}
+                for fut in concurrent.futures.as_completed(futures):
+                    code = futures[fut]
+                    try:
+                        blocked = fut.result() or blocked
+                    except Exception as e:
+                        record_remote_poll(code, f"{type(e).__name__}: {e}"[:200])
+        except Exception as e:
+            print(f"[POLL] Error di siklus polling: {type(e).__name__}: {e}")
+            blocked = True
 
-        # Hitung backoff dulu, baru tidur.
         if blocked:
             backoff = min(max(backoff * 3, POLL_BACKOFF_MIN), POLL_BACKOFF_MAX)
         else:
@@ -1155,9 +1162,18 @@ def poll_loop():
         if blocked:
             print(f"[POLL] Terblokir, tidur {sleep_for:.0f}s (backoff {backoff}s)")
 
-        time.sleep(sleep_for)
+        # Tidur, tapi langsung bangun kalau ada permintaan reset.
+        if poll_reset_event.wait(sleep_for):
+            poll_reset_event.clear()
+            backoff = 0
+            profile_idx = 0
+            try:
+                session = build_session(profiles[profile_idx])
+            except Exception as e:
+                print(f"[POLL] Gagal membuat sesi baru saat reset: {e}")
+            print("[POLL] Reset manual: backoff dikosongkan, polling ulang sekarang.")
+            continue
 
-        # Saat terblokir, coba profil impersonasi berikutnya untuk siklus selanjutnya.
         if blocked and len(profiles) > 1:
             profile_idx = (profile_idx + 1) % len(profiles)
             try:
@@ -1165,7 +1181,7 @@ def poll_loop():
                 print(f"[POLL] Ganti profil impersonasi ke {profiles[profile_idx]}")
             except Exception as e:
                 print(f"[POLL] Gagal memakai profil {profiles[profile_idx]}: {e}")
-
+                
 # ------------------------------------------------------------------ dashboard API
 def poller_info():
     return {
@@ -1262,6 +1278,17 @@ class Handler(BaseHTTPRequestHandler):
         secret = self.headers.get("X-Notify-Secret", "")
         if not NOTIFY_SECRET or not hmac.compare_digest(secret, NOTIFY_SECRET):
             return self.send_json(401, {"ok": False, "error": "Unauthorized."})
+
+        path = urlparse(self.path).path
+
+        if path == "/api/poll/reset":
+            if not POLL_ENABLED:
+                return self.send_json(400, {"ok": False, "error": "Poller direct tidak aktif."})
+            request_poll_reset()
+            return self.send_json(200, {"ok": True, "message": "Poller direset, polling ulang sekarang."})
+
+        if path != "/notify":
+            return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
 
         if urlparse(self.path).path != "/notify":
             return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
