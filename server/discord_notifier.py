@@ -1,21 +1,8 @@
 """
 JKT48 Ticket Radar - bot Discord + dashboard.
 
-Sumber data (model PUSH, default):
-  Cloudflare Worker / Chrome extension / klien lain -> POST /notify
-
-Polling langsung dari server ke jkt48.com dimatikan secara default karena
-IP datacenter diblokir Cloudflare (HTTP 403). Aktifkan hanya jika perlu:
-  ENABLE_DIRECT_POLL=1   (idealnya dengan PROXY_URL residensial)
-
-Format body POST /notify (JSON), salah satu:
-  {"code": "EX5B99", "lanes": [ {...lane...}, ... ]}
-  {"code": "EX5B99", "error": "HTTP 403 ..."}
-  {"code": "EX5B99", "data": [ ...respons mentah API jkt48... ]}   (atau payload mentah {"data": [...]})
-
-Header auth (hanya jika env NOTIFY_SECRET diisi), salah satu:
-  X-Secret: <secret>   |   X-Notify-Secret: <secret>   |   Authorization: Bearer <secret>
-  atau field "secret" di body.
+Sumber data HANYA dari Cloudflare Worker (atau klien lain) yang POST ke /notify.
+Server ini tidak lagi memanggil jkt48.com sendiri.
 """
 import asyncio
 import hmac
@@ -25,17 +12,19 @@ import threading
 import time
 import traceback
 from collections import deque
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import random
+from curl_cffi import requests as cffi_requests
 
 import discord
 from discord import app_commands
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
+NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "").strip()
+MAX_BODY_SIZE = 500_000
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0") or 0)
@@ -60,17 +49,6 @@ EVENTS = {"EX5B99": "2 Shoot", "EX24AE": "MNG"}
 # Alert jika worker melaporkan error berturut-turut sebanyak ini.
 POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))
 
-# Secret untuk POST /notify (kosong = tanpa auth, TIDAK disarankan di internet publik)
-NOTIFY_SECRET = os.environ.get("NOTIFY_SECRET", "").strip()
-MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", str(5 * 1024 * 1024)))
-
-# Polling langsung dari server (default MATI karena IP server diblokir 403)
-ENABLE_DIRECT_POLL = os.environ.get("ENABLE_DIRECT_POLL", "0").strip().lower() in ("1", "true", "yes", "on")
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
-JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
-IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
-PROXY_URL = os.environ.get("PROXY_URL", "").strip()
-
 VIP_NAMES = [
     "Fiony Alveria", "Aurhel Alana", "Michelle Alexandra",
     "Hillary Abigail", "Adeline Wijaya", "Oline Manuel",
@@ -92,6 +70,7 @@ DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()
 
 # ------------------------------------------------------------------ cari dashboard.html di beberapa lokasi
 def _resolve_dashboard_file() -> Path:
+    # 1. Env var eksplisit
     env_path = os.environ.get("DASHBOARD_FILE", "").strip()
     if env_path:
         p = Path(env_path)
@@ -101,17 +80,17 @@ def _resolve_dashboard_file() -> Path:
 
     here = Path(__file__).resolve().parent
     candidates = [
-        here / "dashboard.html",
-        here / "server" / "dashboard.html",
-        here.parent / "server" / "dashboard.html",
-        here.parent / "dashboard.html",
-        Path.cwd() / "dashboard.html",
+        here / "dashboard.html",                    # sebelah script
+        here / "server" / "dashboard.html",         # script di root, dashboard di server/
+        here.parent / "server" / "dashboard.html",  # script di subfolder, dashboard di ../server/
+        here.parent / "dashboard.html",             # dashboard di parent
+        Path.cwd() / "dashboard.html",              # current working dir
         Path.cwd() / "server" / "dashboard.html",
     ]
     for c in candidates:
         if c.is_file():
             return c
-    return candidates[0]
+    return candidates[0]  # default: sebelah script (untuk pesan error)
 
 
 DASHBOARD_FILE = _resolve_dashboard_file()
@@ -261,6 +240,7 @@ def save_state():
     except Exception:
         traceback.print_exc()
 
+from datetime import datetime, timezone
 
 COLOR_AMBER = 0xF1C40F
 LOW_QUOTA = 3
@@ -296,7 +276,6 @@ def peak_of(code, sdc, quota):
         dq = history.get((code, sdc))
         return max([quota] + [q for _, q in dq]) if dq else quota
 
-
 def speed_of(code, sdc, quota):
     with lock:
         return speed_stats((code, sdc), quota, time.time())
@@ -320,7 +299,6 @@ def speed_label(rate):
     if rate > 0:
         return "🐢 Lambat"
     return "💤 Belum ada penjualan"
-
 
 # ------------------------------------------------------------------ embeds
 def restock_embed(code, lane, delta=None):
@@ -960,13 +938,16 @@ async def save_state_loop():
         save_state()
 
 
-# ------------------------------------------------------------------ normalisasi payload
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
+JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
+IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
+
+
 def api_url(code):
     return f"https://jkt48.com/api/v1/exclusives/{code}/bonus?lang=id"
 
 
 def flatten(payload):
-    """Ubah respons mentah API jkt48 ({"data": [sesi...]}) menjadi list jalur."""
     lanes = []
     data = payload.get("data") if isinstance(payload, dict) else None
     for sess in data if isinstance(data, list) else []:
@@ -988,82 +969,6 @@ def flatten(payload):
     return lanes
 
 
-def normalize_lane(raw):
-    """Terima lane dengan nama kunci bervariasi (dari worker / extension)."""
-    if not isinstance(raw, dict):
-        return None
-
-    def pick(*names, default=None):
-        for n in names:
-            if raw.get(n) is not None:
-                return raw[n]
-        return default
-
-    sdc = str(pick("session_detail_code", "sdc", "sessionDetailCode", default="")).strip()
-    if not sdc:
-        return None
-    return {
-        "label": str(pick("label", "lane", default="-")),
-        "price": pick("price"),
-        "member_name": " ".join(str(pick("member_name", "member", "memberName", default="")).split()),
-        "session_detail_code": sdc,
-        "available_quota": pick("available_quota", "quota", "availableQuota"),
-        "session_label": str(pick("session_label", "session", default="-")),
-        "session_date": str(pick("session_date", "date", default="-")),
-        "session_start_time": str(pick("session_start_time", "start", "start_time", default="")),
-        "session_end_time": str(pick("session_end_time", "end", "end_time", default="")),
-    }
-
-
-def guess_code(body, lanes):
-    code = str(body.get("code") or body.get("event") or "").strip()
-    if code in EVENTS:
-        return code
-    for lane in lanes:
-        prefix = str(lane.get("session_detail_code") or "").split("-")[0]
-        if prefix in EVENTS:
-            return prefix
-    return ""
-
-
-def handle_notify(body):
-    """Proses body POST /notify. Return (status_http, dict_json)."""
-    if not isinstance(body, dict):
-        return 400, {"ok": False, "error": "Body harus JSON object."}
-
-    # Susun daftar lane dari berbagai bentuk payload
-    if isinstance(body.get("lanes"), list):
-        lanes = [l for l in (normalize_lane(x) for x in body["lanes"]) if l]
-    elif isinstance(body.get("data"), list):
-        lanes = flatten(body)
-    elif isinstance(body.get("payload"), dict):
-        lanes = flatten(body["payload"])
-    else:
-        lanes = []
-
-    code = guess_code(body, lanes)
-    if code not in EVENTS:
-        return 400, {"ok": False, "error": f"code tidak dikenal: {body.get('code')!r}"}
-
-    error = str(body.get("error") or "").strip()
-    if error:
-        record_remote_poll(code, error[:200])
-        return 200, {"ok": True, "code": code, "recorded": "error"}
-
-    if not lanes:
-        record_remote_poll(code, "laporan kosong (0 jalur)")
-        return 200, {"ok": True, "code": code, "recorded": "empty"}
-
-    restocks, new_sessions, vip = process_report(code, lanes)
-    record_remote_poll(code)
-    print(f"[NOTIFY] {EVENTS[code]}: {len(lanes)} jalur, restock={restocks}, baru={new_sessions}, vip={vip}")
-    return 200, {
-        "ok": True, "code": code, "lanes": len(lanes),
-        "restocks": restocks, "new_sessions": new_sessions,
-    }
-
-
-# ------------------------------------------------------------------ polling langsung (opsional)
 def poll_once(session, code):
     """Return True jika terdeteksi blokir (403/429/bukan JSON)."""
     headers = {
@@ -1074,11 +979,7 @@ def poll_once(session, code):
     if JKT48_COOKIE:
         headers["Cookie"] = JKT48_COOKIE
 
-    kwargs = {"headers": headers, "timeout": 15}
-    if PROXY_URL:
-        kwargs["proxies"] = {"http": PROXY_URL, "https": PROXY_URL}
-
-    r = session.get(api_url(code), **kwargs)
+    r = session.get(api_url(code), headers=headers, timeout=15)
     if r.status_code != 200:
         record_remote_poll(code, f"HTTP {r.status_code}")
         return r.status_code in (403, 429)
@@ -1098,35 +999,25 @@ def poll_once(session, code):
 
 
 def poll_loop():
-    from curl_cffi import requests as cffi_requests  # import lazy: hanya dipakai jika polling aktif
-
     session = cffi_requests.Session(impersonate=IMPERSONATE)
     backoff = 0
-
     while True:
         blocked = False
-
         for code in EVENTS:
             try:
                 blocked = poll_once(session, code) or blocked
             except Exception as e:
                 record_remote_poll(code, f"{type(e).__name__}: {e}"[:200])
+            time.sleep(random.uniform(3, 8))
 
-            time.sleep(random.uniform(1, 3))
-
+        # diblokir: mundur bertahap (maks 15 menit); sukses: reset
         backoff = min(max(backoff * 2, 120), 900) if blocked else 0
-
-        time.sleep(POLL_INTERVAL + backoff + random.uniform(0, 3))
-
+        time.sleep(POLL_INTERVAL + backoff + random.uniform(0, 10))
 
 # ------------------------------------------------------------------ dashboard API
 def poller_info():
-    # Dipertahankan agar kompatibel dengan dashboard.html.
-    return {
-        "enabled": True,
-        "mode": "direct" if ENABLE_DIRECT_POLL else "push",
-        "status": poll_status,
-    }
+    # Dipertahankan agar kompatibel dengan dashboard.html: sumber data = worker.
+    return {"enabled": True, "mode": "worker", "status": poll_status}
 
 
 def snapshot():
@@ -1160,21 +1051,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("[HTTP]", fmt % args)
 
-    def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, X-Secret, X-Notify-Secret, X-Dashboard-Key, Authorization",
-        )
-        self.send_header("Access-Control-Max-Age", "86400")
-
     def send_json(self, status, body):
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
-        self._cors()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1185,12 +1066,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(raw)
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self._cors()
-        self.send_header("Content-Length", "0")
-        self.end_headers()
 
     def do_GET(self):
         url = urlparse(self.path)
@@ -1229,63 +1104,61 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_html(500, msg.encode("utf-8"))
         self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
 
-    def _authorized(self, body):
-        if not NOTIFY_SECRET:
-            return True
-        candidates = [
-            self.headers.get("X-Secret", ""),
-            self.headers.get("X-Notify-Secret", ""),
-        ]
-        auth = self.headers.get("Authorization", "")
-        if auth.lower().startswith("bearer "):
-            candidates.append(auth[7:].strip())
-        if isinstance(body, dict):
-            candidates.append(str(body.get("secret") or ""))
-        return any(c and hmac.compare_digest(c, NOTIFY_SECRET) for c in candidates)
-
     def do_POST(self):
-        url = urlparse(self.path)
-        if url.path.rstrip("/") != "/notify":
-            return self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
+        secret = self.headers.get("X-Notify-Secret", "")
+        if not NOTIFY_SECRET or not hmac.compare_digest(secret, NOTIFY_SECRET):
+            return self.send_json(401, {"ok": False, "error": "Unauthorized."})
+
+        if urlparse(self.path).path != "/notify":
+            return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
 
         try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-        except ValueError:
-            return self.send_json(400, {"ok": False, "error": "Content-Length tidak valid."})
-        if length <= 0:
-            return self.send_json(400, {"ok": False, "error": "Body kosong."})
-        if length > MAX_BODY_BYTES:
-            return self.send_json(413, {"ok": False, "error": "Body terlalu besar."})
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_BODY_SIZE:
+                return self.send_json(413, {"ok": False, "error": "Ukuran payload tidak valid."})
 
-        try:
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return self.send_json(400, {"ok": False, "error": "JSON tidak valid."})
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(data, dict):
+                return self.send_json(400, {"ok": False, "error": "Payload harus JSON object."})
 
-        if not self._authorized(body):
-            return self.send_json(401, {"ok": False, "error": "Secret salah."})
+            code = str(data.get("code") or "").strip().upper()
+            page_url = str(data.get("pageUrl") or "")
+            lanes = data.get("lanes")
 
-        try:
-            status, resp = handle_notify(body)
-        except Exception as e:
+            if code not in EVENTS:
+                return self.send_json(400, {"ok": False, "error": f"Kode event tidak diizinkan: {code}"})
+            if not page_url.startswith("https://jkt48.com/purchase/exclusive"):
+                return self.send_json(400, {"ok": False, "error": "URL halaman tidak diizinkan."})
+            if data.get("error"):
+                record_remote_poll(code, " ".join(str(data["error"]).split())[:200])
+                return self.send_json(200, {"ok": True, "code": code, "recorded": "error"})
+            if not isinstance(lanes, list) or len(lanes) > 1000:
+                return self.send_json(400, {"ok": False, "error": "Daftar jalur tidak valid."})
+
+            lanes = [l for l in lanes if isinstance(l, dict)]
+            restocks, new_sessions, vip = process_report(code, lanes)
+            record_remote_poll(code)
+
+            print(f"[JKT48] {EVENTS[code]}: jalur={len(lanes)} restock={restocks} baru={new_sessions} vip={vip}")
+            self.send_json(200, {
+                "ok": True, "code": code, "laneCount": len(lanes),
+                "restocks": restocks, "newSessions": new_sessions, "vipActive": vip,
+            })
+        except Exception as error:
             traceback.print_exc()
-            return self.send_json(500, {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]})
-        return self.send_json(status, resp)
+            self.send_json(500, {"ok": False, "error": f"{type(error).__name__}: {str(error)[:300]}"})
 
 
 def run_http():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    mode = "direct poller" if ENABLE_DIRECT_POLL else "push (POST /notify)"
-    print(f"[JKT48] Mode data: {mode}")
-    if not NOTIFY_SECRET:
-        print("[WARNING] NOTIFY_SECRET kosong: siapa pun bisa POST ke /notify. Set env NOTIFY_SECRET.")
+    print(f"[JKT48] Notifier aktif di http://{HOST}:{PORT}/notify (menunggu laporan worker)")
     print(f"[JKT48] Dashboard di http://{HOST}:{PORT}/")
     server.serve_forever()
 
 
 def main():
-    if not TOKEN or not CHANNEL_ID:
-        raise SystemExit("Set DISCORD_BOT_TOKEN dan DISCORD_CHANNEL_ID terlebih dahulu.")
+    if not TOKEN or not CHANNEL_ID or not NOTIFY_SECRET:
+        raise SystemExit("Set DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, dan NOTIFY_SECRET terlebih dahulu.")
 
     if not SUBS_FILE.exists() and SEED_FILE.exists() and SEED_FILE != SUBS_FILE:
         SUBS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1301,8 +1174,7 @@ def main():
         print("[WARNING] Set env DASHBOARD_FILE ke path lengkap file dashboard.html")
 
     threading.Thread(target=run_http, daemon=True).start()
-    if ENABLE_DIRECT_POLL:
-        threading.Thread(target=poll_loop, daemon=True).start()
+    threading.Thread(target=poll_loop, daemon=True).start()
     bot.run(TOKEN)
 
 
