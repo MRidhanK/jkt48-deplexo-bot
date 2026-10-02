@@ -1,0 +1,4 @@
+extension/
+.git/
+.env
+README.md

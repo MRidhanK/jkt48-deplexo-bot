@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>JKT48 Ticket Radar</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--text:#1a1d27;--mut:#6b7185;--line:#e3e6ef;--ok:#16a34a;--no:#dc2626;--acc:#e11d48;--warn:#d97706;--soft:#f0f2f8;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1117;--card:#181b25;--text:#eceef5;--mut:#8b91a7;--line:#262a38;--soft:#1f2330}}
+:root[data-theme="dark"]{--bg:#0f1117;--card:#181b25;--text:#eceef5;--mut:#8b91a7;--line:#262a38;--soft:#1f2330}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px}
+@media(min-width:601px){header{position:sticky;top:0;z-index:5}}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:1100px;margin:0 auto}
+.row+.row{margin-top:8px}
+h1{font-size:17px;margin:0;flex:1;min-width:140px}
+h1 b{color:var(--acc)}
+.pill{font-size:12px;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mut);white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+.pill.ok{color:var(--ok);border-color:var(--ok)}.pill.bad{color:var(--no);border-color:var(--no)}.pill.warn{color:var(--warn);border-color:var(--warn)}
+.tabs{display:flex;gap:6px}
+.tab,.btn,select{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:6px 12px;font:inherit;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
+.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn.sq{padding:6px 9px}
+input[type=search]{flex:1;min-width:150px;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit}
+.opts{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+label.pill{cursor:pointer}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+@media(pointer:coarse){.tab,.btn,select,input[type=search],label.pill{min-height:40px}}
+@media(max-width:600px){
+  .opts{flex-wrap:nowrap;overflow-x:auto;width:100%;padding-bottom:2px;scrollbar-width:none}
+  .opts::-webkit-scrollbar{display:none}
+  .tabs{width:100%}.tab{flex:1;justify-content:center}
+  input[type=search]{flex-basis:100%}
+}
+main{max-width:1100px;margin:0 auto;padding:14px 16px 90px}
+
+.sum{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+@media(max-width:600px){.sum{grid-template-columns:repeat(2,1fr)}}
+.sum div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.sum b{display:block;font-size:22px}.sum span{color:var(--mut);font-size:12px}
+
+.help{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:10px}
+.help>summary{cursor:pointer;padding:10px 14px;font-weight:600;list-style:none;display:flex;justify-content:space-between;gap:8px}
+.help>summary::-webkit-details-marker{display:none}
+.help .body{padding:0 14px 12px;color:var(--mut);font-size:13px}
+.help dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px}
+.help dt{font-weight:600;color:var(--text);white-space:nowrap}
+.help dd{margin:0}
+@media(max-width:600px){.help dl{grid-template-columns:1fr}.help dd{margin-bottom:4px}}
+#pollBanner{padding:10px 14px;color:var(--warn);border-color:var(--warn);font-size:13px}
+.fi{display:flex;gap:8px;padding:6px 0;border-top:1px solid var(--line);cursor:pointer;flex-wrap:wrap;color:var(--text)}
+.fi:first-child{border-top:0}.fi time{color:var(--mut);min-width:44px}.fi b{color:var(--ok)}
+.fi small{color:var(--mut);flex-basis:100%}
+
+#list{display:grid;gap:10px;grid-template-columns:1fr;align-items:start}
+@media(min-width:1000px){#list{grid-template-columns:1fr 1fr}}
+.m{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.m[open]{grid-column:1/-1}
+.m>summary{list-style:none;cursor:pointer;padding:10px 12px;display:flex;gap:12px;align-items:center}
+.m>summary::-webkit-details-marker{display:none}
+.m[open]>summary{border-bottom:1px solid var(--line)}
+.av{position:relative;flex:none;overflow:hidden;background:var(--soft);color:var(--mut);display:flex;align-items:center;justify-content:center;font-weight:700}
+.av img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.av.s{width:42px;height:42px;border-radius:50%}
+.av.l{width:96px;height:128px;border-radius:12px;font-size:28px}
+@media(max-width:600px){.av.l{width:72px;height:96px;font-size:22px}}
+.who{flex:1;min-width:0}
+.n{font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vip{color:var(--acc);font-size:12px;margin-left:6px;font-weight:600}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:3px}
+.chip{font-size:12px;padding:2px 9px;border-radius:99px;background:var(--soft);color:var(--mut);white-space:nowrap}
+.chip.has{background:var(--ok);color:#fff;font-weight:600}
+.chip.none{background:rgba(220,38,38,.12);color:var(--no)}
+.chip.hot{background:var(--acc);color:#fff;font-weight:600}
+.star{border:0;background:none;font-size:20px;line-height:1;padding:6px;cursor:pointer;color:var(--mut)}
+.star.on{color:#f59e0b}
+.arrow{color:var(--mut);transition:transform .15s}
+.m[open] .arrow{transform:rotate(90deg)}
+
+.detail{padding:14px}
+@media(max-width:600px){.detail{padding:10px}}
+.hero{display:flex;gap:16px;align-items:flex-start;margin-bottom:14px}
+.hero .txt{flex:1;min-width:0}
+.hero h2{margin:0 0 4px;font-size:18px}
+.hero p{margin:0 0 8px;color:var(--mut);font-size:13px}
+.kpis{display:flex;gap:8px;flex-wrap:wrap}
+.kpi{background:var(--soft);border-radius:10px;padding:6px 12px}
+.kpi b{font-size:18px;display:block}.kpi span{font-size:11px;color:var(--mut)}
+
+.sgrid{display:grid;gap:10px;grid-template-columns:1fr}
+@media(min-width:800px){.sgrid{grid-template-columns:1fr 1fr}}
+.sess{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.sess-h{display:flex;gap:8px;align-items:center;background:var(--soft);padding:8px 12px}
+.sess-h .t{font-weight:600;flex:1;min-width:0}
+.ln{position:relative;display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;padding:9px 12px;border-top:1px solid var(--line)}
+.ln .pr{color:var(--mut)}
+.ln .bar{position:absolute;left:0;bottom:0;height:2px;background:var(--ok);opacity:.7}
+.q{font-weight:700;min-width:44px;text-align:right}.q.ok{color:var(--ok)}.q.no{color:var(--no)}
+.new{background:rgba(22,163,74,.12)}
+.tag{display:block;font-size:11px;font-weight:400;color:var(--ok)}
+.empty{text-align:center;color:var(--mut);padding:40px 0;grid-column:1/-1}
+.sk{height:64px;border-radius:12px;background:var(--soft);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.5}}
+@media(prefers-reduced-motion:reduce){.sk{animation:none}.arrow{transition:none}}
+
+#toasts{position:fixed;right:12px;left:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:6px;align-items:flex-end;pointer-events:none;z-index:9}
+.toast{pointer-events:auto;background:var(--text);color:var(--bg);padding:9px 14px;border-radius:10px;font-size:13px;max-width:420px;box-shadow:0 4px 16px rgba(0,0,0,.25)}
+#top{position:fixed;right:14px;bottom:calc(14px + env(safe-area-inset-bottom,0px));display:none;z-index:8}
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>🎫 JKT48 <b>Ticket Radar</b></h1>
+    <span id="status" class="pill">memuat…</span>
+    <button class="btn sq" id="refresh" title="Muat ulang sekarang" aria-label="Muat ulang">⟳</button>
+    <button class="btn sq" id="theme" title="Ganti tema" aria-label="Ganti tema">🌓</button>
+    <a class="btn sq" id="buy" target="_blank" rel="noopener" title="Buka halaman pembelian di jkt48.com">🛒</a>
+  </div>
+  <div class="row"><div class="tabs" id="tabs"></div></div>
+  <div class="row">
+    <input type="search" id="q" placeholder="Cari member…" aria-label="Cari member">
+    <select id="sort" title="Urutkan" aria-label="Urutkan">
+      <option value="avail">Urut: tersedia dulu</option>
+      <option value="tix">Urut: tiket terbanyak</option>
+      <option value="name">Urut: nama A–Z</option>
+    </select>
+    <select id="date" title="Tanggal" aria-label="Filter tanggal"><option value="">Semua tanggal</option></select>
+  </div>
+  <div class="row"><div class="opts">
+    <label class="pill"><input type="checkbox" id="only"> hanya tersedia</label>
+    <label class="pill"><input type="checkbox" id="favOnly"> ⭐ favorit saja</label>
+    <label class="pill"><input type="checkbox" id="hotOnly"> ▲ restock baru</label>
+    <label class="pill"><input type="checkbox" id="beep"> 🔔 suara</label>
+    <label class="pill"><input type="checkbox" id="notif"> 📲 notifikasi</label>
+    <button class="btn" id="toggleAll" style="padding:3px 10px;font-size:12px">Buka semua</button>
+  </div></div>
+</header>
+<main>
+  <div class="help" id="pollBanner" hidden></div>
+
+  <div class="sum">
+    <div><b id="s-mem">-</b><span>member</span></div>
+    <div><b id="s-ses">-</b><span>sesi (tersedia / total)</span></div>
+    <div><b id="s-av">-</b><span>jalur tersedia</span></div>
+    <div><b id="s-tix">-</b><span>total tiket tersisa</span></div>
+  </div>
+
+  <details class="help" id="feedBox">
+    <summary><span>📈 Aktivitas restock <span id="fc" class="chip">0</span></span><button class="btn" id="feedClear" style="padding:0 8px;font-size:12px">Bersihkan</button></summary>
+    <div class="body" id="feed"></div>
+  </details>
+
+  <details class="help">
+    <summary>ℹ️ Cara membaca dashboard</summary>
+    <div class="body"><dl>
+      <dt>Jalur</dt><dd>Satu slot tiket milik seorang member pada sebuah sesi.</dd>
+      <dt>Sesi</dt><dd>Satu jadwal (tanggal + jam). <b>tersedia/total</b> = sesi yang masih punya minimal satu jalur dengan kuota.</dd>
+      <dt>Kuota / SO</dt><dd>Jumlah tiket yang masih bisa dibeli. <b>SO</b> = sold out. Garis hijau tipis = kuota dibanding jalur terbanyak.</dd>
+      <dt>▲ restock</dt><dd>Latar hijau muda = kuota bertambah dalam 10 menit terakhir. Member dengan restock baru diberi label “▲ baru”.</dd>
+      <dt>⭐ Favorit</dt><dd>Ketuk bintang di kartu member. Favorit tampil paling atas dan tersimpan di perangkat ini.</dd>
+      <dt>★ VIP</dt><dd>Member prioritas notifikasi Discord.</dd>
+      <dt>📲 Notifikasi</dt><dd>Munculkan notifikasi browser saat restock (tab harus tetap terbuka).</dd>
+      <dt>● live</dt><dd>Data dimuat ulang tiap 10 detik. “Data lama” = poller server tidak mendapat data dari jkt48.com.</dd>
+    </dl></div>
+  </details>
+
+  <div id="list"></div>
+</main>
+<div id="toasts" aria-live="polite"></div>
+<button class="btn sq" id="top" aria-label="Ke atas">↑</button>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const KEY = new URLSearchParams(location.search).get("key");
+const API = "/api/lanes" + (KEY ? "?key=" + encodeURIComponent(KEY) : "");
+const NEW_WINDOW = 600, FEED_MAX = 30;
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("jr_" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("jr_" + k, JSON.stringify(v)); } catch {} }
+};
+let data = null, tab = store.get("tab", null), prevQuota = new Map(), firstLoad = true, dateKey = "";
+let favs = new Set(store.get("favs", [])), feed = store.get("feed", []);
+const openMembers = new Set();
+
+const rp = v => Number.isFinite(+v) ? "Rp" + (+v).toLocaleString("id-ID") : "-";
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const norm = s => String(s || "").split(/\s+/).join(" ").trim().toLowerCase();
+const initials = n => String(n).split(" ").filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase();
+const hm = ts => new Date(ts * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+
+function fdate(s) {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(s))) return s;
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleDateString("id-ID", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+function ago(ts, now) {
+  if (!ts) return "belum ada data";
+  const s = Math.max(0, Math.round(now - ts));
+  return s < 60 ? s + " dtk lalu" : Math.round(s / 60) + " mnt lalu";
+}
+function beep() {
+  try {
+    const c = new (window.AudioContext || window.webkitAudioContext)(), o = c.createOscillator(), g = c.createGain();
+    o.connect(g); g.connect(c.destination); o.frequency.value = 880; g.gain.value = .15;
+    o.start(); o.stop(c.currentTime + .25);
+  } catch {}
+}
+function toast(text) {
+  const t = el("div", "toast", text);
+  $("toasts").append(t);
+  setTimeout(() => t.remove(), 6000);
+}
+
+function avatar(name, url, size) {
+  const box = el("div", "av " + size), fb = el("span", "", initials(name) || "?");
+  box.append(fb);
+  if (url) {
+    const img = new Image();
+    img.referrerPolicy = "no-referrer"; img.alt = name; img.loading = "lazy";
+    img.onload = () => { fb.remove(); box.append(img); };
+    img.src = url;
+  }
+  return box;
+}
+
+function stats(lanes) {
+  const sessions = new Map();
+  let tix = 0, avail = 0;
+  for (const l of lanes) {
+    tix += l.quota; if (l.quota > 0) avail++;
+    const sk = [l.date, l.start, l.end, l.session].join("|");
+    if (!sessions.has(sk)) sessions.set(sk, []);
+    sessions.get(sk).push(l);
+  }
+  let sesAvail = 0;
+  for (const ls of sessions.values()) if (ls.some(l => l.quota > 0)) sesAvail++;
+  return { tix, avail, sessions, sesAvail };
+}
+
+function renderFeed() {
+  $("fc").textContent = feed.length;
+  const box = $("feed"); box.textContent = "";
+  if (!feed.length) { box.textContent = "Belum ada restock terdeteksi sejak dashboard dibuka."; return; }
+  for (const f of feed) {
+    const r = el("div", "fi");
+    r.append(el("time", "", hm(f.at)), el("b", "", "+" + f.delta), el("span", "", f.member));
+    r.append(el("small", "", f.event + " · " + f.lane + " · " + f.session));
+    r.onclick = () => { $("q").value = f.member; render(); window.scrollTo({ top: 0, behavior: "smooth" }); };
+    box.append(r);
+  }
+}
+
+function render() {
+  if (!data) return;
+  const codes = Object.keys(data.events);
+  if (!tab || !data.events[tab]) tab = codes[0];
+  const tabs = $("tabs"); tabs.textContent = "";
+  for (const c of codes) {
+    const b = el("button", "tab" + (c === tab ? " on" : ""), data.events[c].name);
+    b.onclick = () => { tab = c; store.set("tab", c); render(); };
+    tabs.append(b);
+  }
+  $("buy").href = "https://jkt48.com/purchase/exclusive?code=" + encodeURIComponent(tab);
+
+  const ev = data.events[tab], now = data.now, query = $("q").value.trim().toLowerCase();
+  const only = $("only").checked, favOnly = $("favOnly").checked, hotOnly = $("hotOnly").checked, dateSel = $("date").value;
+  const photos = data.photos || {};
+  const age = ev.updated ? now - ev.updated : null;
+  const st = $("status");
+  st.className = "pill " + (age == null ? "bad" : age > data.stale_after ? "warn" : "ok");
+  st.textContent = age == null ? "belum ada data" : (age > data.stale_after ? "⚠ data lama · " : "● live · ") + ago(ev.updated, now);
+
+  const ps = ((data.poller || {}).status || {})[tab], pb = $("pollBanner");
+  if (ps && !ps.ok) { pb.hidden = false; pb.textContent = "⚠️ Poller gagal " + ps.fails + "x: " + ps.error; }
+  else pb.hidden = true;
+
+  const all = ev.lanes, tot = stats(all);
+  $("s-mem").textContent = new Set(all.map(l => l.member)).size;
+  $("s-ses").textContent = tot.sesAvail + " / " + tot.sessions.size;
+  $("s-av").textContent = tot.avail + " / " + all.length;
+  $("s-tix").textContent = tot.tix.toLocaleString("id-ID");
+  const maxQ = Math.max(1, ...all.map(l => l.quota));
+
+  // filter tanggal: bangun ulang hanya jika daftar berubah (agar dropdown tidak tertutup sendiri)
+  const dates = [...new Set(all.map(l => l.date))].sort();
+  if (dates.join() !== dateKey) {
+    dateKey = dates.join();
+    const sel = $("date"), cur = sel.value; sel.textContent = "";
+    sel.append(new Option("Semua tanggal", ""));
+    for (const d of dates) sel.append(new Option(fdate(d), d));
+    sel.value = dates.includes(cur) ? cur : "";
+  }
+
+  const groups = new Map();
+  for (const l of all) {
+    if (query && !String(l.member).toLowerCase().includes(query)) continue;
+    if (only && l.quota <= 0) continue;
+    if (dateSel && l.date !== dateSel) continue;
+    if (favOnly && !favs.has(norm(l.member))) continue;
+    if (hotOnly && !(l.restock_at && now - l.restock_at < NEW_WINDOW && l.quota > 0)) continue;
+    if (!groups.has(l.member)) groups.set(l.member, []);
+    groups.get(l.member).push(l);
+  }
+
+  const list = $("list"); list.textContent = "";
+  if (!groups.size) {
+    list.append(el("div", "empty", !all.length ? "Menunggu data dari poller…" : favOnly && !favs.size ? "Belum ada favorit. Ketuk ⭐ di kartu member." : "Tidak ada yang cocok. Coba ubah filter."));
+    return;
+  }
+
+  const info = new Map([...groups].map(([n, ls]) => [n, stats(ls)]));
+  const mode = $("sort").value;
+  const names = [...groups.keys()].sort((a, b) => {
+    const fa = favs.has(norm(a)), fb = favs.has(norm(b));
+    if (fa !== fb) return fa ? -1 : 1;
+    const A = info.get(a), B = info.get(b);
+    if (mode === "tix") return B.tix - A.tix || a.localeCompare(b);
+    if (mode === "name") return a.localeCompare(b);
+    return (B.avail > 0) - (A.avail > 0) || a.localeCompare(b);
+  });
+  const openAll = $("toggleAll").dataset.open === "1";
+
+  for (const name of names) {
+    const lanes = groups.get(name), s = info.get(name);
+    const photo = (lanes.find(l => l.photo) || {}).photo || photos[norm(name)] || null;
+    const isVip = !!lanes[0].vip, isFav = favs.has(norm(name));
+    const hot = lanes.some(l => l.restock_at && now - l.restock_at < NEW_WINDOW && l.quota > 0);
+
+    const d = el("details", "m");
+    const key = tab + "|" + name;
+    d.open = openAll || openMembers.has(key) || !!query;
+    d.ontoggle = () => d.open ? openMembers.add(key) : openMembers.delete(key);
+
+    const sm = el("summary");
+    sm.append(avatar(name, photo, "s"));
+    const who = el("div", "who"), nm = el("div", "n", name);
+    if (isVip) nm.append(el("span", "vip", "★ VIP"));
+    const chips = el("div", "chips");
+    chips.append(
+      el("span", "chip " + (s.tix > 0 ? "has" : "none"), "🎟 " + s.tix + " tiket"),
+      el("span", "chip", "🗓 " + s.sesAvail + "/" + s.sessions.size + " sesi"),
+      el("span", "chip", s.avail + "/" + lanes.length + " jalur")
+    );
+    if (hot) chips.append(el("span", "chip hot", "▲ baru"));
+    who.append(nm, chips);
+    const star = el("button", "star" + (isFav ? " on" : ""), isFav ? "★" : "☆");
+    star.setAttribute("aria-label", (isFav ? "Hapus favorit " : "Jadikan favorit ") + name);
+    star.onclick = e => {
+      e.preventDefault(); e.stopPropagation();
+      const k = norm(name); favs.has(k) ? favs.delete(k) : favs.add(k);
+      store.set("favs", [...favs]); render();
+    };
+    sm.append(who, star, el("span", "arrow", "›"));
+    d.append(sm);
+
+    const det = el("div", "detail");
+    const hero = el("div", "hero");
+    hero.append(avatar(name, photo, "l"));
+    const txt = el("div", "txt");
+    txt.append(el("h2", "", name));
+    txt.append(el("p", "", s.tix > 0
+      ? "Masih ada " + s.tix + " tiket di " + s.sesAvail + " dari " + s.sessions.size + " sesi."
+      : "Semua jalur member ini sold out. Pakai /pantau di Discord untuk dapat notifikasi saat restock."));
+    const kp = el("div", "kpis");
+    for (const [v, lab] of [[s.tix, "tiket tersisa"], [s.sesAvail + "/" + s.sessions.size, "sesi tersedia"], [s.avail + "/" + lanes.length, "jalur tersedia"]]) {
+      const k = el("div", "kpi"); k.append(el("b", "", String(v)), el("span", "", lab)); kp.append(k);
+    }
+    txt.append(kp); hero.append(txt); det.append(hero);
+
+    const sg = el("div", "sgrid");
+    const sessList = [...s.sessions.values()].sort((a, b) =>
+      (a[0].date + a[0].start).localeCompare(b[0].date + b[0].start));
+    for (const ls of sessList) {
+      ls.sort((a, b) => a.lane.localeCompare(b.lane, "id", { numeric: true }));
+      const f = ls[0], sTix = ls.reduce((x, l) => x + l.quota, 0);
+      const box = el("div", "sess"), h = el("div", "sess-h");
+      h.append(el("span", "t", (f.session || "Sesi") + " · " + fdate(f.date) + " · " + f.start + "–" + f.end));
+      h.append(el("span", "chip " + (sTix > 0 ? "has" : "none"), "🎟 " + sTix));
+      box.append(h);
+      for (const l of ls) {
+        const fresh = l.restock_at && now - l.restock_at < NEW_WINDOW && l.quota > 0;
+        const r = el("div", "ln" + (fresh ? " new" : ""));
+        r.append(el("span", "", l.lane), el("span", "pr", rp(l.price)));
+        const q = el("span", "q " + (l.quota > 0 ? "ok" : "no"), l.quota > 0 ? String(l.quota) : "SO");
+        if (fresh) q.append(el("span", "tag", "▲ " + ago(l.restock_at, now)));
+        r.append(q);
+        if (l.quota > 0) { const b = el("i", "bar"); b.style.width = Math.max(4, l.quota / maxQ * 100) + "%"; r.append(b); }
+        box.append(r);
+      }
+      sg.append(box);
+    }
+    det.append(sg);
+    d.append(det); list.append(d);
+  }
+}
+
+function detectRestock(json) {
+  const found = [];
+  for (const [code, ev] of Object.entries(json.events))
+    for (const l of ev.lanes) {
+      const k = code + "|" + l.sdc, prev = prevQuota.get(k);
+      if (prev !== undefined && l.quota > prev)
+        found.push({ at: json.now, event: ev.name, member: l.member, lane: l.lane, session: l.session, delta: l.quota - prev });
+      prevQuota.set(k, l.quota);
+    }
+  if (found.length && !firstLoad) {
+    feed = found.concat(feed).slice(0, FEED_MAX); store.set("feed", feed); renderFeed();
+    document.title = "🟢 Restock! · JKT48 Ticket Radar";
+    if ($("beep").checked) beep();
+    for (const f of found.slice(0, 3)) {
+      const msg = "🟢 " + f.member + " +" + f.delta + " · " + f.event + " · " + f.lane;
+      toast(msg);
+      if ($("notif").checked && window.Notification && Notification.permission === "granted") {
+        try { new Notification("Restock " + f.member, { body: f.event + " · " + f.lane + " · " + f.session + " (+" + f.delta + ")" }); } catch {}
+      }
+    }
+    if (found.length > 3) toast("…dan " + (found.length - 3) + " restock lainnya");
+  }
+  firstLoad = false;
+}
+
+async function load() {
+  try {
+    const r = await fetch(API, { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    data = await r.json();
+    detectRestock(data);
+    render();
+  } catch (e) {
+    const st = $("status"); st.className = "pill bad"; st.textContent = "gagal memuat: " + e.message;
+    if (!data) { const l = $("list"); l.textContent = ""; l.append(el("div", "empty", "Tidak bisa terhubung ke server. Cek koneksi atau key dashboard.")); }
+  }
+}
+
+// ---- preferensi tersimpan
+for (const id of ["only", "favOnly", "hotOnly", "beep", "notif"]) {
+  $(id).checked = !!store.get(id, false);
+  $(id).addEventListener("change", () => { store.set(id, $(id).checked); render(); });
+}
+$("sort").value = store.get("sort", "avail");
+$("sort").onchange = () => { store.set("sort", $("sort").value); render(); };
+$("notif").addEventListener("change", async () => {
+  if ($("notif").checked && window.Notification && Notification.permission === "default") {
+    const p = await Notification.requestPermission();
+    if (p !== "granted") { $("notif").checked = false; store.set("notif", false); toast("Izin notifikasi ditolak di browser."); }
+  } else if ($("notif").checked && !window.Notification) {
+    $("notif").checked = false; toast("Browser ini tidak mendukung notifikasi.");
+  }
+});
+const savedTheme = store.get("theme", "");
+if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+$("theme").onclick = () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme:dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next; store.set("theme", next);
+};
+$("toggleAll").onclick = e => {
+  const o = e.target.dataset.open !== "1";
+  e.target.dataset.open = o ? "1" : ""; e.target.textContent = o ? "Tutup semua" : "Buka semua";
+  if (!o) openMembers.clear();
+  render();
+};
+$("feedClear").onclick = e => { e.preventDefault(); e.stopPropagation(); feed = []; store.set("feed", feed); renderFeed(); };
+$("refresh").onclick = load;
+$("date").onchange = $("q").oninput = render;
+$("top").onclick = () => window.scrollTo({ top: 0, behavior: "smooth" });
+addEventListener("scroll", () => { $("top").style.display = scrollY > 600 ? "inline-flex" : "none"; }, { passive: true });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { document.title = "JKT48 Ticket Radar"; load(); } });
+
+{ const l = $("list"); for (let i = 0; i < 4; i++) l.append(el("div", "sk")); }
+renderFeed();
+load(); setInterval(() => { if (!document.hidden) load(); }, 10000);
+</script>
+</body>
+</html>
