@@ -1035,7 +1035,7 @@ def poll_loop():
         time.sleep(sleep_for)
 
         # diblokir: mundur bertahap (maks 15 menit); sukses: reset
-        backoff = min(max(backoff * 2, 120), 900) if blocked else 0
+        backoff = min(max(backoff * 3, 300), 1800) if blocked else 0
 
 
 # ------------------------------------------------------------------ dashboard API
