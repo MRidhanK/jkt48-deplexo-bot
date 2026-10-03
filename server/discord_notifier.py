@@ -18,18 +18,42 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import random
 from curl_cffi import requests as cffi_requests
+# ------------------------------------------------------------
+# Load member_photos dari:
+# 1. folder yang sama dengan discord_notifier.py
+# 2. folder server/ jika script dijalankan dari root container
+# ------------------------------------------------------------
+SERVER_DIR = Path(__file__).resolve().parent / "server"
+
+if SERVER_DIR.is_dir():
+    sys.path.insert(0, str(SERVER_DIR))
+
 try:
     import member_photos
-except ImportError:
-    print("[WARN] member_photos.py tidak ditemukan, foto member dimatikan.")
 
-    class member_photos:  # pengganti kosong supaya bot tetap jalan
+    print(
+        f"[INIT] member_photos loaded from: "
+        f"{getattr(member_photos, '__file__', '?')}"
+    )
+
+except ImportError as e:
+    print(f"[WARN] member_photos.py tidak ditemukan: {e}")
+    print("[WARN] Foto member dimatikan.")
+
+    class member_photos:
         @staticmethod
-        def photos_for(names): return {}
+        def photos_for(names):
+            return {}
+
         @staticmethod
-        def read_photo(filename): return None
+        def read_photo(filename):
+            return None
+
         @staticmethod
-        def check(names): return {"error": "member_photos.py tidak ada di server"}
+        def check(names):
+            return {
+                "error": "member_photos.py tidak ditemukan"
+            }
 from urllib.parse import unquote
 import discord
 from discord import app_commands
