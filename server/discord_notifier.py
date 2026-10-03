@@ -18,7 +18,18 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import random
 from curl_cffi import requests as cffi_requests
-import member_photos
+try:
+    import member_photos
+except ImportError:
+    print("[WARN] member_photos.py tidak ditemukan, foto member dimatikan.")
+
+    class member_photos:  # pengganti kosong supaya bot tetap jalan
+        @staticmethod
+        def photos_for(names): return {}
+        @staticmethod
+        def read_photo(filename): return None
+        @staticmethod
+        def check(names): return {"error": "member_photos.py tidak ada di server"}
 from urllib.parse import unquote
 import discord
 from discord import app_commands
