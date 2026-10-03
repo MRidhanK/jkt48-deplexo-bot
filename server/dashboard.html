@@ -252,6 +252,8 @@ table.at{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .urow{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--line);font-variant-numeric:tabular-nums}
 #pushBox [hidden]{display:none!important}
 
+/* JKT48 Ticket Radar Premium UI layer */
+
 /* =========================================================
    JKT48 TICKET RADAR — PREMIUM UI REFRESH
    Visual-only layer: keeps existing IDs / JS / features intact.
@@ -700,32 +702,88 @@ table.hm{border-spacing:4px}
   *,*:before,*:after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
 }
 
-/* ---------- collapsible top controls ---------- */
-#headerToggle{
-  min-width:42px;height:40px;padding:0 12px;justify-content:center;
-  border-radius:12px;gap:7px;
+
+/* =========================================================
+   COLLAPSIBLE TOP FILTER / NAV
+   Keeps all existing controls and IDs intact.
+   ========================================================= */
+#radarTopToggle{
+  min-width:116px;
+  min-height:40px;
+  padding:8px 13px;
+  border-radius:12px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:9px;
+  font-weight:800;
   color:var(--text);
+  background:linear-gradient(145deg,var(--card2),var(--card));
+  border:1px solid var(--line);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 6px 18px rgba(0,0,0,.10);
+  cursor:pointer;
+  transition:transform .18s ease,border-color .18s ease,background .18s ease,box-shadow .18s ease;
 }
-#headerToggle .toggle-icon{
-  display:inline-block;font-size:17px;line-height:1;
-  transition:transform .22s ease;
+#radarTopToggle:hover{
+  transform:translateY(-1px);
+  border-color:rgba(255,23,99,.48);
+  box-shadow:0 8px 22px rgba(255,23,99,.10),inset 0 1px 0 rgba(255,255,255,.04);
 }
-#headerToggle[aria-expanded="false"] .toggle-icon{transform:rotate(-90deg)}
-#headerControls{
-  overflow:hidden;
-  max-height:520px;
-  opacity:1;
-  transform:translateY(0);
-  transition:max-height .28s ease,opacity .2s ease,transform .28s ease,margin .28s ease;
+#radarTopToggle:active{transform:translateY(0) scale(.98)}
+#radarTopToggle.is-open{
+  color:#fff;
+  border-color:rgba(255,23,99,.62);
+  background:linear-gradient(135deg,rgba(255,23,99,.20),rgba(255,23,99,.07));
+  box-shadow:0 8px 24px rgba(255,23,99,.13),0 0 0 1px rgba(255,23,99,.08) inset;
 }
-#headerControls.is-collapsed{
-  max-height:0;
+.radar-toggle-icon{
+  width:18px;height:18px;position:relative;display:inline-block;flex:0 0 18px;
+}
+.radar-toggle-icon:before,
+.radar-toggle-icon:after{
+  content:"";position:absolute;left:1px;width:16px;height:2px;border-radius:3px;background:currentColor;
+}
+.radar-toggle-icon:before{top:5px;box-shadow:0 6px 0 currentColor}
+.radar-toggle-icon:after{
+  width:5px;height:5px;left:5px;top:3px;
+  background:var(--card2);border:2px solid currentColor;box-sizing:border-box;
+  box-shadow:5px 6px 0 -1px var(--card2),5px 6px 0 1px currentColor;
+}
+#radarTopToggle.is-open .radar-toggle-icon:after{background:rgba(255,23,99,.08)}
+.radar-toggle-chevron{
+  width:8px;height:8px;margin-top:-4px;
+  border-right:2px solid currentColor;border-bottom:2px solid currentColor;
+  transform:rotate(45deg);transition:transform .25s ease;
+}
+#radarTopToggle.is-open .radar-toggle-chevron{transform:rotate(225deg);margin-top:4px}
+#radarTopToggle .radar-toggle-count{
+  min-width:19px;height:19px;padding:0 5px;border-radius:999px;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:10px;background:rgba(255,255,255,.07);color:var(--mut);
+}
+#radarTopToggle.is-open .radar-toggle-count{background:rgba(255,23,99,.18);color:#fff}
+#radarTopContent{
+  display:grid;
+  grid-template-rows:1fr;
+  transition:grid-template-rows .32s ease,opacity .25s ease,transform .32s ease,margin-top .32s ease;
+  transform-origin:top;
+}
+#radarTopContent>.radar-top-inner{min-height:0;overflow:hidden}
+#radarTopContent.is-closed{
+  grid-template-rows:0fr;
   opacity:0;
-  transform:translateY(-8px);
+  transform:translateY(-7px);
   pointer-events:none;
+  margin-top:-10px;
 }
+#radarTopContent.is-open{opacity:1;transform:none}
+#radarTopContent>.radar-top-inner>.row:first-child{margin-top:10px}
 @media(max-width:800px){
-  #headerToggle .toggle-label{display:none}
+  #radarTopToggle{min-width:104px;padding:8px 10px}
+  #radarTopToggle .radar-toggle-count{display:none}
+}
+@media(max-width:600px){
+  #radarTopToggle{font-size:12px;min-height:38px}
 }
 
 </style>
@@ -737,15 +795,19 @@ table.hm{border-spacing:4px}
     <span id="status" class="pill">memuat…</span>
     <button class="btn sq" id="refresh" title="Muat ulang sekarang" aria-label="Muat ulang">⟳</button>
     <button class="btn sq" id="theme" title="Ganti tema" aria-label="Ganti tema">🌓</button>
-    <button class="btn" id="headerToggle" type="button" aria-expanded="true" aria-controls="headerControls" title="Buka/tutup panel pencarian dan filter">
-      <span class="toggle-icon">⌄</span><span class="toggle-label">Filter</span>
-    </button>
     <a class="btn" id="buy" target="_blank" rel="noopener" title="Buka halaman pembelian di jkt48.com"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.2 10.2a1 1 0 0 0 1 .8h9.4a1 1 0 0 0 1-.8L20 8H6.2M9 20h.01M17 20h.01"/></svg>Beli tiket</a>
+    <button class="btn" id="radarTopToggle" type="button" aria-expanded="true" aria-controls="radarTopContent" title="Buka/tutup panel navigasi dan filter">
+      <span class="radar-toggle-icon" aria-hidden="true"></span>
+      <span id="radarTopToggleText">Filter</span>
+      <span class="radar-toggle-count" id="radarTopToggleCount">8</span>
+      <span class="radar-toggle-chevron" aria-hidden="true"></span>
+    </button>
   </div>
-  <div id="headerControls">
-    <div class="row"><div class="tabs" id="tabs"></div><div class="tabs seg" id="views" role="group" aria-label="Tampilan"></div></div>
-    <div class="row">
-    <input type="search" id="q" placeholder="Cari member…" aria-label="Cari member">
+  <div id="radarTopContent" class="is-open">
+    <div class="radar-top-inner">
+      <div class="row"><div class="tabs" id="tabs"></div><div class="tabs seg" id="views" role="group" aria-label="Tampilan"></div></div>
+      <div class="row">
+        <input type="search" id="q" placeholder="Cari member…" aria-label="Cari member">
     <select id="sort" title="Urutkan" aria-label="Urutkan">
       <option value="avail">Urut: tersedia dulu</option>
       <option value="tix">Urut: tiket terbanyak</option>
@@ -756,8 +818,8 @@ table.hm{border-spacing:4px}
     <select id="date" title="Tanggal" aria-label="Filter tanggal"><option value="">Semua tanggal</option></select>
     <select id="lane" title="Jalur" aria-label="Filter jalur"><option value="">Semua jalur</option></select>
     <select id="price" title="Harga" aria-label="Filter harga"><option value="">Semua harga</option></select>
-    </div>
-    <div class="row"><div class="opts">
+      </div>
+      <div class="row"><div class="opts">
     <label class="pill"><input type="checkbox" id="only"> hanya tersedia</label>
     <label class="pill"><input type="checkbox" id="favOnly"> ⭐ favorit saja</label>
     <label class="pill"><input type="checkbox" id="vipOnly"> ★ VIP saja</label>
@@ -767,7 +829,8 @@ table.hm{border-spacing:4px}
     <label class="pill"><input type="checkbox" id="notif"> 📲 notifikasi</label>
     <label class="pill"><input type="checkbox" id="wake"> 🔆 layar nyala</label>
     <button class="btn" id="toggleAll" style="padding:3px 10px;font-size:12px">Buka semua</button>
-    </div></div>
+      </div></div>
+    </div>
   </div>
 </header>
 <main>
@@ -1631,22 +1694,6 @@ $("theme").onclick = () => {
   const next = cur === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = next; store.set("theme", next);
 };
-// ---- Toggle panel atas: pencarian, filter, tab & opsi
-const headerControls = $("headerControls");
-const headerToggle = $("headerToggle");
-const savedHeaderCollapsed = store.get("headerCollapsed", false);
-const setHeaderCollapsed = collapsed => {
-  headerControls.classList.toggle("is-collapsed", collapsed);
-  headerToggle.setAttribute("aria-expanded", String(!collapsed));
-  headerToggle.title = collapsed ? "Buka panel pencarian dan filter" : "Tutup panel pencarian dan filter";
-  headerToggle.querySelector(".toggle-label").textContent = collapsed ? "Buka" : "Filter";
-  store.set("headerCollapsed", collapsed);
-};
-setHeaderCollapsed(savedHeaderCollapsed === true || savedHeaderCollapsed === "true");
-headerToggle.onclick = () => {
-  setHeaderCollapsed(!headerControls.classList.contains("is-collapsed"));
-};
-
 $("toggleAll").onclick = e => {
   const o = e.target.dataset.open !== "1";
   e.target.dataset.open = o ? "1" : ""; e.target.textContent = o ? "Tutup semua" : "Buka semua";
@@ -1763,6 +1810,36 @@ pushInit();
 { const l = $("list"); for (let i = 0; i < 4; i++) l.append(el("div", "sk")); }
 renderFeed();
 load(); setInterval(() => { if (!document.hidden) load(); }, 10000);
+</script>
+
+<script>
+(() => {
+  "use strict";
+  const toggle = document.getElementById("radarTopToggle");
+  const panel = document.getElementById("radarTopContent");
+  const label = document.getElementById("radarTopToggleText");
+  if (!toggle || !panel) return;
+
+  const KEY = "jkt48-radar-top-panel-open";
+  const count = document.getElementById("radarTopToggleCount");
+
+  function setOpen(open, save = true) {
+    panel.classList.toggle("is-open", open);
+    panel.classList.toggle("is-closed", !open);
+    toggle.classList.toggle("is-open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    label.textContent = open ? "Tutup filter" : "Buka filter";
+    if (count) count.textContent = open ? "8" : "☰";
+    if (save) localStorage.setItem(KEY, open ? "1" : "0");
+  }
+
+  toggle.addEventListener("click", () => {
+    setOpen(!panel.classList.contains("is-open"));
+  });
+
+  const saved = localStorage.getItem(KEY);
+  setOpen(saved !== "0", false);
+})();
 </script>
 </body>
 </html>
