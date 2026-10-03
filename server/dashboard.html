@@ -786,6 +786,45 @@ table.hm{border-spacing:4px}
   #radarTopToggle{font-size:12px;min-height:38px}
 }
 
+
+/* =========================================================
+   RADAR INTELLIGENCE — TIMELINE / ALERT CENTER / AUTO BUY
+   ========================================================= */
+.radar-intel{display:grid;grid-template-columns:1.25fr .95fr;gap:12px;margin:12px 0}
+.radar-panel{background:linear-gradient(145deg,var(--card),var(--card2));border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+.radar-panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 14px;border-bottom:1px solid var(--line)}
+.radar-panel-title{display:flex;align-items:center;gap:9px;font-weight:850}
+.radar-panel-title .live-dot{width:8px;height:8px;border-radius:50%;background:#20e08a;box-shadow:0 0 0 5px rgba(32,224,138,.09),0 0 15px rgba(32,224,138,.45);animation:radarPulse 1.5s infinite}
+@keyframes radarPulse{50%{opacity:.45;transform:scale(.78)}}
+.radar-panel-count{font-size:11px;color:var(--mut);font-weight:750}
+.radar-panel-body{padding:10px 12px}
+.radar-scroll{max-height:350px;overflow:auto;scrollbar-width:thin}
+.radar-feed-item{display:grid;grid-template-columns:56px 1fr auto;gap:9px;align-items:center;padding:10px 7px;border-bottom:1px solid var(--line);cursor:pointer}
+.radar-feed-item:last-child{border-bottom:0}.radar-feed-item:hover{background:rgba(255,255,255,.025)}
+.radar-feed-time{font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums}
+.radar-feed-main{min-width:0}.radar-feed-main b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.radar-feed-meta{font-size:11px;color:var(--mut);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.radar-delta{font-weight:900;color:var(--ok);font-size:13px}
+.radar-mini-buy{padding:6px 8px!important;border-radius:9px!important;font-size:11px!important}
+.radar-empty{padding:25px 10px;text-align:center;color:var(--mut);font-size:12px}
+.radar-alert-tools{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:9px}
+.radar-alert-tools input,.radar-alert-tools select{min-width:0;flex:1 1 120px}
+.radar-alert-item{border:1px solid var(--line);border-radius:12px;padding:10px;margin:7px 0;background:rgba(255,255,255,.018);position:relative;overflow:hidden}
+.radar-alert-item:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ok)}
+.radar-alert-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.radar-alert-name{font-weight:850}.radar-alert-badge{font-size:10px;font-weight:850;border-radius:999px;padding:3px 7px;background:rgba(255,23,99,.11);color:var(--acc)}
+.radar-alert-meta{font-size:11px;color:var(--mut);margin:5px 0 9px;line-height:1.45}
+.radar-alert-actions{display:flex;gap:6px;flex-wrap:wrap}.radar-alert-actions .btn{font-size:11px;padding:6px 9px;border-radius:8px}
+.radar-buy{border:1px solid rgba(255,23,99,.22);background:linear-gradient(145deg,rgba(255,23,99,.10),rgba(255,23,99,.035))}
+.radar-buy-list{display:grid;gap:8px}
+.radar-buy-item{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.018)}
+.radar-buy-info b{display:block}.radar-buy-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--acc);margin-top:4px}
+.radar-buy-meta{font-size:11px;color:var(--mut);margin-top:3px}.radar-buy-actions{display:flex;gap:5px}
+.radar-buy-actions .btn{padding:7px 9px;border-radius:8px;font-size:11px}
+.radar-intel-more{margin-top:9px;width:100%;justify-content:center}
+@media(max-width:900px){.radar-intel{grid-template-columns:1fr}.radar-scroll{max-height:280px}}
+@media(max-width:600px){.radar-intel{gap:9px}.radar-panel-head{padding:11px}.radar-panel-body{padding:9px}.radar-feed-item{grid-template-columns:48px 1fr auto;padding:9px 4px}.radar-buy-item{grid-template-columns:1fr}.radar-buy-actions{justify-content:flex-start}.radar-alert-tools input,.radar-alert-tools select{flex-basis:100%}}
+
 </style>
 </head>
 <body>
@@ -843,6 +882,45 @@ table.hm{border-spacing:4px}
     <div><b id="s-av">-</b><span>jalur tersedia</span></div>
     <div><b id="s-tix">-</b><span>total tiket tersisa</span></div>
   </div>
+
+
+  <section class="radar-intel" aria-label="Radar Intelligence">
+    <div class="radar-panel">
+      <div class="radar-panel-head">
+        <div class="radar-panel-title"><span class="live-dot"></span><span>Live Restock Timeline</span></div>
+        <span class="radar-panel-count" id="timelineCount">0 event</span>
+      </div>
+      <div class="radar-panel-body">
+        <div class="radar-scroll" id="liveTimeline"><div class="radar-empty">Menunggu restock baru…</div></div>
+        <button class="btn radar-intel-more" id="timelineMore" type="button">Lihat semua aktivitas</button>
+      </div>
+    </div>
+
+    <div class="radar-panel">
+      <div class="radar-panel-head">
+        <div class="radar-panel-title">🚨 Restock Alert Center</div>
+        <span class="radar-panel-count" id="alertCount">0 alert</span>
+      </div>
+      <div class="radar-panel-body">
+        <div class="radar-alert-tools">
+          <input type="search" id="alertMember" placeholder="Filter member…" aria-label="Filter alert member">
+          <select id="alertScope" aria-label="Filter alert"><option value="all">Semua alert</option><option value="vip">★ VIP</option><option value="fav">⭐ Favorit</option></select>
+          <select id="alertEvent" aria-label="Filter event"><option value="">Semua event</option></select>
+        </div>
+        <div class="radar-scroll" id="alertCenter"><div class="radar-empty">Belum ada alert.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="radar-panel radar-buy">
+    <div class="radar-panel-head">
+      <div class="radar-panel-title">🛒 Auto Buy Preparation <span class="radar-panel-count">siapkan halaman beli + kode sesi saat restock</span></div>
+      <button class="btn" id="clearBuyPrep" type="button">Bersihkan</button>
+    </div>
+    <div class="radar-panel-body">
+      <div class="radar-buy-list" id="buyPrepList"><div class="radar-empty">Belum ada sesi yang disiapkan.</div></div>
+    </div>
+  </section>
 
   <details class="help" id="feedBox">
     <summary><span>📈 Aktivitas restock <span id="fc" class="chip">0</span></span><button class="btn" id="feedClear" style="padding:0 8px;font-size:12px">Bersihkan</button></summary>
@@ -919,7 +997,8 @@ const store = {
   set(k, v) { try { localStorage.setItem("jr_" + k, JSON.stringify(v)); } catch {} }
 };
 let data = null, tab = store.get("tab", null), prevQuota = new Map(), firstLoad = true, dateKey = "";
-let favs = new Set(store.get("favs", [])), feed = store.get("feed", []);
+let favs = new Set(store.get("favs", [])), feed = store.get("feed", []), buyPrep = store.get("buyPrep", []);
+let timelineExpanded = false;
 const openMembers = new Set();
 const openLanes = new Set();          // jalur yang grafiknya sedang dibuka ("EVENT|sdc")
 const hist = new Map();               // cache riwayat: "EVENT|sdc" -> {points, now, at, err}
@@ -1029,6 +1108,81 @@ function stats(lanes) {
   return { tix, avail, sessions, sesAvail };
 }
 
+
+function prepKey(f) { return [f.code, f.sdc].join("|"); }
+function isVipFor(f) {
+  try {
+    const ev = data && data.events && data.events[f.code];
+    return !!ev && ev.lanes.some(l => l.sdc === f.sdc && l.vip);
+  } catch { return false; }
+}
+function renderTimeline() {
+  const box = $("liveTimeline"), list = timelineExpanded ? feed : feed.slice(0, 8);
+  $("timelineCount").textContent = feed.length + " event" + (feed.length === 1 ? "" : "s");
+  box.textContent = "";
+  if (!list.length) { box.append(el("div", "radar-empty", "Menunggu restock baru…")); return; }
+  for (const f of list) {
+    const r = el("div", "radar-feed-item");
+    r.append(el("time", "radar-feed-time", hm(f.at)));
+    const main = el("div", "radar-feed-main");
+    const title = el("b", "", f.member + "  +" + f.delta);
+    const meta = el("div", "radar-feed-meta", (isVipFor(f) ? "★ VIP · " : "") + f.event + " · " + f.lane + " · " + f.session);
+    main.append(title, meta); r.append(main);
+    const a = withIcon("a", "btn radar-mini-buy", "cart", "Beli"); a.href = buyFor(f.code); a.target = "_blank"; a.rel = "noopener";
+    a.onclick = e => e.stopPropagation(); r.append(a);
+    r.onclick = () => prepareBuy(f);
+    box.append(r);
+  }
+}
+function renderAlertCenter() {
+  const member = norm($("alertMember").value), scope = $("alertScope").value, ev = $("alertEvent").value;
+  const events = [...new Set(feed.map(f => [f.code, f.event]))].sort((a,b)=>String(a[1]).localeCompare(String(b[1])));
+  const cur = $("alertEvent").value;
+  const opts = [["", "Semua event"], ...events];
+  const sig = opts.map(x=>x.join("|")).join("\u0001");
+  if ($("alertEvent").dataset.sig !== sig) {
+    $("alertEvent").dataset.sig = sig; $("alertEvent").textContent = "";
+    for (const [v,l] of opts) $("alertEvent").append(new Option(l,v));
+    $("alertEvent").value = opts.some(x=>x[0]===cur) ? cur : "";
+  }
+  const list = feed.filter(f => {
+    if (member && !norm(f.member).includes(member)) return false;
+    if (ev && f.code !== ev) return false;
+    if (scope === "vip" && !isVipFor(f)) return false;
+    if (scope === "fav" && !favs.has(norm(f.member))) return false;
+    return true;
+  }).slice(0, 30);
+  $("alertCount").textContent = list.length + " alert" + (list.length===1?"":"s");
+  const box = $("alertCenter"); box.textContent = "";
+  if (!list.length) { box.append(el("div", "radar-empty", feed.length ? "Tidak ada alert yang cocok dengan filter." : "Belum ada alert.")); return; }
+  for (const f of list) {
+    const item = el("div", "radar-alert-item");
+    const top = el("div", "radar-alert-top"); top.append(el("span", "radar-alert-name", f.member + "  +" + f.delta));
+    if (isVipFor(f)) top.append(el("span", "radar-alert-badge", "★ VIP"));
+    item.append(top, el("div", "radar-alert-meta", hm(f.at) + " · " + f.event + " · " + f.lane + " · " + f.session));
+    const acts = el("div", "radar-alert-actions");
+    const prep = withIcon("button", "btn", "cart", "Siapkan beli"); prep.type="button"; prep.onclick=()=>prepareBuy(f);
+    const copy = withIcon("button", "btn", "copy", "Salin kode"); copy.type="button"; copy.onclick=()=>copyText(f.sdc);
+    acts.append(prep, copy); item.append(acts); box.append(item);
+  }
+}
+function renderBuyPrep() {
+  const box = $("buyPrepList"); box.textContent="";
+  if (!buyPrep.length) { box.append(el("div", "radar-empty", "Belum ada sesi yang disiapkan.")); return; }
+  for (const f of buyPrep.slice(0, 12)) {
+    const item=el("div","radar-buy-item"), info=el("div","radar-buy-info");
+    info.append(el("b","",f.member + " · +" + f.delta), el("div","radar-buy-code",f.sdc), el("div","radar-buy-meta",f.event+" · "+f.lane+" · "+f.session+" · "+hm(f.at)));
+    const acts=el("div","radar-buy-actions");
+    const open=el("a","btn","🛒 Buka beli"); open.href=buyFor(f.code); open.target="_blank"; open.rel="noopener";
+    const cp=el("button","btn","Kode"); cp.type="button"; cp.onclick=()=>copyText(f.sdc);
+    acts.append(open,cp); item.append(info,acts); box.append(item);
+  }
+}
+function prepareBuy(f) {
+  const key=prepKey(f); buyPrep=[f,...buyPrep.filter(x=>prepKey(x)!==key)].slice(0,12); store.set("buyPrep",buyPrep); renderBuyPrep();
+  toast("Siap beli: "+f.member+" · "+f.sdc, buyFor(f.code));
+}
+
 function renderFeed() {
   $("fc").textContent = feed.length;
   const box = $("feed"); box.textContent = "";
@@ -1045,6 +1199,7 @@ function renderFeed() {
     r.onclick = () => { $("q").value = f.member; render(); window.scrollTo({ top: 0, behavior: "smooth" }); };
     box.append(r);
   }
+  renderTimeline(); renderAlertCenter(); renderBuyPrep();
 }
 
 // ---- dropdown generik: dibangun ulang hanya jika daftar berubah
@@ -1600,7 +1755,13 @@ function detectRestock(json) {
       prevQuota.set(k, l.quota);
     }
   if (found.length && !firstLoad) {
-    feed = found.concat(feed).slice(0, FEED_MAX); store.set("feed", feed); renderFeed();
+    feed = found.concat(feed).slice(0, FEED_MAX); store.set("feed", feed);
+    // Auto Buy Preparation: setiap restock baru masuk antrean persiapan pembelian.
+    for (const f of found.slice().reverse()) {
+      const k = prepKey(f);
+      buyPrep = [f, ...buyPrep.filter(x => prepKey(x) !== k)].slice(0, 12);
+    }
+    store.set("buyPrep", buyPrep); renderFeed();
     for (const f of found) { flashAt.set(f.code + "|" + f.member, Date.now()); flashAt.set(f.code + "|" + f.sdc, Date.now()); }
     unseen += found.length;
     document.title = "🟢 (" + unseen + ") Restock! · JKT48 Ticket Radar";
@@ -1701,6 +1862,9 @@ $("toggleAll").onclick = e => {
   render();
 };
 $("feedClear").onclick = e => { e.preventDefault(); e.stopPropagation(); feed = []; store.set("feed", feed); renderFeed(); };
+$("timelineMore").onclick = () => { timelineExpanded = !timelineExpanded; $("timelineMore").textContent = timelineExpanded ? "Tampilkan terbaru saja" : "Lihat semua aktivitas"; renderTimeline(); };
+$("alertMember").oninput = renderAlertCenter; $("alertScope").onchange = renderAlertCenter; $("alertEvent").onchange = renderAlertCenter;
+$("clearBuyPrep").onclick = () => { buyPrep=[]; store.set("buyPrep",buyPrep); renderBuyPrep(); toast("Antrean Auto Buy dibersihkan."); };
 $("refresh").onclick = load;
 $("date").onchange = $("q").oninput = render;
 $("lane").onchange = $("price").onchange = render;
