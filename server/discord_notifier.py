@@ -58,7 +58,7 @@ except ImportError as e:
 from urllib.parse import unquote
 import discord
 from discord import app_commands
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 COLOR_AMBER = 0xF1C40F
 LOW_QUOTA = 3
@@ -90,6 +90,16 @@ RESTOCK_COOLDOWN = int(os.environ.get("RESTOCK_COOLDOWN", "300"))
 # Riwayat kuota (untuk grafik & kecepatan terjual)
 HIST_KEEP_SECONDS = int(os.environ.get("HIST_KEEP_SECONDS", "86400"))  # simpan 24 jam
 HIST_MAXLEN = 1500
+
+# Analytics harian ("hari ini" dihitung sejak 00:00 zona waktu ini, default WIB)
+TZ_OFFSET_HOURS = float(os.environ.get("TZ_OFFSET_HOURS", "7"))
+LOCAL_TZ = timezone(timedelta(hours=TZ_OFFSET_HOURS))
+ACTIVITY_KEEP_SECONDS = int(os.environ.get("ACTIVITY_KEEP_SECONDS", "172800"))  # 48 jam
+ACTIVITY_MAXLEN = 20000
+
+# Pengelompokan event untuk halaman status
+EVENT_GROUP = {"EX5B99": "JKT", "EX24AE": "JKT", "EXD1A1": "AKB", "EXA6F1": "AKB"}
+GROUP_LABEL = {"JKT": "Poller JKT48", "AKB": "Poller AKB"}
 
 EVENTS = {"EX5B99": "2 Shoot JKT", "EX24AE": "MNG JKT", "EXD1A1" : "2Shoot AKB", "EXA6F1": "MNG AKB"}
 
@@ -194,6 +204,13 @@ history = {}     # (code, sdc) -> deque[(ts, quota)]
 so_after = {}    # (code, sdc) -> detik dari restock sampai sold out
 last_so = {}     # (code, sdc) -> detik restock -> sold out TERAKHIR; tidak dihapus saat restock
 
+activity = deque(maxlen=ACTIVITY_MAXLEN)   # [ts, jenis, code, sdc, jumlah, durasi]
+activity_since = time.time()               # kapan pencatatan analytics dimulai
+
+stats_lock = threading.Lock()
+request_total = 0
+request_errors = 0
+
 subs_lock = threading.Lock()
 poll_status = {}  # code -> status laporan terakhir dari worker
 
@@ -241,6 +258,21 @@ def speed_stats(key, quota, now):
         "last_so": last_so.get(key),
     }
 
+def log_activity(now, kind, code, sdc, n, dur=None):
+    """Dipanggil di dalam `with lock:` (jangan ambil lock lagi di sini)."""
+    activity.append([round(now, 1), kind, code, sdc, int(n),
+                     None if dur is None else round(dur, 1)])
+    cutoff = now - ACTIVITY_KEEP_SECONDS
+    while activity and activity[0][0] < cutoff:
+        activity.popleft()
+
+
+def count_request(status):
+    global request_total, request_errors
+    with stats_lock:
+        request_total += 1
+        if status >= 400:
+            request_errors += 1
 
 def load_subs():
     try:
@@ -256,7 +288,7 @@ def save_subs(data):
 
 
 def load_state():
-    global quota_state, baselined, last_restock
+    global quota_state, baselined, last_restock, activity_since
     try:
         raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -298,6 +330,17 @@ def load_state():
         history[split(k)] = deque(
             ((float(t), int(q)) for t, q in v), maxlen=HIST_MAXLEN
         )
+    activity.clear()
+    for r in raw.get("activity") or []:
+        try:
+            activity.append([float(r[0]), str(r[1]), str(r[2]), str(r[3]),
+                             int(r[4]), None if r[5] is None else float(r[5])])
+        except (TypeError, ValueError, IndexError):
+            pass
+    try:
+        activity_since = float(raw.get("activity_since") or activity_since)
+    except (TypeError, ValueError):
+        pass
     print(f"[STATE] Dimuat: {len(quota_state)} lane, {len(lane_state)} data jalur, "
           f"{len(baselined)} event, {len(history)} riwayat")
     
@@ -315,6 +358,8 @@ def save_state():
                     f"{c}|{s}": [[round(t), q] for t, q in dq]
                     for (c, s), dq in history.items()
                 },
+                "activity": list(activity),
+                "activity_since": activity_since,
             }
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
@@ -1159,6 +1204,7 @@ def process_report(code, lanes):
     new_sessions = []
     sold_outs = []
     deltas = {}
+    sold_total = 0
 
     now = time.time()
 
@@ -1221,6 +1267,8 @@ def process_report(code, lanes):
                 quota,
                 now,
             )
+            if prev is not None and quota < prev:
+                sold_total += prev - quota
 
             # --------------------------------------------------
             # SOLD OUT
@@ -1250,7 +1298,7 @@ def process_report(code, lanes):
                         duration = elapsed
                         so_after[key] = elapsed
                         last_so[key] = elapsed
-
+                log_activity(now, "so", code, sdc, 0, duration)
                 sold_outs.append(
                     (
                         {
@@ -1300,7 +1348,7 @@ def process_report(code, lanes):
 
                     is_restock = True
                     delta = quota - prev
-
+                log_activity(now, "in", code, sdc, delta)
             # --------------------------------------------------
             # Simpan RESTOCK
             # --------------------------------------------------
@@ -1342,7 +1390,8 @@ def process_report(code, lanes):
                         "available_quota": quota,
                     }
                 )
-
+        if sold_total:
+            log_activity(now, "sold", code, "", sold_total)
     # ==========================================================
     # Jangan kirim Discord kalau bot belum siap
     # ==========================================================
@@ -1721,16 +1770,179 @@ def snapshot():
     return {"now": now, "stale_after": STALE_SECONDS, "events": events,
             "poller": poller_info(), "photos": member_photos.photos_for(names)}
 
+def analytics_snapshot():
+    now = time.time()
+    local_now = datetime.fromtimestamp(now, LOCAL_TZ)
+    midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = midnight.timestamp()
+
+    hours = [0] * 24
+    hours_in = [0] * 24
+    per_event = {
+        code: {"name": name, "restock": 0, "tickets_in": 0,
+               "tickets_sold": 0, "sold_out": 0}
+        for code, name in EVENTS.items()
+    }
+    restock = tin = sold = so = 0
+    durs, in_by, fast = [], {}, {}
+
+    with lock:
+        rows = [r for r in activity if r[0] >= start]
+        for ts, kind, code, sdc, n, dur in rows:
+            pe = per_event.get(code)
+            if pe is None:
+                continue
+            if kind == "in":
+                restock += 1
+                tin += n
+                pe["restock"] += 1
+                pe["tickets_in"] += n
+                h = datetime.fromtimestamp(ts, LOCAL_TZ).hour
+                hours[h] += 1
+                hours_in[h] += n
+                in_by[(code, sdc)] = in_by.get((code, sdc), 0) + n
+            elif kind == "sold":
+                sold += n
+                pe["tickets_sold"] += n
+            elif kind == "so":
+                so += 1
+                pe["sold_out"] += 1
+                if dur is not None:
+                    durs.append(dur)
+                    k = (code, sdc)
+                    if k not in fast or dur < fast[k]:
+                        fast[k] = dur
+
+        fastest = []
+        for (code, sdc), dur in sorted(fast.items(), key=lambda kv: kv[1])[:5]:
+            v = lane_state.get((code, sdc)) or {}
+            fastest.append({
+                "event": EVENTS.get(code, code),
+                "member": v.get("member_name") or "-",
+                "lane": v.get("label") or "-",
+                "session": v.get("session_label") or "-",
+                "date": v.get("session_date") or "",
+                "start": hhmm(v.get("session_start_time")),
+                "duration": dur,
+                "tickets_in": in_by.get((code, sdc), 0),
+            })
+        tracked_since = activity_since
+
+    active = [c for c, e in per_event.items() if e["restock"] > 0]
+    most_active = max(
+        active, key=lambda c: (per_event[c]["restock"], per_event[c]["tickets_in"])
+    ) if active else None
+    peak_hour = max(range(24), key=lambda h: (hours[h], hours_in[h])) if any(hours) else None
+
+    return {
+        "now": now,
+        "day_start": start,
+        "day_label": pretty_date(midnight.strftime("%Y-%m-%d")),
+        "hour_now": local_now.hour,
+        "tracked_since": tracked_since,
+        "today": {"restock": restock, "tickets_in": tin,
+                  "tickets_sold": sold, "sold_out": so},
+        "avg_so": (sum(durs) / len(durs)) if durs else None,
+        "so_samples": len(durs),
+        "most_active": most_active,
+        "peak_hour": peak_hour,
+        "hours": hours,
+        "hours_in": hours_in,
+        "events": per_event,
+        "fastest": fastest,
+    }
+
+
+def health_snapshot():
+    now = time.time()
+    uptime = now - START_TIME
+    labels = {"ok": "ONLINE", "warn": "BERMASALAH", "bad": "OFFLINE", "idle": "MENUNGGU"}
+    comps = []
+
+    # Discord bot
+    ready = bot.is_ready() and not bot.is_closed()
+    lat = bot.latency
+    lat_ms = round(lat * 1000) if lat == lat and lat != float("inf") else None
+    st = "ok" if ready else "bad"
+    comps.append({
+        "id": "discord", "name": "Discord Bot", "status": st, "label": labels[st],
+        "latency_ms": lat_ms if ready else None,
+        "detail": "" if ready else "belum terhubung ke Discord",
+    })
+
+    # Dashboard
+    dash_ok = DASHBOARD_FILE.is_file()
+    st = "ok" if dash_ok else "bad"
+    comps.append({
+        "id": "dashboard", "name": "Dashboard", "status": st, "label": labels[st],
+        "detail": "" if dash_ok else "dashboard.html tidak ditemukan",
+    })
+
+    # API (kalau endpoint ini menjawab, berarti API hidup)
+    comps.append({"id": "api", "name": "API", "status": "ok",
+                  "label": labels["ok"], "detail": ""})
+
+    # Poller per grup (JKT / AKB)
+    groups = {}
+    for code in EVENTS:
+        groups.setdefault(EVENT_GROUP.get(code, code), []).append(code)
+
+    for g, codes in groups.items():
+        evs, lasts = [], []
+        for code in codes:
+            with lock:
+                last = last_report.get(code)
+            ps = poll_status.get(code) or {}
+            failing = bool(ps) and not ps.get("ok", True)
+            if last is None and uptime < STALE_SECONDS:
+                est = "idle"
+            elif last is None or now - last > STALE_SECONDS:
+                est = "bad"
+            elif failing:
+                est = "warn"
+            else:
+                est = "ok"
+            if last:
+                lasts.append(last)
+            evs.append({
+                "code": code, "name": EVENTS[code], "status": est, "last": last,
+                "error": ps.get("error", "") if failing else "",
+                "fails": ps.get("fails", 0) if failing else 0,
+            })
+        sts = [e["status"] for e in evs]
+        worst = ("bad" if "bad" in sts else "warn" if "warn" in sts
+                 else "idle" if all(s == "idle" for s in sts) else "ok")
+        comps.append({
+            "id": f"poller-{g}", "group": g, "name": GROUP_LABEL.get(g, f"Poller {g}"),
+            "status": worst, "label": labels[worst],
+            "last": min(lasts) if lasts else None, "events": evs,
+        })
+
+    with stats_lock:
+        total, errors = request_total, request_errors
+
+    return {
+        "now": now, "started": START_TIME, "uptime": uptime,
+        "components": comps,
+        "requests": {"total": total, "errors": errors},
+        "poller": {"enabled": POLL_ENABLED, "interval": POLL_INTERVAL},
+        "stale_after": STALE_SECONDS,
+    }
+
 def _same(a, b):
     """Bandingkan string secara aman dan tidak error untuk karakter non-ASCII."""
     return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
 
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
+    def send_response(self, code, message=None):
+        count_request(code)
+        super().send_response(code, message)
+
     def log_message(self, fmt, *args):
-        if self.path.startswith(("/api/lanes", "/api/history", "/members/")):
+        if self.path.startswith(("/api/lanes", "/api/history", "/api/analytics",
+                                 "/api/status", "/members/")):
             return
-        print("[HTTP]", fmt % args)
 
     def send_json(self, status, body):
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -1780,6 +1992,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/api/lanes":
             return self.send_json(200, snapshot())
+
+        if url.path == "/api/analytics":
+            return self.send_json(200, analytics_snapshot())
+
+        if url.path == "/api/status":
+            return self.send_json(200, health_snapshot())
 
         if url.path == "/api/members":
             with lock:

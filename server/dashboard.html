@@ -219,6 +219,37 @@ a.hmv:hover{text-decoration:underline}
   #top{bottom:calc(82px + env(safe-area-inset-bottom,0px))}
   .seg{margin-left:0}
 }
+/* ====== ANALYTICS & STATUS ====== */
+.pg{grid-column:1/-1}
+h2.ph{margin:0 0 8px;font-size:13px;letter-spacing:.06em;color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+.card h2{margin:0 0 8px;font-size:12px;letter-spacing:.06em;color:var(--mut)}
+.note{background:var(--soft);border-radius:10px;padding:8px 12px;margin-bottom:10px;color:var(--mut);font-size:12px}
+.sum.txt b{font-size:16px;overflow-wrap:anywhere}
+.tw{overflow-x:auto}
+table.at{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.at th,.at td{padding:6px 8px;border-top:1px solid var(--line);text-align:right;white-space:nowrap}
+.at th:first-child,.at td:first-child{text-align:left;white-space:normal}
+.at thead th{border-top:0;color:var(--mut);font-weight:600;font-size:12px}
+.at small{display:block;color:var(--mut);font-size:11px}
+.hbars{display:flex;align-items:flex-end;gap:3px;height:96px}
+.hb{flex:1;height:100%;display:flex;align-items:flex-end}
+.hb i{display:block;width:100%;background:var(--ok);opacity:.75;border-radius:3px 3px 0 0}
+.hb.pk i{background:var(--acc);opacity:1}
+.hb.now{border-bottom:2px solid var(--text)}
+.haxis{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin-top:4px}
+.ssum{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:12px 14px;margin-bottom:10px;font-weight:700}
+.ssum.ok{color:var(--ok);border-color:var(--ok)}
+.ssum.warn{color:var(--warn);border-color:var(--warn)}
+.ssum.bad{background:var(--no);border-color:var(--no);color:#fff}
+.srow{display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.srow .dot{width:10px;height:10px;border-radius:50%;background:var(--mut)}
+.srow.ok .dot{background:var(--ok)}.srow.warn .dot{background:var(--warn)}.srow.bad .dot{background:var(--no)}
+.srow .sn{font-weight:600}
+.srow .sl{font-weight:700;font-size:12px;color:var(--mut)}
+.srow.ok .sl{color:var(--ok)}.srow.warn .sl{color:var(--warn)}.srow.bad .sl{color:var(--no)}
+.srow .sd{grid-column:2/-1;color:var(--mut);font-size:12px}
+.urow{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--line);font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -334,7 +365,9 @@ const selKeys = {};                   // penanda isi dropdown (agar tidak dibang
 let unseen = 0, wl = null;
 const flashAt = new Map();            // "EVENT|member" / "EVENT|sdc" -> waktu restock terdeteksi
 const isFlash = k => Date.now() - (flashAt.get(k) || 0) < 2500;
-let view = store.get("view", "cards"); if (view !== "cards" && view !== "heat") view = "cards";
+const VIEWS = ["cards", "heat", "analytics", "status"];
+let view = store.get("view", "cards"); if (!VIEWS.includes(view)) view = "cards";
+let ana = null, sysd = null, extraErr = "";
 
 const buyFor = code => "https://jkt48.com/purchase/exclusive?code=" + encodeURIComponent(code);
 const rp = v => Number.isFinite(+v) ? "Rp" + (+v).toLocaleString("id-ID") : "-";
@@ -610,6 +643,156 @@ function renderHeat(names, groups, info, buyUrl) {
   return wrap;
 }
 
+// ---- helper format
+function fmtMS(sec) {
+  if (sec == null) return "-";
+  const s = Math.max(0, Math.round(sec));
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+  return Math.floor(s / 3600) + "j " + Math.floor((s % 3600) / 60) + "m";
+}
+function fmtUp(sec) {
+  const s = Math.max(0, Math.round(sec)), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? d + "d " : "") + h + "h " + m + "m";
+}
+const hms = ts => new Date(ts * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const hourRange = h => h == null ? "-" : String(h).padStart(2, "0") + ":00–" + String((h + 1) % 24).padStart(2, "0") + ":00";
+function kcard(val, label) {
+  const d = el("div"); d.append(el("b", "", String(val)), el("span", "", label)); return d;
+}
+
+// ---- ambil data tab Analytics / Status
+async function loadExtra() {
+  const v = view;
+  if (v !== "analytics" && v !== "status") return;
+  try {
+    const r = await fetch((v === "analytics" ? "/api/analytics" : "/api/status") + (KEY ? "?key=" + encodeURIComponent(KEY) : ""), { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    if (v === "analytics") ana = j; else sysd = j;
+    extraErr = "";
+  } catch (e) { extraErr = e.message; }
+  render();
+}
+
+// ---- tab Analytics
+function renderAnalytics() {
+  const pg = el("div", "pg");
+  if (!ana) { pg.append(el("div", "empty", extraErr ? "Gagal memuat analytics: " + extraErr : "Memuat analytics…")); return pg; }
+  const a = ana, t = a.today, evs = a.events || {};
+  pg.append(el("h2", "ph", "HARI INI · " + a.day_label));
+  if (a.tracked_since && a.tracked_since > a.day_start + 60)
+    pg.append(el("div", "note", "Pencatatan baru dimulai pukul " + hm(a.tracked_since) + ", jadi kejadian sebelum jam itu tidak ikut terhitung."));
+
+  const r1 = el("div", "sum");
+  r1.append(kcard(t.restock, "restock"), kcard(t.tickets_in, "tiket masuk"), kcard(t.tickets_sold, "tiket terjual"), kcard(t.sold_out, "sold out"));
+  pg.append(r1);
+
+  const f0 = (a.fastest || [])[0];
+  const r2 = el("div", "sum txt");
+  r2.append(
+    kcard(fmtMS(a.avg_so), "rata-rata sampai SO" + (a.so_samples ? " (" + a.so_samples + " sampel)" : "")),
+    kcard(a.most_active && evs[a.most_active] ? evs[a.most_active].name : "-", "event paling aktif"),
+    kcard(hourRange(a.peak_hour), "jam restock terbanyak"),
+    kcard(f0 ? fmtMS(f0.duration) : "-", f0 ? "turnover tercepat · " + f0.member : "turnover tercepat")
+  );
+  pg.append(r2);
+
+  // restock per jam
+  const hc = el("div", "card"); hc.append(el("h2", "", "RESTOCK PER JAM"));
+  const bars = el("div", "hbars"), mx = Math.max(1, ...a.hours);
+  a.hours.forEach((n, h) => {
+    const b = el("div", "hb" + (n > 0 && h === a.peak_hour ? " pk" : "") + (h === a.hour_now ? " now" : "")), i = el("i");
+    i.style.height = (n ? Math.max(6, n / mx * 100) : 2) + "%";
+    b.title = hourRange(h) + " · " + n + " restock · " + a.hours_in[h] + " tiket";
+    b.append(i); bars.append(b);
+  });
+  hc.append(bars);
+  const ax = el("div", "haxis");
+  for (const h of ["00", "06", "12", "18", "23"]) ax.append(el("span", "", h));
+  hc.append(ax); pg.append(hc);
+
+  // per event
+  const ec = el("div", "card"), ew = el("div", "tw"), et = el("table", "at"), eh = el("thead"), er = el("tr");
+  ec.append(el("h2", "", "PER EVENT"));
+  for (const h of ["Event", "Restock", "Masuk", "Terjual", "SO"]) er.append(el("th", "", h));
+  eh.append(er); et.append(eh);
+  const eb = el("tbody");
+  for (const e of Object.values(evs)) {
+    const tr = el("tr");
+    tr.append(el("td", "", e.name), el("td", "", String(e.restock)), el("td", "", String(e.tickets_in)), el("td", "", String(e.tickets_sold)), el("td", "", String(e.sold_out)));
+    eb.append(tr);
+  }
+  et.append(eb); ew.append(et); ec.append(ew); pg.append(ec);
+
+  // turnover tercepat
+  const fc = el("div", "card"); fc.append(el("h2", "", "TURNOVER TERCEPAT (HABIS PALING CEPAT SETELAH RESTOCK)"));
+  if (!(a.fastest || []).length) fc.append(el("div", "", "Belum ada sold out dengan durasi terukur hari ini."));
+  else {
+    const fw = el("div", "tw"), ft = el("table", "at"), fh = el("thead"), fr = el("tr");
+    for (const h of ["Member", "Sesi", "Bertahan", "Masuk"]) fr.append(el("th", "", h));
+    fh.append(fr); ft.append(fh);
+    const fb = el("tbody");
+    a.fastest.forEach((f, i) => {
+      const tr = el("tr"), td = el("td");
+      td.append(document.createTextNode((i + 1) + ". " + f.member), el("small", "", f.event + " · " + f.lane));
+      tr.append(td, el("td", "", (f.session || "Sesi") + " · " + sdate(f.date) + " " + f.start), el("td", "", fmtMS(f.duration)), el("td", "", String(f.tickets_in)));
+      fb.append(tr);
+    });
+    ft.append(fb); fw.append(ft); fc.append(fw);
+  }
+  pg.append(fc);
+  return pg;
+}
+
+// ---- tab Status
+function renderStatus() {
+  const pg = el("div", "pg");
+  if (!sysd) { pg.append(el("div", "empty", extraErr ? "Gagal memuat status: " + extraErr : "Memuat status…")); return pg; }
+  const s = sysd, now = s.now, comps = s.components || [];
+  const worst = comps.some(c => c.status === "bad") ? "bad" : comps.some(c => c.status === "warn") ? "warn" : "ok";
+  pg.append(el("div", "ssum " + worst, worst === "ok" ? "🟢 SEMUA SISTEM NORMAL" : worst === "warn" ? "🟡 ADA KOMPONEN BERMASALAH" : "🔴 ADA KOMPONEN OFFLINE"));
+
+  const dc = comps.find(c => c.id === "discord");
+  const kp = el("div", "sum");
+  kp.append(
+    kcard(fmtUp(s.uptime), "uptime"),
+    kcard((s.requests.total || 0).toLocaleString("id-ID"), "request sejak start"),
+    kcard((s.requests.errors || 0).toLocaleString("id-ID"), "respon error (4xx/5xx)"),
+    kcard(dc && dc.latency_ms != null ? dc.latency_ms + " ms" : "-", "latensi Discord")
+  );
+  pg.append(kp);
+
+  const card = el("div", "card"); card.append(el("h2", "", "SYSTEM STATUS"));
+  for (const c of comps) {
+    const r = el("div", "srow " + c.status);
+    r.append(el("span", "dot"), el("span", "sn", c.name), el("span", "sl", c.label));
+    const lines = [];
+    if (c.events) {
+      if (c.status === "bad") lines.push("Last data: " + (c.last ? fmtMS(now - c.last) + " lalu" : "belum ada data"));
+      for (const e of c.events)
+        lines.push(e.name + " · " + (e.last ? hms(e.last) + " (" + fmtMS(now - e.last) + " lalu)" : "belum ada data") +
+          (e.error ? " · gagal " + e.fails + "x: " + e.error : ""));
+    } else if (c.detail) lines.push(c.detail);
+    for (const t of lines) r.append(el("div", "sd", t));
+    card.append(r);
+  }
+  pg.append(card);
+
+  const lu = el("div", "card"); lu.append(el("h2", "", "LAST UPDATE"));
+  for (const c of comps) if (c.events) {
+    const r = el("div", "urow");
+    r.append(el("span", "", c.group), el("b", "", c.last ? hms(c.last) + " · " + fmtMS(now - c.last) + " lalu" : "-"));
+    lu.append(r);
+  }
+  pg.append(lu);
+
+  pg.append(el("div", "note",
+    "Mode poller: " + (s.poller.enabled ? "langsung ke jkt48.com tiap " + s.poller.interval + " dtk" : "menunggu laporan Worker (POST /notify)") +
+    " · data dianggap basi setelah " + s.stale_after + " dtk · jumlah request ikut menghitung polling dashboard ini."));
+  return pg;
+}
+
 function render() {
   if (!data) return;
   const codes = Object.keys(data.events);
@@ -630,10 +813,10 @@ function render() {
   }
   $("barBuy").href = buyUrl;
   const vw = $("views"); vw.textContent = "";
-  for (const [k, lab] of [["cards", "Kartu"], ["heat", "Heatmap"]]) {
+  for (const [k, lab] of [["cards", "Kartu"], ["heat", "Heatmap"], ["analytics", "Analytics"], ["status", "Status"]]) {
     const b = el("button", "tab" + (view === k ? " on" : ""), lab);
     b.setAttribute("aria-pressed", view === k ? "true" : "false");
-    b.onclick = () => { view = k; store.set("view", k); render(); };
+    b.onclick = () => { view = k; store.set("view", k); render(); loadExtra(); };
     vw.append(b);
   }
 
@@ -658,6 +841,15 @@ function render() {
   const ps = ((data.poller || {}).status || {})[tab], pb = $("pollBanner");
   if (ps && !ps.ok) { pb.hidden = false; pb.textContent = "⚠️ Poller gagal " + ps.fails + "x: " + ps.error; }
   else pb.hidden = true;
+
+  const special = view === "analytics" || view === "status";
+  document.querySelector(".sum").style.display = special ? "none" : "";
+  if (special) {
+    const sl = $("list"); sl.textContent = "";
+    sl.classList.remove("compact", "stale");
+    sl.append(view === "analytics" ? renderAnalytics() : renderStatus());
+    return;
+  }
 
   const all = ev.lanes, tot = stats(all);
   $("s-mem").textContent = new Set(all.map(l => l.member)).size;
@@ -866,6 +1058,11 @@ async function load() {
     data = await r.json();
     detectRestock(data);
     render();
+    loadExtra();
+    data = await r.json();
+    detectRestock(data);
+    render();
+    loadExtra();
   } catch (e) {
     const st = $("status"); st.className = "pill bad"; st.textContent = "gagal memuat: " + e.message;
     const sb = $("staleBanner");
