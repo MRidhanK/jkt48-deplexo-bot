@@ -1059,10 +1059,6 @@ async function load() {
     detectRestock(data);
     render();
     loadExtra();
-    data = await r.json();
-    detectRestock(data);
-    render();
-    loadExtra();
   } catch (e) {
     const st = $("status"); st.className = "pill bad"; st.textContent = "gagal memuat: " + e.message;
     const sb = $("staleBanner");
