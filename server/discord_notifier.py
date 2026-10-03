@@ -28,6 +28,9 @@ import base64   # (jika belum ada, tidak wajib)
 import struct
 import zlib
 import random
+import re
+import shutil
+import urllib.request
 from curl_cffi import requests as cffi_requests
 # ------------------------------------------------------------
 # Load member_photos dari:
@@ -143,6 +146,76 @@ EVENTS = {"EX5B99": "2 Shoot JKT", "EX24AE": "MNG JKT", "EXD1A1" : "2Shoot AKB",
 # Alert jika worker melaporkan error berturut-turut sebanyak ini.
 POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))
 
+# ------------------------------------------------------------------ War Mode, kanal cadangan, ketahanan
+BASE_EVENTS = set(EVENTS)
+
+def _flag(name, default="0"):
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes")
+
+RESTOCK_COOLDOWN_VIP = int(os.environ.get("RESTOCK_COOLDOWN_VIP", "30"))
+WAR_COOLDOWN = int(os.environ.get("WAR_COOLDOWN", "20"))
+POLL_INTERVAL_WAR = int(os.environ.get("POLL_INTERVAL_WAR", "10"))
+
+NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").strip().rstrip("/")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "").strip()
+TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+BACKUP_ENABLED = bool(NTFY_TOPIC or (TG_TOKEN and TG_CHAT))
+BACKUP_IMMEDIATE = _flag("BACKUP_IMMEDIATE")          # kirim kanal cadangan langsung tiap restock VIP
+ESCALATE_AFTER = int(os.environ.get("ESCALATE_AFTER", "20"))   # detik sebelum eskalasi
+
+HEARTBEAT_URL = os.environ.get("HEARTBEAT_URL", "").strip()    # mis. healthchecks.io
+EVENT_DISCOVERY = _flag("EVENT_DISCOVERY", "1")
+EVENT_DISCOVERY_INTERVAL = int(os.environ.get("EVENT_DISCOVERY_INTERVAL", "120"))
+EVENT_LIST_URLS = [u.strip() for u in os.environ.get(
+    "EVENT_LIST_URLS", "https://jkt48.com/purchase/exclusive").split(",") if u.strip()]
+EVENT_CODE_RE = re.compile(r"\bEX(?=[0-9A-Z]*[0-9])[0-9A-Z]{4}\b")
+
+sale_state = {}            # code -> "waiting" | "open"
+war_state = {"until": 0.0}
+last_ack = [0.0]
+seen_codes = set()
+
+
+def war_active():
+    return time.time() < war_state["until"]
+
+
+def set_war(minutes):
+    minutes = max(0.0, min(float(minutes), 360.0))
+    war_state["until"] = (time.time() + minutes * 60) if minutes > 0 else 0.0
+    print(f"[WAR] {'ON ' + str(int(minutes)) + ' menit' if minutes > 0 else 'OFF'}")
+
+
+def war_info():
+    return {"active": war_active(), "until": war_state["until"] or None}
+
+
+def set_ack():
+    last_ack[0] = time.time()
+
+
+def cooldown_for(code, lane):
+    if war_active():
+        return WAR_COOLDOWN
+    if is_vip(code, lane):
+        return RESTOCK_COOLDOWN_VIP
+    return RESTOCK_COOLDOWN
+
+
+def current_poll_interval():
+    return POLL_INTERVAL_WAR if war_active() else POLL_INTERVAL
+
+
+def register_event(code, name=None):
+    """Tambah event saat runtime. Dict diganti baru agar iterasi di thread lain tidak error."""
+    global EVENTS
+    if code in EVENTS:
+        return False
+    EVENTS = {**EVENTS, code: name or f"Event {code}"}
+    return True
+
 VIP_NAMES = [
     "Fiony Alveria", "Aurhel Alana", "Michelle Alexandra",
     "Hillary Abigail", "Adeline Wijaya", "Oline Manuel",
@@ -163,7 +236,14 @@ VIP_MEMBERS = {
 }
 
 SEED_FILE = Path(__file__).with_name("subscriptions.json")
-SUBS_FILE = Path(os.environ.get("SUBS_FILE") or SEED_FILE)
+DATA_DIR = os.environ.get("DATA_DIR", "").strip()
+if DATA_DIR:
+    Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+    SUBS_FILE = Path(os.environ.get("SUBS_FILE") or Path(DATA_DIR) / "subscriptions.json")
+    if not SUBS_FILE.exists() and SEED_FILE.exists():
+        shutil.copy(SEED_FILE, SUBS_FILE)
+else:
+    SUBS_FILE = Path(os.environ.get("SUBS_FILE") or SEED_FILE)
 STATE_FILE = Path(os.environ.get("STATE_FILE") or SUBS_FILE.with_name("state.json"))
 
 DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()
@@ -342,6 +422,10 @@ def load_state():
         raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return
+    for c, n in (raw.get("extra_events") or {}).items():
+        if isinstance(c, str) and isinstance(n, str):
+            register_event(c, n)
+    seen_codes.update(x for x in (raw.get("seen_codes") or []) if isinstance(x, str))
 
     def split(k):
         code, _, sdc = k.partition("|")
@@ -413,6 +497,8 @@ def save_state():
                 "activity": list(activity),
                 "activity_since": activity_since,
                 "summary_day": summary_meta["day"],
+                "extra_events": {c: n for c, n in EVENTS.items() if c not in BASE_EVENTS},
+                "seen_codes": sorted(seen_codes),
             }
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
@@ -563,13 +649,22 @@ def buy_url(code):
     return f"https://jkt48.com/purchase/exclusive?code={code}"
 
 
-def buy_view(code):
+def buy_view(code, ack=False):
     view = discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(
         label="🛒 Beli sekarang",
         style=discord.ButtonStyle.link,
         url=buy_url(code),
     ))
+    if ack:
+        btn = discord.ui.Button(label="✅ Saya urus", style=discord.ButtonStyle.success)
+
+        async def cb(interaction: discord.Interaction):
+            set_ack()
+            await interaction.response.send_message("Oke, eskalasi dijeda.", ephemeral=True)
+
+        btn.callback = cb
+        view.add_item(btn)
     return view
 
 
@@ -879,6 +974,15 @@ async def status_cmd(interaction: discord.Interaction):
         lines.append(txt)
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
+@bot.tree.command(name="war", description="Aktifkan/matikan War Mode (cooldown pendek, polling lebih cepat)")
+@app_commands.describe(menit="Durasi dalam menit (0 = matikan)")
+async def cmd_war(interaction: discord.Interaction, menit: int = 60):
+    if VIP_USER_ID and str(interaction.user.id) != VIP_USER_ID:
+        await interaction.response.send_message("Hanya pemilik bot.", ephemeral=True)
+        return
+    set_war(menit)
+    await interaction.response.send_message(
+        f"⚔️ War Mode aktif {menit} menit." if menit > 0 else "War Mode dimatikan.", ephemeral=True)
 
 # ------------------------------------------------------------------ rate-limited send
 async def safe_send(channel, **kwargs):
@@ -1103,6 +1207,9 @@ async def spam_loop(code, lane, delta):
     sent = 0
     reason = "cap"
 
+    t0 = time.time()
+    escalated = False
+
     try:
         channel = await get_channel()
 
@@ -1124,6 +1231,15 @@ async def spam_loop(code, lane, delta):
             if age > STALE_SECONDS:
                 reason = "stale"
                 break
+
+            if (not escalated and BACKUP_ENABLED and is_vip(code, lane)
+                    and time.time() - t0 >= ESCALATE_AFTER and last_ack[0] < t0):
+                escalated = True
+                backup_notify(
+                    f"🚨 BELUM DITINDAKLANJUTI · {lane.get('member_name', '-')}",
+                    f"{EVENTS.get(code, code)} · {lane.get('label', '-')} · "
+                    f"{quota_now} tiket masih ada",
+                    buy_url(code), priority=5)
 
             # ==========================================
             # UPDATE QUOTA TERBARU
@@ -1149,7 +1265,7 @@ async def spam_loop(code, lane, delta):
                     lane_now,
                     delta,
                 ),
-                view=buy_view(code),
+                view=buy_view(code, ack=True),
                 allowed_mentions=vip_allowed(),
             )
 
@@ -1275,6 +1391,7 @@ def ensure_spam(code, lane, delta):
         traceback.print_exc()
 
 async def poll_alert(text):
+    backup_notify("⚠️ JKT48 Radar", text.replace("**", ""), priority=4)
     try:
         channel = await get_channel()
         await safe_send(
@@ -1288,6 +1405,9 @@ async def poll_alert(text):
 
 # ------------------------------------------------------------------ proses laporan
 def process_report(code, lanes):
+    if not lanes:                       # API hidup tapi 0 jalur = menunggu penjualan dibuka
+        mark_waiting(code)
+        return (0, 0, 0)
     restocks = []
     new_sessions = []
     sold_outs = []
@@ -1297,6 +1417,10 @@ def process_report(code, lanes):
     now = time.time()
 
     with lock:
+        opened = sale_state.get(code) == "waiting"
+        if opened:
+            baselined.discard(code)
+        sale_state[code] = "open"
         first_scan = code not in baselined
 
         baselined.add(code)
@@ -1436,6 +1560,7 @@ def process_report(code, lanes):
 
                     is_restock = True
                     delta = quota - prev
+            if is_restock and delta > 0:
                 log_activity(now, "in", code, sdc, delta)
             # --------------------------------------------------
             # Simpan RESTOCK
@@ -1451,7 +1576,7 @@ def process_report(code, lanes):
                 # dalam cooldown.
                 if (
                     now - last
-                    >= RESTOCK_COOLDOWN
+                    >= cooldown_for(code, lane)
                 ):
                     restocks.append(
                         {
@@ -1481,8 +1606,13 @@ def process_report(code, lanes):
         if sold_total:
             log_activity(now, "sold", code, "", sold_total)
     # Web Push: tidak bergantung pada kesiapan Discord
+    if opened:
+        sale_open_dispatch(code, lanes)
     if restocks:
         push_dispatch(code, restocks, deltas)
+        discord_up = bot.main_loop is not None and bot.is_ready()
+        if war_active() or BACKUP_IMMEDIATE or not discord_up:
+            backup_restocks(code, restocks, deltas)
     # ==========================================================
     # Jangan kirim Discord kalau bot belum siap
     # ==========================================================
@@ -1798,7 +1928,13 @@ def poll_once(session, code):
         return False
 
     if not lanes:
-        msg = "200 tapi 0 jalur (struktur JSON berubah atau event ditutup?)"
+        data_field = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data_field, list):          # struktur normal, hanya kosong = belum dibuka
+            process_report(code, [])
+            record_remote_poll(code)
+            print(f"[POLL] {name} menunggu penjualan dibuka ray={ray}")
+            return False
+        msg = "200 tapi struktur JSON tidak dikenali"
         if ray:
             msg += f" ray={ray}"
         record_remote_poll(code, msg)
@@ -1860,7 +1996,7 @@ def poll_loop():
 
         elapsed = time.time() - started
         jitter = random.uniform(0, POLL_JITTER_MAX)
-        sleep_for = max(5.0, POLL_INTERVAL - elapsed + jitter + backoff)
+        sleep_for = max(5.0, current_poll_interval() - elapsed + jitter + backoff)
 
         if blocked:
             print(f"[POLL] Terblokir, tidur {sleep_for:.0f}s (backoff {backoff}s)")
@@ -1914,9 +2050,10 @@ def snapshot():
                     "vip": is_vip(code, v),
                     **speed_stats((c, sdc), quota, now),
                 })
-            events[code] = {"name": name, "updated": last_report.get(code), "lanes": lanes}
+            events[code] = {"name": name, "updated": last_report.get(code),
+                            "sale": sale_state.get(code, "open"), "lanes": lanes}
     names = {l["member"] for e in events.values() for l in e["lanes"] if l.get("member")}
-    return {"now": now, "stale_after": STALE_SECONDS, "events": events,
+    return {"now": now, "stale_after": STALE_SECONDS, "events": events, "war": war_info(),
             "poller": poller_info(), "photos": member_photos.photos_for(names)}
 
 def analytics_snapshot():
@@ -2422,6 +2559,174 @@ def push_dispatch(code, restocks, deltas):
     for endpoint, rec in subs:
         push_pool.submit(_push_to_sub, endpoint, rec, code, lanes, d)
 
+# ------------------------------------------------------------------ push broadcast
+def _push_raw(endpoint, rec, payload):
+    try:
+        if _send_one(rec, payload) == "dead":
+            push_remove(endpoint)
+    except Exception:
+        traceback.print_exc()
+
+
+def push_broadcast(payload):
+    if not PUSH_ENABLED:
+        return
+    with push_lock:
+        subs = list(push_subs.items())
+    for endpoint, rec in subs:
+        push_pool.submit(_push_raw, endpoint, rec, dict(payload))
+
+
+# ------------------------------------------------------------------ kanal cadangan (ntfy / Telegram)
+backup_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="backup")
+
+
+def _post_json(url, payload, headers=None):
+    h = {"Content-Type": "application/json"}
+    h.update(headers or {})
+    req = urllib.request.Request(
+        url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers=h, method="POST")
+    with urllib.request.urlopen(req, timeout=8) as r:
+        r.read()
+
+
+def _backup_send(title, body, url, priority):
+    if NTFY_TOPIC:
+        try:
+            p = {"topic": NTFY_TOPIC, "title": title, "message": body,
+                 "priority": priority, "tags": ["rotating_light"]}
+            if url:
+                p["click"] = url
+                p["actions"] = [{"action": "view", "label": "Beli", "url": url}]
+            _post_json(NTFY_SERVER, p,
+                       {"Authorization": "Bearer " + NTFY_TOKEN} if NTFY_TOKEN else None)
+        except Exception as e:
+            print(f"[BACKUP] ntfy gagal: {type(e).__name__}")
+    if TG_TOKEN and TG_CHAT:
+        try:
+            text = f"{title}\n{body}" + (f"\n{url}" if url else "")
+            _post_json(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                       {"chat_id": TG_CHAT, "text": text})
+        except Exception as e:
+            print(f"[BACKUP] telegram gagal: {type(e).__name__}")
+
+
+def backup_notify(title, body, url="", priority=4):
+    """Non-blocking. priority 1-5 (ntfy); 5 = paling tinggi."""
+    if BACKUP_ENABLED:
+        backup_pool.submit(_backup_send, title, body, url, priority)
+
+
+def backup_restocks(code, restocks, deltas):
+    vip = [l for l in restocks if is_vip(code, l)]
+    if not vip:
+        return
+    lines = []
+    for l in vip[:5]:
+        d = deltas.get((code, str(l.get("session_detail_code") or "")))
+        lines.append(
+            f"{l.get('member_name')} · {l.get('label')} · {l.get('session_label')} · "
+            f"{parse_quota(l.get('available_quota')) or 0} tiket" + (f" (+{d})" if d else ""))
+    backup_notify(f"🟢 RESTOCK VIP · {EVENTS.get(code, code)}", "\n".join(lines),
+                  buy_url(code), priority=5)
+
+
+# ------------------------------------------------------------------ deteksi penjualan dibuka
+def mark_waiting(code):
+    """API hidup tapi belum ada jalur: bukan error, cuma menunggu penjualan dibuka."""
+    with lock:
+        last_report[code] = time.time()
+        baselined.discard(code)      # begitu dibuka, jadi scan awal (tanpa banjir notifikasi restock)
+    if sale_state.get(code) != "waiting":
+        sale_state[code] = "waiting"
+        print(f"[SALE] {EVENTS.get(code, code)} menunggu penjualan dibuka")
+
+
+async def notify_sale_open(code, name, body):
+    try:
+        channel = await get_channel()
+        embed = discord.Embed(
+            title=f"🚀 PENJUALAN DIBUKA · {name}", url=buy_url(code),
+            description=body, color=COLOR_GREEN, timestamp=datetime.now(timezone.utc))
+        await safe_send(
+            channel, content=f"{vip_mention()} 🚀 **PENJUALAN {name} DIBUKA!**",
+            embed=embed, view=buy_view(code, ack=True), allowed_mentions=vip_allowed())
+    except Exception:
+        traceback.print_exc()
+
+
+def sale_open_dispatch(code, lanes):
+    name = EVENTS.get(code, code)
+    avail = [l for l in lanes if (parse_quota(l.get("available_quota")) or 0) > 0]
+    total = sum(parse_quota(l.get("available_quota")) or 0 for l in lanes)
+    vips = sorted({l.get("member_name") for l in avail if is_vip(code, l) and l.get("member_name")})
+    body = f"{len(avail)}/{len(lanes)} jalur tersedia · {total} tiket"
+    if vips:
+        body += " · VIP: " + ", ".join(vips[:6])
+    print(f"[SALE] DIBUKA {name}: {body}")
+    push_broadcast({"title": f"🚀 PENJUALAN DIBUKA · {name}", "body": body,
+                    "url": buy_url(code), "tag": f"{code}|open"})
+    backup_notify(f"🚀 PENJUALAN DIBUKA · {name}", body, buy_url(code), priority=5)
+    if bot.main_loop is not None and bot.is_ready():
+        asyncio.run_coroutine_threadsafe(notify_sale_open(code, name, body), bot.main_loop)
+
+
+# ------------------------------------------------------------------ penemuan event baru
+def discovery_loop():
+    time.sleep(20)
+    session = None
+    warned = False
+    while True:
+        try:
+            if session is None:
+                session = build_session(IMPERSONATE)
+            found = set()
+            for u in EVENT_LIST_URLS:
+                try:
+                    r = session.get(u, headers={"Accept-Language": "id-ID,id;q=0.9"}, timeout=15)
+                    if r.status_code == 200:
+                        found.update(EVENT_CODE_RE.findall(r.text))
+                except Exception as e:
+                    print(f"[DISCOVER] {u} gagal: {type(e).__name__}")
+                    session = None
+            if not found and not warned:
+                warned = True
+                print("[DISCOVER] tidak ada kode event di halaman (mungkin dirender JS).")
+            baseline = not seen_codes        # scan pertama hanya mencatat, tidak mendaftar
+            for code in sorted(found):
+                if code in EVENTS or code in seen_codes:
+                    seen_codes.add(code)
+                    continue
+                seen_codes.add(code)
+                if baseline:
+                    continue
+                if register_event(code):
+                    save_state()
+                    print(f"[DISCOVER] event baru: {code}")
+                    if bot.main_loop is not None and bot.is_ready():
+                        asyncio.run_coroutine_threadsafe(poll_alert(
+                            f"🆕 Event baru terdeteksi: **{code}** ({buy_url(code)}). "
+                            f"Otomatis dipantau dengan nama sementara 'Event {code}'."),
+                            bot.main_loop)
+        except Exception:
+            traceback.print_exc()
+        time.sleep(EVENT_DISCOVERY_INTERVAL)
+
+
+# ------------------------------------------------------------------ heartbeat (dead-man switch)
+def heartbeat_loop():
+    """Ping hanya jika semua event segar dan bot terhubung; berhenti ping = layanan eksternal membunyikan alarm."""
+    while True:
+        time.sleep(60)
+        now = time.time()
+        fresh = all(last_report.get(c) and now - last_report[c] <= STALE_SECONDS for c in list(EVENTS))
+        if fresh and bot.is_ready():
+            try:
+                urllib.request.urlopen(HEARTBEAT_URL, timeout=8).read()
+            except Exception as e:
+                print(f"[HEARTBEAT] gagal: {type(e).__name__}")
+
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     def send_response(self, code, message=None):
@@ -2551,8 +2856,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/health":
+            now = time.time()
+            stale = [c for c in list(EVENTS)
+                     if not last_report.get(c) or now - last_report[c] > STALE_SECONDS]
+            strict = (parse_qs(url.query).get("strict") or [""])[0] == "1"
+            warm = now - START_TIME < STALE_SECONDS
+            ok = True if (not strict or warm) else (not stale and bot.is_ready())
             return self.send_json(200, {
-                "ok": True, "service": "jkt48-notifier",
+                "ok": ok, "service": "jkt48-notifier",
+                "stale": [EVENTS.get(c, c) for c in stale],
                 "poller": {**poller_info(), "events": list(EVENTS)},
             })
 
@@ -2591,6 +2903,9 @@ class Handler(BaseHTTPRequestHandler):
             given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
             if not _same(given, DASHBOARD_KEY):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+
+        if url.path == "/api/war":
+            return self.send_json(200, war_info())
 
         if url.path == "/api/lanes":
             return self.send_json(200, snapshot())
@@ -2636,6 +2951,27 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return self.send_html(500, msg.encode("utf-8"))
         self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
+
+    def handle_ctl_post(self, url):
+        if not self._dash_ok(url):
+            return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+        data = {}
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if 0 < length <= 2000:
+                parsed = json.loads(self.rfile.read(length).decode("utf-8"))
+                data = parsed if isinstance(parsed, dict) else {}
+        except (ValueError, UnicodeDecodeError):
+            data = {}
+        if url.path == "/api/ack":
+            set_ack()
+            return self.send_json(200, {"ok": True})
+        try:
+            minutes = float(data.get("minutes", 60))
+        except (TypeError, ValueError):
+            minutes = 60
+        set_war(minutes)
+        return self.send_json(200, {"ok": True, **war_info()})
 
     def do_POST(self):
         url0 = urlparse(self.path)
@@ -2706,6 +3042,12 @@ def main():
         print("[INFO] NOTIFY_SECRET kosong: endpoint /notify dinonaktifkan (hanya polling langsung).")
     load_state()
     load_push()
+    if not DATA_DIR:
+        print("[WARN] DATA_DIR belum diset: state, langganan, dan push hilang saat redeploy.")
+    if BACKUP_ENABLED:
+        print(f"[BACKUP] Aktif (ntfy={'ya' if NTFY_TOPIC else 'tidak'}, telegram={'ya' if TG_TOKEN and TG_CHAT else 'tidak'})")
+    if HEARTBEAT_URL:
+        threading.Thread(target=heartbeat_loop, daemon=True).start()
     if PUSH_ENABLED:
         print(f"[PUSH] Aktif ({len(push_subs)} perangkat)")
     else:
@@ -2716,6 +3058,8 @@ def main():
         print("[JKT48] Polling langsung ke jkt48.com aktif.")
         if POLL_PROXY:
             print("[JKT48] Polling lewat proxy (POLL_PROXY diset).")
+        if EVENT_DISCOVERY:
+            threading.Thread(target=discovery_loop, daemon=True).start()
     else:
         print("[JKT48] Polling langsung mati, menunggu laporan Worker.")
     bot.run(TOKEN)
