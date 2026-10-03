@@ -409,10 +409,12 @@ class RadarBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.main_loop = None
         self.save_task = None
+        self.stale_task = None
 
     async def setup_hook(self):
         self.main_loop = asyncio.get_running_loop()
         self.save_task = asyncio.create_task(save_state_loop())
+        self.stale_task = asyncio.create_task(stale_watch_loop())
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -1208,6 +1210,29 @@ def record_remote_poll(code, error=""):
         return
     asyncio.run_coroutine_threadsafe(poll_alert(text), bot.main_loop)
 
+START_TIME = time.time()
+STALE_ALERT_AFTER = int(os.environ.get("STALE_ALERT_AFTER", "300"))
+stale_alerted = set()
+
+
+async def stale_watch_loop():
+    await bot.wait_until_ready()
+    while True:
+        await asyncio.sleep(30)
+        now = time.time()
+        for code, name in EVENTS.items():
+            with lock:
+                ts = last_report.get(code, START_TIME)  # belum pernah sukses -> hitung dari start
+            age = now - ts
+            if age > STALE_ALERT_AFTER and code not in stale_alerted:
+                stale_alerted.add(code)
+                await poll_alert(
+                    f"⏰ Data **{name}** basi {int(age // 60)} menit. "
+                    f"Restock tidak akan terdeteksi sampai pulih."
+                )
+            elif age <= STALE_SECONDS and code in stale_alerted:
+                stale_alerted.discard(code)
+                await poll_alert(f"✅ Data **{name}** segar lagi.")
 
 async def save_state_loop():
     await bot.wait_until_ready()
@@ -1264,14 +1289,11 @@ def flatten(payload):
                 "session_end_time": str(sess.get("end_time") or ""),
             })
     return lanes
-
-
 def poll_once(session, code):
     """
-    Return True jika terdeteksi blokir Cloudflare (403/429/challenge).
+    Return True jika terdeteksi blokir (403/429/bukan JSON/timeout).
     Return False jika polling berhasil.
     """
-
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
@@ -1279,32 +1301,17 @@ def poll_once(session, code):
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
-
     if JKT48_COOKIE:
         headers["Cookie"] = JKT48_COOKIE
 
-        print("========== DEBUG ==========")
-        print("COOKIE SET =", bool(JKT48_COOKIE))
-        print("COOKIE LEN =", len(JKT48_COOKIE))
-        print("IMPERSONATE =", IMPERSONATE)
+    name = EVENTS.get(code, code)
 
     try:
-            r = session.get(
-                api_url(code),
-                headers=headers,
-                timeout=15,
-            )
-
-            print("STATUS =", r.status_code)
-            print("SERVER =", r.headers.get("server"))
-            print("CF =", r.headers.get("cf-mitigated"))
-            print("RAY =", r.headers.get("cf-ray"))
-            print("BODY =", r.text[:300])
-
+        r = session.get(api_url(code), headers=headers, timeout=15)
     except Exception as e:
         msg = f"{type(e).__name__}: {str(e)[:120]}"
         record_remote_poll(code, msg)
-        print(f"[POLL] {code} ERROR -> {msg}")
+        print(f"[POLL] {name} ERROR -> {msg}")
         return True
 
     cf = r.headers.get("cf-mitigated", "")
@@ -1313,74 +1320,41 @@ def poll_once(session, code):
 
     if r.status_code != 200:
         msg = f"HTTP {r.status_code}"
-
         if server:
             msg += f" server={server}"
-
         if cf:
             msg += f" cf={cf}"
-
         if ray:
             msg += f" ray={ray}"
-
         record_remote_poll(code, msg)
-
-        print(
-            f"[POLL] {EVENTS.get(code, code)} "
-            f"-> {msg}"
-        )
-
+        print(f"[POLL] {name} -> {msg} body={r.text[:150]!r}")
         return r.status_code in (403, 429)
 
     try:
         payload = r.json()
-
     except ValueError:
         snippet = " ".join(r.text.split())[:120]
-
-        msg = f"200 tapi bukan JSON"
-
+        msg = "200 tapi bukan JSON"
         if cf:
             msg += f" cf={cf}"
-
         if ray:
             msg += f" ray={ray}"
-
         msg += f" body={snippet}"
-
         record_remote_poll(code, msg)
-
-        print(
-            f"[POLL] {EVENTS.get(code, code)} "
-            f"-> {msg}"
-        )
-
+        print(f"[POLL] {name} -> {msg}")
         return True
 
     try:
         lanes = flatten(payload)
-
     except Exception as e:
         msg = f"flatten error: {type(e).__name__}: {e}"
         record_remote_poll(code, msg)
-
-        print(
-            f"[POLL] {EVENTS.get(code, code)} "
-            f"-> {msg}"
-        )
-
+        print(f"[POLL] {name} -> {msg}")
         return False
 
     process_report(code, lanes)
-
     record_remote_poll(code)
-
-    print(
-        f"[POLL] {EVENTS.get(code, code)} "
-        f"OK lanes={len(lanes)} "
-        f"ray={ray}"
-    )
-
+    print(f"[POLL] {name} OK lanes={len(lanes)} ray={ray}")
     return False
 
 
@@ -1551,7 +1525,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_html(500, msg.encode("utf-8"))
         self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
 
-    def do_POST(self):
+def do_POST(self):
         secret = self.headers.get("X-Notify-Secret", "")
         if not NOTIFY_SECRET or not hmac.compare_digest(secret, NOTIFY_SECRET):
             return self.send_json(401, {"ok": False, "error": "Unauthorized."})
@@ -1567,8 +1541,6 @@ class Handler(BaseHTTPRequestHandler):
         if path != "/notify":
             return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
 
-        if urlparse(self.path).path != "/notify":
-            return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
