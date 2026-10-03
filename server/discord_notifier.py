@@ -9,6 +9,7 @@ import concurrent.futures
 import hmac
 import json
 import os
+import sys   
 import threading
 import time
 import traceback
@@ -90,7 +91,7 @@ RESTOCK_COOLDOWN = int(os.environ.get("RESTOCK_COOLDOWN", "300"))
 HIST_KEEP_SECONDS = int(os.environ.get("HIST_KEEP_SECONDS", "86400"))  # simpan 24 jam
 HIST_MAXLEN = 1500
 
-EVENTS = {"EX5B99": "2 Shoot", "EX24AE": "MNG"}
+EVENTS = {"EX5B99": "2 Shoot JKT", "EX24AE": "MNG JKT", "EXD1A1" : "2Shoot AKB", "EXA6F1": "MNG AKB"}
 
 # Alert jika worker melaporkan error berturut-turut sebanyak ini.
 POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))
@@ -101,10 +102,17 @@ VIP_NAMES = [
     "Abigail Rachel", "Catherina Vallencia", "Jacqueline Immanuela",
     "Nur Intan", "Putry Jazyta", "Astrella Virgiananda",
 ]
+VIP_NAMES_AKB = [
+    "Ayami Nagatomo",
+    "Miyuu Mizushima",
+    "Yui Oguri",
+]
 
 VIP_MEMBERS = {
-    "EX5B99": VIP_NAMES,
-    "EX24AE": VIP_NAMES,
+    "EX5B99": VIP_NAMES,       # 2 Shoot JKT
+    "EX24AE": VIP_NAMES,       # MNG JKT
+    "EXD1A1": VIP_NAMES_AKB,   # 2 Shoot AKB
+    "EXA6F1": VIP_NAMES_AKB,   # MNG AKB
 }
 
 SEED_FILE = Path(__file__).with_name("subscriptions.json")
@@ -494,8 +502,10 @@ class RadarBot(discord.Client):
 bot = RadarBot()
 
 EVENT_CHOICES = [
-    app_commands.Choice(name="2 Shoot", value="EX5B99"),
-    app_commands.Choice(name="MNG", value="EX24AE"),
+    app_commands.Choice(name="2 Shoot JKT", value="EX5B99"),
+    app_commands.Choice(name="MNG JKT", value="EX24AE"),
+    app_commands.Choice(name="2 Shoot AKB", value="EXD1A1"),
+    app_commands.Choice(name="MNG AKB", value="EXA6F1"),
     app_commands.Choice(name="Semua event", value="*"),
 ]
 
@@ -652,18 +662,32 @@ async def show_stock(interaction: discord.Interaction, code: str, member: str):
         )
 
 
-@bot.tree.command(name="2shoot", description="Lihat stok tiket member di event 2 Shoot")
+@bot.tree.command(name="2shoot", description="Lihat stok tiket member di event 2 Shoot JKT")
 @app_commands.describe(member="Nama member (atau 'semua')")
 @app_commands.autocomplete(member=member_autocomplete)
 async def cmd_2shoot(interaction: discord.Interaction, member: str):
     await show_stock(interaction, "EX5B99", member)
 
 
-@bot.tree.command(name="mng", description="Lihat stok tiket member di event MNG")
+@bot.tree.command(name="mng", description="Lihat stok tiket member di event MNG JKT")
 @app_commands.describe(member="Nama member (atau 'semua')")
 @app_commands.autocomplete(member=member_autocomplete)
 async def cmd_mng(interaction: discord.Interaction, member: str):
     await show_stock(interaction, "EX24AE", member)
+
+
+@bot.tree.command(name="2shootakb", description="Lihat stok tiket member di event 2 Shoot AKB")
+@app_commands.describe(member="Nama member (atau 'semua')")
+@app_commands.autocomplete(member=member_autocomplete)
+async def cmd_2shoot_akb(interaction: discord.Interaction, member: str):
+    await show_stock(interaction, "EXD1A1", member)
+
+
+@bot.tree.command(name="mngakb", description="Lihat stok tiket member di event MNG AKB")
+@app_commands.describe(member="Nama member (atau 'semua')")
+@app_commands.autocomplete(member=member_autocomplete)
+async def cmd_mng_akb(interaction: discord.Interaction, member: str):
+    await show_stock(interaction, "EXA6F1", member)
 
 
 @bot.tree.command(name="berhenti", description="Berhenti memantau member")
