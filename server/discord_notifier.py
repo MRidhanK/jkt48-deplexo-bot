@@ -18,7 +18,15 @@ import traceback
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, quote
+try:
+    from pywebpush import webpush, WebPushException
+    PUSH_LIB = True
+except ImportError:
+    PUSH_LIB = False
+import base64   # (jika belum ada, tidak wajib)
+import struct
+import zlib
 import random
 from curl_cffi import requests as cffi_requests
 # ------------------------------------------------------------
@@ -108,6 +116,23 @@ LATENCY_ALERT_MS = int(os.environ.get("LATENCY_ALERT_MS", "1500"))
 LATENCY_ALERT_CHECKS = int(os.environ.get("LATENCY_ALERT_CHECKS", "3"))  # berturut-turut
 API_ERR_WINDOW = int(os.environ.get("API_ERR_WINDOW", "300"))            # detik
 API_ERR_ALERT = int(os.environ.get("API_ERR_ALERT", "5"))                # jumlah 5xx
+
+# Web Push
+VAPID_PUBLIC = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com").strip()
+PUSH_TTL = int(os.environ.get("PUSH_TTL", "120"))              # detik; restock basi tidak perlu dikirim
+PUSH_MAX_SUBS = int(os.environ.get("PUSH_MAX_SUBS", "200"))
+PUSH_MAX_SINGLE = int(os.environ.get("PUSH_MAX_SINGLE", "3"))  # lebih dari ini digabung jadi 1 notifikasi
+PUSH_ENABLED = bool(PUSH_LIB and VAPID_PUBLIC and VAPID_PRIVATE)
+
+# Hanya endpoint dari layanan push resmi yang diterima (mencegah server dipakai menembak URL lain)
+PUSH_HOSTS = (
+    "fcm.googleapis.com",
+    "push.services.mozilla.com",
+    "push.apple.com",
+    "notify.windows.com",
+) + tuple(h.strip() for h in os.environ.get("PUSH_EXTRA_HOSTS", "").split(",") if h.strip())
 
 # Pengelompokan event untuk halaman status
 EVENT_GROUP = {"EX5B99": "JKT", "EX24AE": "JKT", "EXD1A1": "AKB", "EXA6F1": "AKB"}
@@ -1455,6 +1480,9 @@ def process_report(code, lanes):
                 )
         if sold_total:
             log_activity(now, "sold", code, "", sold_total)
+    # Web Push: tidak bergantung pada kesiapan Discord
+    if restocks:
+        push_dispatch(code, restocks, deltas)
     # ==========================================================
     # Jangan kirim Discord kalau bot belum siap
     # ==========================================================
@@ -2178,6 +2206,222 @@ def _same(a, b):
     """Bandingkan string secara aman dan tidak error untuk karakter non-ASCII."""
     return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
 
+# ------------------------------------------------------------------ Web Push
+PUSH_FILE = Path(os.environ.get("PUSH_FILE") or SUBS_FILE.with_name("push_subs.json"))
+push_lock = threading.Lock()
+_push_file_lock = threading.Lock()
+push_subs = {}      # endpoint -> {"subscription": {...}, "prefs": {...}, "created": ts, "updated": ts}
+push_pool = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="push")
+
+SW_JS = r"""
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
+
+self.addEventListener("push", e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (_) { d = { body: e.data ? e.data.text() : "" }; }
+  const opts = {
+    body: d.body || "",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    data: { url: d.url || "/" },
+    vibrate: [200, 100, 200]
+  };
+  if (d.tag) { opts.tag = d.tag; opts.renotify = true; }
+  e.waitUntil(self.registration.showNotification(d.title || "JKT48 Ticket Radar", opts));
+});
+
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/";
+  e.waitUntil(self.clients.openWindow(url));
+});
+"""
+
+_icon_cache = {}
+
+
+def icon_png(size):
+    """Ikon PNG polos (merah + titik putih) tanpa library gambar."""
+    if size in _icon_cache:
+        return _icon_cache[size]
+    red, white = bytes((0xE1, 0x1D, 0x48)), bytes((255, 255, 255))
+    c = size / 2
+    r = size * 0.28
+    solid = b"\x00" + red * size
+    rows = []
+    for y in range(size):
+        dy = y + 0.5 - c
+        if abs(dy) >= r:
+            rows.append(solid)
+            continue
+        dx = int((r * r - dy * dy) ** 0.5)
+        x0, x1 = max(0, int(c - dx)), min(size, int(c + dx))
+        rows.append(b"\x00" + red * x0 + white * (x1 - x0) + red * (size - x1))
+
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(b"".join(rows), 9))
+           + chunk(b"IEND", b""))
+    _icon_cache[size] = png
+    return png
+
+
+def manifest_json(key=""):
+    start = "/" + ("?key=" + quote(key, safe="") if key else "")
+    return {
+        "name": "JKT48 Ticket Radar", "short_name": "Ticket Radar",
+        "id": "/", "start_url": start, "scope": "/",
+        "display": "standalone",
+        "background_color": "#0f1117", "theme_color": "#e11d48",
+        "icons": [
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+        ],
+    }
+
+
+def load_push():
+    try:
+        raw = json.loads(PUSH_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    if isinstance(raw, dict):
+        with push_lock:
+            push_subs.clear()
+            for ep, rec in raw.items():
+                if isinstance(rec, dict) and isinstance(rec.get("subscription"), dict):
+                    push_subs[ep] = rec
+    print(f"[PUSH] Dimuat {len(push_subs)} langganan")
+
+
+def save_push():
+    with push_lock:
+        snap = dict(push_subs)
+    with _push_file_lock:
+        try:
+            tmp = PUSH_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(PUSH_FILE)
+        except Exception:
+            traceback.print_exc()
+
+
+def push_remove(endpoint):
+    with push_lock:
+        existed = push_subs.pop(endpoint, None) is not None
+    if existed:
+        save_push()
+    return existed
+
+
+def valid_subscription(sub):
+    if not isinstance(sub, dict):
+        return False
+    ep, keys = sub.get("endpoint"), sub.get("keys")
+    if not isinstance(ep, str) or len(ep) > 600 or not isinstance(keys, dict):
+        return False
+    if not (isinstance(keys.get("p256dh"), str) and isinstance(keys.get("auth"), str)):
+        return False
+    u = urlparse(ep)
+    host = (u.hostname or "").lower()
+    if u.scheme != "https" or not host:
+        return False
+    return any(host == h or host.endswith("." + h) for h in PUSH_HOSTS)
+
+
+def _send_one(rec, payload):
+    """Return 'ok' | 'dead' (langganan sudah mati, hapus) | 'error' (sementara)."""
+    try:
+        webpush(
+            subscription_info=rec["subscription"],
+            data=json.dumps(payload, ensure_ascii=False),
+            vapid_private_key=VAPID_PRIVATE,
+            vapid_claims={"sub": VAPID_SUBJECT},   # dict baru tiap panggilan (library mengubahnya)
+            ttl=PUSH_TTL,
+            headers={"Urgency": "high"},
+            timeout=10,
+        )
+        return "ok"
+    except WebPushException as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status in (404, 410):
+            return "dead"
+        print(f"[PUSH] gagal ({status}): {str(e)[:150]}")
+        return "error"
+    except Exception as e:
+        print(f"[PUSH] error: {type(e).__name__}: {str(e)[:150]}")
+        return "error"
+
+
+def _push_wants(prefs, code, lane):
+    mode = prefs.get("mode", "all")
+    if mode == "vip":
+        return is_vip(code, lane)
+    if mode == "favs":
+        return norm(lane.get("member_name")) in set(prefs.get("favs") or [])
+    return True
+
+
+def _push_payloads(code, lanes, deltas):
+    ev = EVENTS.get(code, code)
+    if len(lanes) <= PUSH_MAX_SINGLE:
+        out = []
+        for l in lanes:
+            sdc = str(l.get("session_detail_code") or "")
+            q = parse_quota(l.get("available_quota")) or 0
+            d = deltas.get((code, sdc))
+            out.append({
+                "title": f"🟢 RESTOCK · {l.get('member_name') or '-'}",
+                "body": f"{ev} · {l.get('label') or '-'} · {l.get('session_label') or '-'}\n"
+                        f"{q} tiket" + (f" (+{d})" if d else ""),
+                "url": buy_url(code),
+                "tag": f"{code}|{sdc}",
+            })
+        return out
+    names = []
+    for l in lanes:
+        n = l.get("member_name")
+        if n and n not in names:
+            names.append(n)
+    shown = ", ".join(names[:4]) + (f" +{len(names) - 4} lainnya" if len(names) > 4 else "")
+    return [{
+        "title": f"🟢 {len(lanes)} restock · {ev}",
+        "body": shown, "url": buy_url(code), "tag": f"{code}|multi",
+    }]
+
+
+def _push_to_sub(endpoint, rec, code, lanes, deltas):
+    try:
+        matched = [l for l in lanes if _push_wants(rec.get("prefs") or {}, code, l)]
+        if not matched:
+            return
+        for payload in _push_payloads(code, matched, deltas):
+            if _send_one(rec, payload) == "dead":
+                push_remove(endpoint)
+                print("[PUSH] langganan mati dihapus")
+                return
+    except Exception:
+        traceback.print_exc()
+
+
+def push_dispatch(code, restocks, deltas):
+    """Non-blocking: dipanggil dari process_report."""
+    if not PUSH_ENABLED:
+        return
+    with push_lock:
+        subs = list(push_subs.items())
+    if not subs:
+        return
+    lanes = [dict(l) for l in restocks]
+    d = dict(deltas)
+    for endpoint, rec in subs:
+        push_pool.submit(_push_to_sub, endpoint, rec, code, lanes, d)
+
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     def send_response(self, code, message=None):
@@ -2216,6 +2460,94 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def send_bytes(self, ctype, raw, cache="no-store", extra=None):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", cache)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _dash_ok(self, url):
+        if not DASHBOARD_KEY:
+            return True
+        given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
+        return _same(given, DASHBOARD_KEY)
+
+    def handle_push_post(self, url):
+        if not self._dash_ok(url):
+            return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+        if not PUSH_ENABLED:
+            return self.send_json(503, {"ok": False, "error": "Push belum aktif di server (VAPID key / pywebpush)."})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 20000:
+                return self.send_json(413, {"ok": False, "error": "Ukuran payload tidak valid."})
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("payload")
+        except (ValueError, UnicodeDecodeError):
+            return self.send_json(400, {"ok": False, "error": "Payload harus JSON object."})
+
+        path = url.path
+
+        if path == "/api/push/subscribe":
+            sub = data.get("subscription")
+            if not valid_subscription(sub):
+                return self.send_json(400, {"ok": False, "error": "Langganan tidak valid."})
+            pin = data.get("prefs") if isinstance(data.get("prefs"), dict) else {}
+            mode = pin.get("mode") if pin.get("mode") in ("all", "vip", "favs") else "all"
+            fav_in = pin.get("favs") if isinstance(pin.get("favs"), list) else []
+            favs = [norm(x) for x in fav_in if isinstance(x, str)][:300]
+            ep = sub["endpoint"]
+            now = int(time.time())
+            rec = {
+                "subscription": {"endpoint": ep, "keys": {
+                    "p256dh": sub["keys"]["p256dh"], "auth": sub["keys"]["auth"]}},
+                "prefs": {"mode": mode, "favs": favs},
+                "updated": now,
+            }
+            with push_lock:
+                if ep not in push_subs and len(push_subs) >= PUSH_MAX_SUBS:
+                    full = True
+                else:
+                    full = False
+                    rec["created"] = (push_subs.get(ep) or {}).get("created", now)
+                    push_subs[ep] = rec
+                count = len(push_subs)
+            if full:
+                return self.send_json(429, {"ok": False, "error": "Batas jumlah perangkat tercapai."})
+            save_push()
+            return self.send_json(200, {"ok": True, "count": count})
+
+        if path == "/api/push/unsubscribe":
+            ep = data.get("endpoint")
+            if isinstance(ep, str):
+                push_remove(ep)
+            return self.send_json(200, {"ok": True})
+
+        if path == "/api/push/test":
+            ep = data.get("endpoint")
+            with push_lock:
+                rec = push_subs.get(ep) if isinstance(ep, str) else None
+            if not rec:
+                return self.send_json(404, {"ok": False, "error": "Perangkat belum terdaftar di server."})
+            result = _send_one(rec, {
+                "title": "✅ Tes notifikasi",
+                "body": "Push dari JKT48 Ticket Radar berfungsi.",
+                "url": "/", "tag": "test",
+            })
+            if result == "ok":
+                return self.send_json(200, {"ok": True})
+            if result == "dead":
+                push_remove(ep)
+                return self.send_json(410, {"ok": False, "error": "Langganan sudah tidak valid, aktifkan ulang."})
+            return self.send_json(502, {"ok": False, "error": "Layanan push menolak. Lihat log server."})
+
+        return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
+
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/health":
@@ -2223,6 +2555,21 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True, "service": "jkt48-notifier",
                 "poller": {**poller_info(), "events": list(EVENTS)},
             })
+
+        if url.path == "/sw.js":
+            return self.send_bytes(
+                "application/javascript; charset=utf-8", SW_JS.encode("utf-8"),
+                "no-cache", {"Service-Worker-Allowed": "/"})
+
+        if url.path == "/manifest.webmanifest":
+            key = (parse_qs(url.query).get("key") or [""])[0][:200]
+            raw = json.dumps(manifest_json(key), ensure_ascii=False).encode("utf-8")
+            return self.send_bytes("application/manifest+json; charset=utf-8", raw)
+
+        icon_size = {"/icon-192.png": 192, "/icon-512.png": 512,
+                     "/apple-touch-icon.png": 180}.get(url.path)
+        if icon_size:
+            return self.send_bytes("image/png", icon_png(icon_size), "public, max-age=86400")
 
         if url.path.startswith("/members/"):
             found = member_photos.read_photo(unquote(url.path[len("/members/"):]))
@@ -2253,6 +2600,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/api/status":
             return self.send_json(200, health_snapshot())
+
+        if url.path == "/api/push/key":
+            return self.send_json(200, {"enabled": PUSH_ENABLED,
+                                        "key": VAPID_PUBLIC if PUSH_ENABLED else ""})
 
         if url.path == "/api/export.csv":
             only_today = (parse_qs(url.query).get("range") or [""])[0] == "today"
@@ -2287,6 +2638,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(404, {"ok": False, "error": "Tidak ditemukan."})
 
     def do_POST(self):
+        url0 = urlparse(self.path)
+        if url0.path.startswith("/api/push/"):
+            return self.handle_push_post(url0)       
         secret = self.headers.get("X-Notify-Secret", "")
         if not NOTIFY_SECRET or not _same(secret, NOTIFY_SECRET):
             return self.send_json(401, {"ok": False, "error": "Unauthorized."})
@@ -2351,6 +2705,11 @@ def main():
     if not NOTIFY_SECRET:
         print("[INFO] NOTIFY_SECRET kosong: endpoint /notify dinonaktifkan (hanya polling langsung).")
     load_state()
+    load_push()
+    if PUSH_ENABLED:
+        print(f"[PUSH] Aktif ({len(push_subs)} perangkat)")
+    else:
+        print("[PUSH] Nonaktif: pasang pywebpush dan set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY.")
     threading.Thread(target=run_http, daemon=True).start()
     if POLL_ENABLED:
         threading.Thread(target=poll_loop, daemon=True).start()

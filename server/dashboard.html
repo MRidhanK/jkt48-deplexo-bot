@@ -250,6 +250,7 @@ table.at{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .srow.ok .sl{color:var(--ok)}.srow.warn .sl{color:var(--warn)}.srow.bad .sl{color:var(--no)}
 .srow .sd{grid-column:2/-1;color:var(--mut);font-size:12px}
 .urow{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--line);font-variant-numeric:tabular-nums}
+#pushBox [hidden]{display:none!important}
 </style>
 </head>
 <body>
@@ -338,6 +339,22 @@ table.at{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
       <dt>Pasang di HP</dt><dd>Tambahkan ke layar utama lewat menu browser agar tampil layar penuh seperti aplikasi (butuh HTTPS).</dd>
       <dt>🚨 Banner merah</dt><dd>Muncul bila data event tidak diperbarui. Angka di bawahnya bisa sudah basi; jangan dianggap kondisi terkini.</dd>
     </dl></div>
+  </details>
+
+  <details class="help" id="pushBox">
+    <summary>📲 Notifikasi push (tetap masuk walau tab ditutup)</summary>
+    <div class="body">
+      <div id="pushInfo">Memeriksa…</div>
+      <div class="acts">
+        <select id="pushMode" aria-label="Jenis notifikasi push">
+          <option value="all">Semua restock</option>
+          <option value="vip">Hanya member VIP</option>
+          <option value="favs">Hanya favorit ⭐</option>
+        </select>
+        <button class="btn" id="pushToggle" disabled>Aktifkan push</button>
+        <button class="btn" id="pushTest" hidden>Kirim tes</button>
+      </div>
+    </div>
   </details>
 
   <div id="list"></div>
@@ -950,7 +967,7 @@ function render() {
     star.onclick = e => {
       e.preventDefault(); e.stopPropagation();
       const k = norm(name); favs.has(k) ? favs.delete(k) : favs.add(k);
-      store.set("favs", [...favs]); render();
+store.set("favs", [...favs]); render(); pushSyncSoon();
     };
     const parts = [who];
     if (s.tix > 0) {
@@ -1046,7 +1063,7 @@ function detectRestock(json) {
     for (const f of found.slice(0, 3)) {
       const msg = "🟢 " + f.member + " +" + f.delta + " · " + f.event + " · " + f.lane;
       toast(msg, buyFor(f.code));
-      if ($("notif").checked && window.Notification && Notification.permission === "granted") {
+      if ($("notif").checked && !PUSH.sub && window.Notification && Notification.permission === "granted") {
         try { const n = new Notification("Restock " + f.member, { body: f.event + " · " + f.lane + " · " + f.session + " (+" + f.delta + ")" }); n.onclick = () => { window.focus(); window.open(buyFor(f.code), "_blank", "noopener"); n.close(); }; } catch {}
       }
     }
@@ -1120,7 +1137,7 @@ $("favFile").onchange = async e => {
     if (!Array.isArray(arr)) throw new Error("format");
     let n = 0;
     for (const v of arr) { const k = norm(v); if (k && !favs.has(k)) { favs.add(k); n++; } }
-    store.set("favs", [...favs]); render();
+store.set("favs", [...favs]); render(); pushSyncSoon();
     toast("Impor selesai: " + n + " favorit baru.");
   } catch { toast("File tidak valid. Pakai file hasil ekspor dashboard ini."); }
 };
@@ -1153,26 +1170,95 @@ document.addEventListener("visibilitychange", () => {
 });
 addEventListener("focus", resetTitle);
 
+// ---- Web Push (notifikasi walau tab ditutup)
+const KQ = KEY ? "?key=" + encodeURIComponent(KEY) : "";
+const PUSH = { reg: null, sub: null, key: "", ok: "serviceWorker" in navigator && "PushManager" in window && "Notification" in window };
+const b64ToU8 = s => {
+  const p = "=".repeat((4 - s.length % 4) % 4), b = atob((s + p).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+};
+async function pushApi(path, body) {
+  const r = await fetch(path + KQ, body === undefined
+    ? { cache: "no-store" }
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+  return j;
+}
+async function pushSync() {
+  if (!PUSH.sub) return;
+  await pushApi("/api/push/subscribe", { subscription: PUSH.sub.toJSON(), prefs: { mode: $("pushMode").value, favs: [...favs] } });
+}
+let pushT = null;
+const pushSyncSoon = () => { clearTimeout(pushT); pushT = setTimeout(() => pushSync().catch(() => {}), 1500); };
+
+function pushRefresh() {
+  const info = $("pushInfo"), btn = $("pushToggle"), tst = $("pushTest"), mode = $("pushMode"), on = !!PUSH.sub;
+  btn.textContent = on ? "Matikan push" : "Aktifkan push";
+  btn.disabled = false;
+  tst.hidden = mode.hidden = !on;
+  if (!on && Notification.permission === "denied") {
+    info.textContent = "Izin notifikasi diblokir di browser. Buka pengaturan situs lalu izinkan notifikasi.";
+    btn.disabled = true; return;
+  }
+  info.textContent = on ? "✅ Aktif di perangkat ini. Notifikasi tetap masuk walau tab ditutup." : "Belum aktif di perangkat ini.";
+}
+async function pushInit() {
+  const info = $("pushInfo"), btn = $("pushToggle");
+  $("pushTest").hidden = $("pushMode").hidden = true;
+  if (!PUSH.ok) {
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    info.textContent = ios
+      ? "Di iPhone/iPad: buka menu Bagikan → Tambahkan ke Layar Utama, lalu buka dashboard dari ikon itu (iOS 16.4 ke atas)."
+      : "Browser ini tidak mendukung Web Push.";
+    btn.disabled = true; return;
+  }
+  try {
+    PUSH.reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+    const k = await pushApi("/api/push/key");
+    if (!k.enabled) { info.textContent = "Push belum aktif di server (VAPID key belum diatur)."; btn.disabled = true; return; }
+    PUSH.key = k.key;
+    PUSH.sub = await PUSH.reg.pushManager.getSubscription();
+    if (PUSH.sub) pushSync().catch(() => {});   // menyegarkan data di server (mis. setelah server direset)
+    pushRefresh();
+  } catch (e) { info.textContent = "Gagal menyiapkan push: " + e.message; btn.disabled = true; }
+}
+$("pushToggle").onclick = async () => {
+  try {
+    if (PUSH.sub) {
+      const ep = PUSH.sub.endpoint;
+      await PUSH.sub.unsubscribe(); PUSH.sub = null;
+      await pushApi("/api/push/unsubscribe", { endpoint: ep }).catch(() => {});
+      toast("Push dimatikan.");
+    } else {
+      const p = await Notification.requestPermission();
+      if (p !== "granted") { toast("Izin notifikasi ditolak."); pushRefresh(); return; }
+      PUSH.sub = await PUSH.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(PUSH.key) });
+      try { await pushSync(); }
+      catch (e) { await PUSH.sub.unsubscribe(); PUSH.sub = null; throw e; }
+      toast("Push aktif. Notifikasi tetap masuk walau tab ditutup.");
+    }
+  } catch (e) { toast("Gagal: " + e.message); }
+  pushRefresh();
+};
+$("pushTest").onclick = async () => {
+  try { await pushApi("/api/push/test", { endpoint: PUSH.sub.endpoint }); toast("Tes dikirim. Notifikasi akan muncul sebentar lagi."); }
+  catch (e) { toast("Tes gagal: " + e.message); }
+};
+$("pushMode").value = store.get("pushMode", "all");
+if (!$("pushMode").value) $("pushMode").value = "all";
+$("pushMode").onchange = () => { store.set("pushMode", $("pushMode").value); pushSyncSoon(); };
+pushInit();
+
 // ---- bisa dipasang seperti aplikasi (ikon & manifest dibuat saat halaman dimuat)
+// ---- bisa dipasang seperti aplikasi (manifest & ikon disajikan server)
 (function pwa() {
   try {
-    const mk = size => {
-      const c = document.createElement("canvas"); c.width = c.height = size;
-      const x = c.getContext("2d");
-      x.fillStyle = "#e11d48"; x.fillRect(0, 0, size, size);
-      x.fillStyle = "#fff"; x.font = "800 " + Math.round(size * .38) + "px system-ui,sans-serif";
-      x.textAlign = "center"; x.textBaseline = "middle"; x.fillText("JR", size / 2, size / 2 + size * .02);
-      return c.toDataURL("image/png");
-    };
-    const i180 = mk(180), i192 = mk(192), i512 = mk(512);
     const add = (rel, href, type) => { const l = document.createElement("link"); l.rel = rel; l.href = href; if (type) l.type = type; document.head.append(l); };
-    add("icon", i192, "image/png"); add("apple-touch-icon", i180);
-    const manifest = {
-      name: "JKT48 Ticket Radar", short_name: "Ticket Radar", start_url: location.href, scope: location.origin + "/",
-      display: "standalone", background_color: "#0f1117", theme_color: "#e11d48",
-      icons: [{ src: i192, sizes: "192x192", type: "image/png", purpose: "any maskable" }, { src: i512, sizes: "512x512", type: "image/png", purpose: "any maskable" }]
-    };
-    add("manifest", URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: "application/manifest+json" })));
+    add("icon", "/icon-192.png", "image/png");
+    add("apple-touch-icon", "/apple-touch-icon.png");
+    add("manifest", "/manifest.webmanifest" + KQ);
   } catch {}
 })();
 
