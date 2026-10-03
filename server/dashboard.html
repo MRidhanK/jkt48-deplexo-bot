@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>JKT48 Ticket Radar</title>
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#181b25" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ticket Radar">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
 :root{--bg:#f6f7fb;--card:#fff;--text:#1a1d27;--mut:#6b7185;--line:#e3e6ef;--ok:#16a34a;--no:#dc2626;--acc:#e11d48;--warn:#d97706;--soft:#f0f2f8;
 box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -142,6 +148,77 @@ main{max-width:1100px;margin:0 auto;padding:14px 16px 90px}
 #list.compact .n{flex:0 1 auto;font-size:14px}
 #list.compact .chips{margin-top:0;flex-wrap:nowrap;overflow:hidden}
 #list.compact .chip.x{display:none}
+
+/* ====== TOMBOL BELI ====== */
+#buy{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+.ln{grid-template-columns:1fr auto auto auto}
+.buyc{min-width:68px;text-align:right}
+.ln .buybtn{padding:3px 10px;font-size:12px;background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600;white-space:nowrap}
+.buyp{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+.btn.buysm{padding:4px 10px;font-size:12px;font-weight:600;background:var(--acc);border-color:var(--acc);color:#fff;flex:none;white-space:nowrap}
+.fi .btn{padding:0 8px;font-size:12px;margin-left:auto}
+.toast.link{cursor:pointer}
+
+/* ====== TAMPILAN BARU ====== */
+:root{--low:#eab308}
+
+/* ikon SVG (menggantikan emoji yang tampil beda tiap perangkat) */
+.ic{width:1.05em;height:1.05em;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vertical-align:-.15em;margin-right:5px;flex:none}
+.ic:last-child{margin-right:0}
+.chip{display:inline-flex;align-items:center}
+.chip .ic{margin-right:4px}
+
+/* angka rapi */
+.q,.pr,.kpi b,.sum b,.chip,.meta{font-variant-numeric:tabular-nums}
+.q{font-size:16px}
+.q.low{color:var(--low)}
+.ln .bar.low{background:var(--low)}
+.chip.lowc{background:var(--low);color:#1a1d27;font-weight:600}
+
+/* warna status kartu */
+.m{border-left-width:4px}
+.m.st-ok{border-left-color:var(--ok)}
+.m.st-low{border-left-color:var(--low)}
+.m.st-so{border-left-color:var(--no)}
+.m.st-so:not([open]){opacity:.72}
+
+/* sorot saat restock baru terdeteksi */
+@keyframes flashcard{0%{box-shadow:0 0 0 0 rgba(22,163,74,.7);background-color:rgba(22,163,74,.22)}100%{box-shadow:0 0 0 12px rgba(22,163,74,0)}}
+@keyframes flashrow{0%{background-color:rgba(22,163,74,.45)}100%{background-color:rgba(22,163,74,0)}}
+@keyframes flashcell{0%{box-shadow:0 0 0 0 rgba(22,163,74,.9)}100%{box-shadow:0 0 0 8px rgba(22,163,74,0)}}
+.m.flash{animation:flashcard 1.2s ease-out 2}
+.ln.flash{animation:flashrow 1.2s ease-out 2}
+.hmc.flash{animation:flashcell 1.2s ease-out 2}
+@media(prefers-reduced-motion:reduce){.m.flash,.ln.flash,.hmc.flash{animation:none}}
+
+/* heatmap member x sesi */
+.seg{margin-left:auto}
+.hm-wrap{grid-column:1/-1;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;overflow-x:auto}
+.hm-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-bottom:8px}
+.hm-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+table.hm{border-collapse:separate;border-spacing:3px;font-variant-numeric:tabular-nums}
+.hm th{font-weight:600;font-size:11px;color:var(--mut);text-align:center;white-space:nowrap;padding:2px 4px}
+.hm th small{display:block;font-weight:400}
+.hm .hm-name{position:sticky;left:0;z-index:1;background:var(--card);text-align:left;padding:0 8px 0 0}
+.hm-n{border:0;background:none;color:var(--text);font:inherit;font-size:13px;font-weight:600;cursor:pointer;padding:6px 0;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;display:block}
+.hmc{min-width:54px;height:34px;border-radius:6px;text-align:center;font-weight:700;font-size:13px;padding:0}
+.hmc.so{background:rgba(220,38,38,.14);color:var(--no)}
+.hmc.none{background:var(--soft);color:var(--mut);font-weight:400}
+.hmv{display:flex;align-items:center;justify-content:center;width:100%;height:34px;color:inherit;text-decoration:none}
+a.hmv:hover{text-decoration:underline}
+.hm tfoot th,.hm tfoot td{border-top:1px solid var(--line);font-size:12px;color:var(--mut);font-weight:600}
+
+/* bar bawah (HP) */
+#bar{display:none}
+@media(max-width:600px){
+  #bar{display:flex;gap:8px;align-items:center;position:fixed;left:0;right:0;bottom:0;z-index:7;background:var(--card);border-top:1px solid var(--line);padding:8px 12px calc(8px + env(safe-area-inset-bottom,0px))}
+  #bar .tabs{flex:1}
+  #bar #barBuy{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600;flex:none}
+  main{padding-bottom:150px}
+  #toasts{bottom:calc(76px + env(safe-area-inset-bottom,0px))}
+  #top{bottom:calc(82px + env(safe-area-inset-bottom,0px))}
+  .seg{margin-left:0}
+}
 </style>
 </head>
 <body>
@@ -151,9 +228,9 @@ main{max-width:1100px;margin:0 auto;padding:14px 16px 90px}
     <span id="status" class="pill">memuat…</span>
     <button class="btn sq" id="refresh" title="Muat ulang sekarang" aria-label="Muat ulang">⟳</button>
     <button class="btn sq" id="theme" title="Ganti tema" aria-label="Ganti tema">🌓</button>
-    <a class="btn sq" id="buy" target="_blank" rel="noopener" title="Buka halaman pembelian di jkt48.com">🛒</a>
+    <a class="btn" id="buy" target="_blank" rel="noopener" title="Buka halaman pembelian di jkt48.com"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.2 10.2a1 1 0 0 0 1 .8h9.4a1 1 0 0 0 1-.8L20 8H6.2M9 20h.01M17 20h.01"/></svg>Beli tiket</a>
   </div>
-  <div class="row"><div class="tabs" id="tabs"></div></div>
+  <div class="row"><div class="tabs" id="tabs"></div><div class="tabs seg" id="views" role="group" aria-label="Tampilan"></div></div>
   <div class="row">
     <input type="search" id="q" placeholder="Cari member…" aria-label="Cari member">
     <select id="sort" title="Urutkan" aria-label="Urutkan">
@@ -201,7 +278,7 @@ main{max-width:1100px;margin:0 auto;padding:14px 16px 90px}
       Favorit tersimpan di browser ini saja. Ekspor untuk cadangan atau pindah perangkat, lalu impor di perangkat lain (digabung dengan favorit yang sudah ada).
       <div class="acts">
         <button class="btn" id="favExport">⬇ Ekspor file</button>
-        <button class="btn" id="favCopy">📋 Salin</button>
+        <button class="btn" id="favCopy"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1zM5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>Salin</button>
         <button class="btn" id="favImport">⬆ Impor file</button>
         <input type="file" id="favFile" accept=".json,application/json" hidden>
       </div>
@@ -224,6 +301,10 @@ main{max-width:1100px;margin:0 auto;padding:14px 16px 90px}
       <dt>⏱ Restock terakhir</dt><dd>Label di kartu member: kapan terakhir kali kuotanya naik (tanpa batas 10 menit).</dd>
       <dt>☰ Kompak</dt><dd>Satu baris per member, cocok untuk memantau banyak member di HP.</dd>
       <dt>🔆 Layar nyala</dt><dd>Mencegah layar mati selama dashboard dibuka (jika browser mendukung).</dd>
+      <dt>🛒 Beli</dt><dd>Tombol “Beli tiket” di header, tombol “🛒 Beli” di tiap jalur yang masih ada kuota, ikon 🛒 di kartu member, serta toast, notifikasi, dan feed restock, semuanya membuka halaman pembelian event di jkt48.com.</dd>
+      <dt>🗺 Heatmap</dt><dd>Tombol “Heatmap” di atas: tabel member × sesi dengan warna sesuai kuota (hijau tersedia, kuning menipis ≤3, merah SO). Ketuk angka untuk beli, ketuk nama member untuk membuka kartunya.</dd>
+      <dt>Warna kartu</dt><dd>Garis kiri kartu: hijau = ada tiket, kuning = menipis (≤3 per jalur), merah = semua jalur SO.</dd>
+      <dt>Pasang di HP</dt><dd>Tambahkan ke layar utama lewat menu browser agar tampil layar penuh seperti aplikasi (butuh HTTPS).</dd>
       <dt>🚨 Banner merah</dt><dd>Muncul bila data event tidak diperbarui. Angka di bawahnya bisa sudah basi; jangan dianggap kondisi terkini.</dd>
     </dl></div>
   </details>
@@ -232,12 +313,13 @@ main{max-width:1100px;margin:0 auto;padding:14px 16px 90px}
 </main>
 <div id="toasts" aria-live="polite"></div>
 <button class="btn sq" id="top" aria-label="Ke atas">↑</button>
+<nav id="bar" aria-label="Navigasi cepat"><div class="tabs" id="barTabs"></div><a class="btn" id="barBuy" target="_blank" rel="noopener"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.2 10.2a1 1 0 0 0 1 .8h9.4a1 1 0 0 0 1-.8L20 8H6.2M9 20h.01M17 20h.01"/></svg>Beli</a></nav>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
 const KEY = new URLSearchParams(location.search).get("key");
 const API = "/api/lanes" + (KEY ? "?key=" + encodeURIComponent(KEY) : "");
-const NEW_WINDOW = 600, FEED_MAX = 30;
+const NEW_WINDOW = 600, FEED_MAX = 30, LOW_QUOTA = 3;
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("jr_" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -250,12 +332,37 @@ const openLanes = new Set();          // jalur yang grafiknya sedang dibuka ("EV
 const hist = new Map();               // cache riwayat: "EVENT|sdc" -> {points, now, at, err}
 const selKeys = {};                   // penanda isi dropdown (agar tidak dibangun ulang tiap render)
 let unseen = 0, wl = null;
+const flashAt = new Map();            // "EVENT|member" / "EVENT|sdc" -> waktu restock terdeteksi
+const isFlash = k => Date.now() - (flashAt.get(k) || 0) < 2500;
+let view = store.get("view", "cards"); if (view !== "cards" && view !== "heat") view = "cards";
 
+const buyFor = code => "https://jkt48.com/purchase/exclusive?code=" + encodeURIComponent(code);
 const rp = v => Number.isFinite(+v) ? "Rp" + (+v).toLocaleString("id-ID") : "-";
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const norm = s => String(s || "").split(/\s+/).join(" ").trim().toLowerCase();
 const initials = n => String(n).split(" ").filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase();
 const hm = ts => new Date(ts * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+
+// ---- ikon SVG
+const SVGNS = "http://www.w3.org/2000/svg";
+const ICONS = {
+  ticket: "M3 9V7a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v2a3 3 0 0 0 0 6v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-2a3 3 0 0 0 0-6z",
+  calendar: "M7 3v3M17 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z",
+  clock: "M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18zM12 7v5l3 2",
+  cart: "M3 4h2l2.2 10.2a1 1 0 0 0 1 .8h9.4a1 1 0 0 0 1-.8L20 8H6.2M9 20h.01M17 20h.01",
+  copy: "M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1zM5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"
+};
+function icon(name) {
+  const s = document.createElementNS(SVGNS, "svg"), p = document.createElementNS(SVGNS, "path");
+  s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("class", "ic"); s.setAttribute("aria-hidden", "true");
+  p.setAttribute("d", ICONS[name]); s.append(p);
+  return s;
+}
+function withIcon(tag, cls, name, text) {
+  const e = document.createElement(tag); if (cls) e.className = cls;
+  e.append(icon(name)); if (text) e.append(document.createTextNode(text));
+  return e;
+}
 
 function fdate(s) {
   if (!/^\d{4}-\d{2}-\d{2}/.test(String(s))) return s;
@@ -286,8 +393,9 @@ function beep() {
     o.start(); o.stop(c.currentTime + .25);
   } catch {}
 }
-function toast(text) {
-  const t = el("div", "toast", text);
+function toast(text, url) {
+  const t = el("div", "toast" + (url ? " link" : ""), text + (url ? " · ketuk untuk beli" : ""));
+  if (url) t.onclick = () => window.open(url, "_blank", "noopener");
   $("toasts").append(t);
   setTimeout(() => t.remove(), 6000);
 }
@@ -333,6 +441,11 @@ function renderFeed() {
   for (const f of feed) {
     const r = el("div", "fi");
     r.append(el("time", "", hm(f.at)), el("b", "", "+" + f.delta), el("span", "", f.member));
+    if (f.code) {
+      const a = withIcon("a", "btn", "cart", "Beli"); a.href = buyFor(f.code); a.target = "_blank"; a.rel = "noopener";
+      a.onclick = e => e.stopPropagation();
+      r.append(a);
+    }
     r.append(el("small", "", f.event + " · " + f.lane + " · " + f.session));
     r.onclick = () => { $("q").value = f.member; render(); window.scrollTo({ top: 0, behavior: "smooth" }); };
     box.append(r);
@@ -369,7 +482,6 @@ function laneMeta(l) {
 }
 
 // ---- grafik riwayat (step chart SVG)
-const SVGNS = "http://www.w3.org/2000/svg";
 function spark(points, now) {
   const W = 320, H = 70, P = 4;
   const pts = points.map(p => [+p[0], +p[1]]);
@@ -400,7 +512,7 @@ function histPanel(code, l, now) {
   const ref = c.now || now, pts = c.points, peak = Math.max(...pts.map(p => p[1]));
   box.append(spark(pts, ref));
   box.append(el("div", "", "Puncak " + peak + " · " + pts.length + " perubahan · sejak " + hm(pts[0][0]) + " (" + fmtDur(ref - pts[0][0]) + " terakhir)"));
-  const a = el("div", "acts"), b = el("button", "btn", "📋 Salin kode sesi");
+  const a = el("div", "acts"), b = withIcon("button", "btn", "copy", "Salin kode sesi");
   b.onclick = e => { e.stopPropagation(); copyText(l.sdc); };
   a.append(b); box.append(a);
   return box;
@@ -421,6 +533,83 @@ async function ensureHist(code, sdc) {
   render();
 }
 
+function selTab(c) { tab = c; store.set("tab", c); render(); }
+function sdate(d) {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(d))) return String(d || "");
+  const x = new Date(d);
+  return isNaN(x) ? String(d) : x.toLocaleDateString("id-ID", { day: "numeric", month: "short" });
+}
+
+// ---- heatmap member x sesi
+function renderHeat(names, groups, info, buyUrl) {
+  const cols = new Map();
+  for (const ls of groups.values()) for (const l of ls) {
+    const k = [l.date, l.start, l.end, l.session].join("|");
+    if (!cols.has(k)) cols.set(k, l);
+  }
+  const keys = [...cols.keys()].sort((a, b) => {
+    const A = cols.get(a), B = cols.get(b);
+    return (A.date + A.start).localeCompare(B.date + B.start) || String(A.session).localeCompare(String(B.session), "id", { numeric: true });
+  });
+  const sums = new Map(names.map(n => [n, new Map([...info.get(n).sessions].map(([k, ls]) => [k, ls.reduce((x, l) => x + l.quota, 0)]))]));
+  let maxCell = 1;
+  for (const m of sums.values()) for (const v of m.values()) if (v > maxCell) maxCell = v;
+
+  const wrap = el("div", "hm-wrap");
+  const lg = el("div", "hm-legend");
+  for (const [bg, t] of [["rgba(22,163,74,.6)", "tersedia (makin pekat = makin banyak)"], ["rgba(234,179,8,.7)", "menipis (≤" + LOW_QUOTA + ")"], ["rgba(220,38,38,.3)", "SO"]]) {
+    const sp = el("span"), i = el("i"); i.style.background = bg; sp.append(i, document.createTextNode(t)); lg.append(sp);
+  }
+  lg.append(el("span", "", "Ketuk angka untuk beli · ketuk nama untuk buka kartu"));
+  wrap.append(lg);
+
+  const tbl = el("table", "hm"), thead = el("thead"), hr = el("tr");
+  hr.append(el("th", "hm-name", "Member"));
+  for (const k of keys) {
+    const f = cols.get(k), th = el("th", "", f.session || "Sesi");
+    th.append(el("small", "", sdate(f.date) + " " + f.start));
+    hr.append(th);
+  }
+  thead.append(hr); tbl.append(thead);
+
+  const tbody = el("tbody");
+  for (const name of names) {
+    const tr = el("tr"), th = el("th", "hm-name"), nb = el("button", "hm-n", (favs.has(norm(name)) ? "★ " : "") + name);
+    nb.title = "Buka kartu " + name;
+    nb.onclick = () => { $("q").value = name; view = "cards"; store.set("view", "cards"); render(); window.scrollTo({ top: 0, behavior: "smooth" }); };
+    th.append(nb); tr.append(th);
+    const sess = info.get(name).sessions;
+    for (const k of keys) {
+      const ls = sess.get(k), td = el("td", "hmc");
+      if (!ls) { td.classList.add("none"); td.textContent = "·"; tr.append(td); continue; }
+      const q = sums.get(name).get(k), f = ls[0];
+      const tip = name + " · " + (f.session || "Sesi") + " " + sdate(f.date) + " " + f.start + " — " + ls.map(l => l.lane + ": " + (l.quota > 0 ? l.quota : "SO")).join(", ");
+      if (ls.some(l => isFlash(tab + "|" + l.sdc))) td.classList.add("flash");
+      if (q > 0) {
+        td.style.background = q <= LOW_QUOTA ? "rgba(234,179,8,.7)" : "rgba(22,163,74," + (0.25 + 0.5 * Math.min(1, q / maxCell)).toFixed(2) + ")";
+        const a = el("a", "hmv", String(q)); a.href = buyUrl; a.target = "_blank"; a.rel = "noopener"; a.title = tip + " (ketuk untuk beli)";
+        td.append(a);
+      } else {
+        td.classList.add("so"); td.title = tip;
+        td.append(el("span", "hmv", "SO"));
+      }
+      tr.append(td);
+    }
+    tbody.append(tr);
+  }
+  tbl.append(tbody);
+
+  const tf = el("tfoot"), fr = el("tr");
+  fr.append(el("th", "hm-name", "Total"));
+  for (const k of keys) {
+    let t = 0; for (const m of sums.values()) t += m.get(k) || 0;
+    fr.append(el("td", "", t.toLocaleString("id-ID")));
+  }
+  tf.append(fr); tbl.append(tf);
+  wrap.append(tbl);
+  return wrap;
+}
+
 function render() {
   if (!data) return;
   const codes = Object.keys(data.events);
@@ -428,11 +617,25 @@ function render() {
   const tabs = $("tabs"); tabs.textContent = "";
   for (const c of codes) {
     const b = el("button", "tab" + (c === tab ? " on" : ""), data.events[c].name);
-    b.onclick = () => { tab = c; store.set("tab", c); render(); };
+    b.onclick = () => selTab(c);
     tabs.append(b);
   }
-  const buyUrl = "https://jkt48.com/purchase/exclusive?code=" + encodeURIComponent(tab);
+  const buyUrl = buyFor(tab);
   $("buy").href = buyUrl;
+  const bt = $("barTabs"); bt.textContent = "";
+  for (const c of codes) {
+    const b = el("button", "tab" + (c === tab ? " on" : ""), data.events[c].name);
+    b.onclick = () => selTab(c);
+    bt.append(b);
+  }
+  $("barBuy").href = buyUrl;
+  const vw = $("views"); vw.textContent = "";
+  for (const [k, lab] of [["cards", "Kartu"], ["heat", "Heatmap"]]) {
+    const b = el("button", "tab" + (view === k ? " on" : ""), lab);
+    b.setAttribute("aria-pressed", view === k ? "true" : "false");
+    b.onclick = () => { view = k; store.set("view", k); render(); };
+    vw.append(b);
+  }
 
   const ev = data.events[tab], now = data.now, query = $("q").value.trim().toLowerCase();
   const only = $("only").checked, favOnly = $("favOnly").checked, hotOnly = $("hotOnly").checked, vipOnly = $("vipOnly").checked;
@@ -516,6 +719,7 @@ function render() {
     if (mode === "speed") return B.rate - A.rate || a.localeCompare(b);
     return (B.avail > 0) - (A.avail > 0) || a.localeCompare(b);
   });
+  if (view === "heat") { list.append(renderHeat(names, groups, info, buyUrl)); return; }
   const openAll = $("toggleAll").dataset.open === "1";
 
   for (const name of names) {
@@ -524,7 +728,9 @@ function render() {
     const isVip = !!lanes[0].vip, isFav = favs.has(norm(name));
     const hot = lanes.some(l => l.restock_at && now - l.restock_at < NEW_WINDOW && l.quota > 0);
 
-    const d = el("details", "m");
+    const maxQm = Math.max(0, ...lanes.map(l => l.quota));
+    const stc = s.tix <= 0 ? "st-so" : maxQm <= LOW_QUOTA ? "st-low" : "st-ok";
+    const d = el("details", "m " + stc + (isFlash(tab + "|" + name) ? " flash" : ""));
     const key = tab + "|" + name;
     d.open = openAll || openMembers.has(key) || !!query;
     d.ontoggle = () => d.open ? openMembers.add(key) : openMembers.delete(key);
@@ -535,12 +741,12 @@ function render() {
     if (isVip) nm.append(el("span", "vip", "★ VIP"));
     const chips = el("div", "chips");
     chips.append(
-      el("span", "chip " + (s.tix > 0 ? "has" : "none"), "🎟 " + s.tix + " tiket"),
-      el("span", "chip", "🗓 " + s.sesAvail + "/" + s.sessions.size + " sesi"),
+      withIcon("span", "chip " + (s.tix > 0 ? (stc === "st-low" ? "lowc" : "has") : "none"), "ticket", s.tix + " tiket"),
+      withIcon("span", "chip", "calendar", s.sesAvail + "/" + s.sessions.size + " sesi"),
       el("span", "chip", s.avail + "/" + lanes.length + " jalur")
     );
     if (s.rate > 0) chips.append(el("span", "chip x", speedLabel(s.rate).split(" ")[0] + " " + (+s.rate.toFixed(2)) + "/mnt"));
-    if (s.last) chips.append(el("span", "chip x", "⏱ restock " + agoLong(s.last, now)));
+    if (s.last) chips.append(withIcon("span", "chip x", "clock", "restock " + agoLong(s.last, now)));
     if (hot) chips.append(el("span", "chip hot", "▲ baru"));
     who.append(nm, chips);
     const star = el("button", "star" + (isFav ? " on" : ""), isFav ? "★" : "☆");
@@ -550,7 +756,13 @@ function render() {
       const k = norm(name); favs.has(k) ? favs.delete(k) : favs.add(k);
       store.set("favs", [...favs]); render();
     };
-    sm.append(who, star, el("span", "arrow", "›"));
+    const parts = [who];
+    if (s.tix > 0) {
+      const bl = withIcon("a", "btn buysm", "cart", "Beli"); bl.href = buyUrl; bl.target = "_blank"; bl.rel = "noopener";
+      bl.title = "Beli tiket"; bl.setAttribute("aria-label", "Beli tiket " + name); bl.onclick = e => e.stopPropagation();
+      parts.push(bl);
+    }
+    sm.append(...parts, star, el("span", "arrow", "›"));
     d.append(sm);
 
     const det = el("div", "detail");
@@ -567,8 +779,8 @@ function render() {
     }
     txt.append(kp);
     const acts = el("div", "acts");
-    const buyA = el("a", "btn", "🛒 Beli"); buyA.href = buyUrl; buyA.target = "_blank"; buyA.rel = "noopener";
-    const cpN = el("button", "btn", "📋 Salin nama"); cpN.onclick = () => copyText(name);
+    const buyA = withIcon("a", "btn buyp", "cart", "Beli"); buyA.href = buyUrl; buyA.target = "_blank"; buyA.rel = "noopener";
+    const cpN = withIcon("button", "btn", "copy", "Salin nama"); cpN.onclick = () => copyText(name);
     acts.append(buyA, cpN); txt.append(acts);
     hero.append(txt); det.append(hero);
 
@@ -580,9 +792,9 @@ function render() {
       const f = ls[0], sTix = ls.reduce((x, l) => x + l.quota, 0);
       const box = el("div", "sess"), h = el("div", "sess-h");
       h.append(el("span", "t", (f.session || "Sesi") + " · " + fdate(f.date) + " · " + f.start + "–" + f.end));
-      h.append(el("span", "chip " + (sTix > 0 ? "has" : "none"), "🎟 " + sTix));
-      const sBuy = el("a", "btn", "🛒"); sBuy.href = buyUrl; sBuy.target = "_blank"; sBuy.rel = "noopener"; sBuy.title = "Buka halaman pembelian"; sBuy.setAttribute("aria-label", "Buka halaman pembelian");
-      const sCp = el("button", "btn", "📋"); sCp.title = "Salin info sesi"; sCp.setAttribute("aria-label", "Salin info sesi");
+      h.append(withIcon("span", "chip " + (sTix > 0 ? "has" : "none"), "ticket", String(sTix)));
+      const sBuy = withIcon("a", "btn buyp", "cart", "Beli"); sBuy.href = buyUrl; sBuy.target = "_blank"; sBuy.rel = "noopener"; sBuy.title = "Buka halaman pembelian"; sBuy.setAttribute("aria-label", "Buka halaman pembelian");
+      const sCp = withIcon("button", "btn", "copy", ""); sCp.title = "Salin info sesi"; sCp.setAttribute("aria-label", "Salin info sesi");
       sCp.onclick = () => copyText(name + " — " + (f.session || "Sesi") + " " + fdate(f.date) + " " + f.start + "–" + f.end);
       h.append(sBuy, sCp);
       box.append(h);
@@ -590,12 +802,19 @@ function render() {
         const fresh = l.restock_at && now - l.restock_at < NEW_WINDOW && l.quota > 0;
         const lk = tab + "|" + l.sdc, isOpen = openLanes.has(lk);
         const wrap = el("div", "lw");
-        const r = el("div", "ln click" + (fresh ? " new" : ""));
+        const r = el("div", "ln click" + (fresh ? " new" : "") + (isFlash(lk) ? " flash" : ""));
         r.append(el("span", "", l.lane), el("span", "pr", rp(l.price)));
-        const q = el("span", "q " + (l.quota > 0 ? "ok" : "no"), l.quota > 0 ? String(l.quota) : "SO");
+        const q = el("span", "q " + (l.quota > 0 ? (l.quota <= LOW_QUOTA ? "low" : "ok") : "no"), l.quota > 0 ? String(l.quota) : "SO");
         if (fresh) q.append(el("span", "tag", "▲ " + ago(l.restock_at, now)));
         r.append(q);
-        if (l.quota > 0) { const b = el("i", "bar"); b.style.width = Math.max(4, l.quota / maxQ * 100) + "%"; r.append(b); }
+        const bc = el("span", "buyc");
+        if (l.quota > 0) {
+          const ba = withIcon("a", "btn buybtn", "cart", "Beli"); ba.href = buyUrl; ba.target = "_blank"; ba.rel = "noopener";
+          ba.title = "Buka halaman pembelian"; ba.onclick = e => e.stopPropagation(); ba.onkeydown = e => e.stopPropagation();
+          bc.append(ba);
+        }
+        r.append(bc);
+        if (l.quota > 0) { const b = el("i", "bar" + (l.quota <= LOW_QUOTA ? " low" : "")); b.style.width = Math.max(4, l.quota / maxQ * 100) + "%"; r.append(b); }
         r.append(el("div", "meta", laneMeta(l)));
         r.tabIndex = 0; r.setAttribute("role", "button"); r.setAttribute("aria-expanded", isOpen ? "true" : "false");
         r.title = "Ketuk untuk melihat grafik riwayat";
@@ -619,19 +838,20 @@ function detectRestock(json) {
     for (const l of ev.lanes) {
       const k = code + "|" + l.sdc, prev = prevQuota.get(k);
       if (prev !== undefined && l.quota > prev)
-        found.push({ at: json.now, event: ev.name, member: l.member, lane: l.lane, session: l.session, delta: l.quota - prev });
+        found.push({ at: json.now, code, sdc: l.sdc, event: ev.name, member: l.member, lane: l.lane, session: l.session, delta: l.quota - prev });
       prevQuota.set(k, l.quota);
     }
   if (found.length && !firstLoad) {
     feed = found.concat(feed).slice(0, FEED_MAX); store.set("feed", feed); renderFeed();
+    for (const f of found) { flashAt.set(f.code + "|" + f.member, Date.now()); flashAt.set(f.code + "|" + f.sdc, Date.now()); }
     unseen += found.length;
     document.title = "🟢 (" + unseen + ") Restock! · JKT48 Ticket Radar";
     if ($("beep").checked) beep();
     for (const f of found.slice(0, 3)) {
       const msg = "🟢 " + f.member + " +" + f.delta + " · " + f.event + " · " + f.lane;
-      toast(msg);
+      toast(msg, buyFor(f.code));
       if ($("notif").checked && window.Notification && Notification.permission === "granted") {
-        try { new Notification("Restock " + f.member, { body: f.event + " · " + f.lane + " · " + f.session + " (+" + f.delta + ")" }); } catch {}
+        try { const n = new Notification("Restock " + f.member, { body: f.event + " · " + f.lane + " · " + f.session + " (+" + f.delta + ")" }); n.onclick = () => { window.focus(); window.open(buyFor(f.code), "_blank", "noopener"); n.close(); }; } catch {}
       }
     }
     if (found.length > 3) toast("…dan " + (found.length - 3) + " restock lainnya");
@@ -735,6 +955,29 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 addEventListener("focus", resetTitle);
+
+// ---- bisa dipasang seperti aplikasi (ikon & manifest dibuat saat halaman dimuat)
+(function pwa() {
+  try {
+    const mk = size => {
+      const c = document.createElement("canvas"); c.width = c.height = size;
+      const x = c.getContext("2d");
+      x.fillStyle = "#e11d48"; x.fillRect(0, 0, size, size);
+      x.fillStyle = "#fff"; x.font = "800 " + Math.round(size * .38) + "px system-ui,sans-serif";
+      x.textAlign = "center"; x.textBaseline = "middle"; x.fillText("JR", size / 2, size / 2 + size * .02);
+      return c.toDataURL("image/png");
+    };
+    const i180 = mk(180), i192 = mk(192), i512 = mk(512);
+    const add = (rel, href, type) => { const l = document.createElement("link"); l.rel = rel; l.href = href; if (type) l.type = type; document.head.append(l); };
+    add("icon", i192, "image/png"); add("apple-touch-icon", i180);
+    const manifest = {
+      name: "JKT48 Ticket Radar", short_name: "Ticket Radar", start_url: location.href, scope: location.origin + "/",
+      display: "standalone", background_color: "#0f1117", theme_color: "#e11d48",
+      icons: [{ src: i192, sizes: "192x192", type: "image/png", purpose: "any maskable" }, { src: i512, sizes: "512x512", type: "image/png", purpose: "any maskable" }]
+    };
+    add("manifest", URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: "application/manifest+json" })));
+  } catch {}
+})();
 
 { const l = $("list"); for (let i = 0; i < 4; i++) l.append(el("div", "sk")); }
 renderFeed();
