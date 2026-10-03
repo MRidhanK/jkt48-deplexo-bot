@@ -1689,11 +1689,6 @@ async def save_state_loop():
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 POLL_BACKOFF_MIN = int(os.environ.get("POLL_BACKOFF_MIN", "15"))
 POLL_BACKOFF_MAX = int(os.environ.get("POLL_BACKOFF_MAX", "90"))
-# Cloudflare Recovery Mode: setelah 403/429, hentikan burst polling paralel dan
-# lakukan health-check satu event secara bertahap sampai API kembali normal.
-RECOVERY_ENABLED = os.environ.get("POLL_RECOVERY_ENABLED", "1").strip().lower() not in ("0", "false", "no", "")
-RECOVERY_INITIAL = int(os.environ.get("POLL_RECOVERY_INITIAL", "15"))
-RECOVERY_MAX = int(os.environ.get("POLL_RECOVERY_MAX", "90"))
 JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 # Proxy opsional untuk polling langsung (mis. proxy residensial Indonesia).
@@ -1821,24 +1816,20 @@ def build_session(profile):
         kwargs["proxies"] = {"http": POLL_PROXY, "https": POLL_PROXY}
     return cffi_requests.Session(**kwargs)
 poll_reset_event = threading.Event()
-# Status global Recovery Mode untuk dashboard/API.
-recovery_status = {}
 
 
 def request_poll_reset():
     """Dipanggil dari endpoint HTTP: kosongkan status & bangunkan poller sekarang."""
     poll_status.clear()
-    recovery_status.clear()
     poll_reset_event.set()
 
 def poll_loop():
     """
-    Polling paralel normal + Cloudflare Recovery Mode.
+    Polling paralel untuk semua event, siklus start-to-start ~POLL_INTERVAL detik.
 
-    Saat 403/429 terdeteksi, polling paralel dihentikan sementara agar tidak
-    terus mengirim burst request ke sumber yang sedang melakukan challenge.
-    Recovery kemudian melakukan health-check satu event dengan jeda pendek
-    dan kembali ke polling normal segera setelah mendapat 200 JSON valid.
+    - Diblokir (403/challenge): backoff naik bertahap POLL_BACKOFF_MIN -> x3 -> POLL_BACKOFF_MAX.
+    - Backoff dihitung SEBELUM tidur, jadi siklus sukses langsung kembali normal.
+    - Tidur bisa dibangunkan lewat request_poll_reset() (endpoint /api/poll/reset).
     """
     profiles = list(dict.fromkeys([IMPERSONATE] + IMPERSONATE_FALLBACKS))
     profile_idx = 0
@@ -1849,81 +1840,6 @@ def poll_loop():
         started = time.time()
         blocked = False
 
-        # --------------------------------------------------------------
-        # RECOVERY MODE
-        # --------------------------------------------------------------
-        if recovery_status.get("active") and RECOVERY_ENABLED:
-            recovery_status["phase"] = "health_check"
-            recovery_status["next_retry_at"] = time.time() + max(1, backoff)
-            wait_for = max(1, backoff)
-            print(
-                f"[POLL][RECOVERY] Cloudflare Recovery aktif, "
-                f"health-check dalam {wait_for}s "
-                f"(attempt {recovery_status.get('attempts', 0) + 1})"
-            )
-
-            if poll_reset_event.wait(wait_for):
-                poll_reset_event.clear()
-                backoff = 0
-                profile_idx = 0
-                try:
-                    session = build_session(profiles[profile_idx])
-                except Exception as e:
-                    print(f"[POLL][RECOVERY] Gagal membuat sesi saat reset: {e}")
-                recovery_status.clear()
-                continue
-
-            recovery_status["attempts"] = recovery_status.get("attempts", 0) + 1
-            recovery_status["last_check_at"] = time.time()
-            recovery_status["next_retry_at"] = None
-
-            # Health-check hanya satu event untuk menghindari burst request.
-            recovery_code = next(iter(EVENTS), None)
-            recovered = False
-            if recovery_code:
-                try:
-                    blocked = poll_once(session, recovery_code)
-                    recovered = not blocked
-                except Exception as e:
-                    print(f"[POLL][RECOVERY] Health-check error: {type(e).__name__}: {e}")
-                    blocked = True
-
-            if recovered:
-                recovery_status.clear()
-                backoff = 0
-                profile_idx = 0
-                try:
-                    session = build_session(profiles[profile_idx])
-                except Exception as e:
-                    print(f"[POLL][RECOVERY] Gagal membuat sesi normal: {e}")
-                print("[POLL][RECOVERY] API pulih, kembali ke polling normal.")
-                continue
-
-            # Masih diblokir: naikkan jeda perlahan, bukan x3.
-            backoff = min(
-                max(backoff * 1.5, RECOVERY_INITIAL),
-                RECOVERY_MAX,
-            )
-            recovery_status["backoff"] = int(backoff)
-            recovery_status["phase"] = "waiting"
-            recovery_status["next_retry_at"] = time.time() + backoff
-            recovery_status["last_error"] = "Cloudflare/API masih belum pulih"
-
-            # Rotasi impersonation hanya saat recovery masih gagal.
-            if len(profiles) > 1 and recovery_status["attempts"] % 2 == 0:
-                profile_idx = (profile_idx + 1) % len(profiles)
-                try:
-                    session = build_session(profiles[profile_idx])
-                    recovery_status["profile"] = profiles[profile_idx]
-                    print(f"[POLL][RECOVERY] Ganti profil impersonasi ke {profiles[profile_idx]}")
-                except Exception as e:
-                    print(f"[POLL][RECOVERY] Gagal mengganti profil: {e}")
-
-            continue
-
-        # --------------------------------------------------------------
-        # NORMAL MODE
-        # --------------------------------------------------------------
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(EVENTS)) as ex:
                 futures = {ex.submit(poll_once, session, code): code for code in EVENTS}
@@ -1937,27 +1853,8 @@ def poll_loop():
             print(f"[POLL] Error di siklus polling: {type(e).__name__}: {e}")
             blocked = True
 
-        if blocked and RECOVERY_ENABLED:
-            recovery_status.update({
-                "active": True,
-                "phase": "waiting",
-                "started_at": time.time(),
-                "attempts": 0,
-                "backoff": RECOVERY_INITIAL,
-                "next_retry_at": time.time() + RECOVERY_INITIAL,
-                "last_error": "HTTP 403/429 atau request terblokir",
-                "profile": profiles[profile_idx],
-            })
-            backoff = RECOVERY_INITIAL
-            print(
-                f"[POLL][RECOVERY] Cloudflare/API block terdeteksi. "
-                f"Masuk Recovery Mode, health-check pertama dalam {backoff}s."
-            )
-            continue
-
-        # Fallback lama jika Recovery Mode dimatikan.
         if blocked:
-            backoff = min(max(backoff * 3, POLL_BACKOFF_MIN), POLL_BACKOFF_MAX)
+            backoff = min(max(backoff * 1.5, POLL_BACKOFF_MIN), POLL_BACKOFF_MAX)
         else:
             backoff = 0
 
@@ -1968,16 +1865,16 @@ def poll_loop():
         if blocked:
             print(f"[POLL] Terblokir, tidur {sleep_for:.0f}s (backoff {backoff}s)")
 
+        # Tidur, tapi langsung bangun kalau ada permintaan reset.
         if poll_reset_event.wait(sleep_for):
             poll_reset_event.clear()
             backoff = 0
             profile_idx = 0
-            recovery_status.clear()
             try:
                 session = build_session(profiles[profile_idx])
             except Exception as e:
                 print(f"[POLL] Gagal membuat sesi baru saat reset: {e}")
-            print("[POLL] Reset manual: backoff/recovery dikosongkan, polling ulang sekarang.")
+            print("[POLL] Reset manual: backoff dikosongkan, polling ulang sekarang.")
             continue
 
         if blocked and len(profiles) > 1:
@@ -1987,14 +1884,13 @@ def poll_loop():
                 print(f"[POLL] Ganti profil impersonasi ke {profiles[profile_idx]}")
             except Exception as e:
                 print(f"[POLL] Gagal memakai profil {profiles[profile_idx]}: {e}")
-
+                
 # ------------------------------------------------------------------ dashboard API
 def poller_info():
     return {
         "enabled": POLL_ENABLED,
         "mode": "direct" if POLL_ENABLED else "worker",
         "status": poll_status,
-        "recovery": dict(recovery_status),
     }
 
 def snapshot():
