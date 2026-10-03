@@ -347,13 +347,27 @@ def restock_embed(code, lane, delta=None):
         )
 
     so = sp.get("so_after")
-    if so:
+
+    if sp.get("eta") is not None:
         embed.add_field(
-            name="⏱️ Terakhir habis dalam",
-            value=f"~{max(1, round(so / 60))} menit",
+            name="⏳ Estimasi Sold Out",
+            value=fmt_minutes(sp["eta"]),
             inline=True,
         )
-    embed.set_footer(text=f"Kode sesi {sdc}")
+
+    if so:
+        if so < 60:
+            so_text = f"{int(so)} detik"
+        elif so < 3600:
+            so_text = f"{round(so / 60)} menit"
+        else:
+            so_text = f"{so / 3600:.1f} jam"
+
+        embed.add_field(
+            name="📈 Riwayat Sold Out",
+            value=f"Terakhir habis dalam **{so_text}**",
+            inline=True,
+        )
     return embed
 
 
@@ -744,9 +758,54 @@ async def notify_new_sessions(code, lanes):
             content=f"…dan {len(lanes) - 10} sesi baru lainnya.",
         )
 
+async def notify_sold_out(code, lane, duration=None):
+    channel = await get_channel()
+
+    embed = discord.Embed(
+        title=f"🔴 SOLD OUT · {lane.get('member_name')}",
+        color=COLOR_RED,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    embed.add_field(
+        name="🎫 Jalur",
+        value=str(lane.get("label") or "-"),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="🗓️ Sesi",
+        value=str(lane.get("session_label") or "-"),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="📅 Event",
+        value=EVENTS.get(code, code),
+        inline=True,
+    )
+
+    if duration:
+        if duration < 60:
+            txt = f"{int(duration)} detik"
+        elif duration < 3600:
+            txt = f"{round(duration / 60)} menit"
+        else:
+            txt = f"{duration / 3600:.1f} jam"
+
+        embed.add_field(
+            name="⏱️ Bertahan",
+            value=txt,
+            inline=False,
+        )
+
+    await safe_send(
+        channel,
+        embed=embed,
+    )
 
 # --------------- SPAM KHUSUS 2 SHOOT (hanya saat kuota nambah) ---------------
-async def spam_loop_2shoot(code, lane, delta):
+async def spam_loop(code, lane, delta):
     key = (code, lane["session_detail_code"])
     sent = 0
     reason = "cap"
@@ -762,54 +821,76 @@ async def spam_loop_2shoot(code, lane, delta):
             if quota_now <= 0:
                 reason = "so"
                 break
+
             if age > STALE_SECONDS:
                 reason = "stale"
                 break
 
             lane_now = {**lane, "available_quota": quota_now}
+
             await safe_send(
                 channel,
                 content=(
-                    f"{vip_mention()} 🚨 **RESTOCK 2 SHOOT** · "
-                    f"{lane['member_name']} · {lane['label']} "
-                    f"({lane.get('session_label')}) · 📈 +{delta}"
+                    f"{vip_mention()} 🚨 **RESTOCK {EVENTS.get(code, code)}**\n"
+                    f"👤 {lane['member_name']}\n"
+                    f"🎫 {lane['label']} ({lane.get('session_label')})\n"
+                    f"📈 +{delta} tiket"
                 ),
                 embed=restock_embed(code, lane_now, delta),
                 view=buy_view(code),
                 allowed_mentions=vip_allowed(),
             )
+
             sent += 1
             await asyncio.sleep(SPAM_INTERVAL)
 
         texts = {
-            "so": f"🔴 **{lane['member_name']}** · {lane['label']} sold out kembali. "
-                  f"Spam dihentikan ({sent}x).",
-            "stale": f"⚠️ Spam **{lane['member_name']}** dihentikan: worker berhenti melapor.",
-            "cap": f"⚠️ Spam **{lane['member_name']}** dihentikan di batas {SPAM_MAX}x, "
-                   f"tiket masih tersedia.",
+            "so": (
+                f"🔴 **{lane['member_name']}** · "
+                f"{lane['label']} sold out kembali.\n"
+                f"Spam dihentikan ({sent}x)."
+            ),
+            "stale": (
+                f"⚠️ Spam **{lane['member_name']}** dihentikan "
+                f"karena worker berhenti melapor."
+            ),
+            "cap": (
+                f"⚠️ Spam **{lane['member_name']}** dihentikan "
+                f"karena mencapai batas {SPAM_MAX}x."
+            ),
         }
+
         await safe_send(
             channel,
             content=f"{vip_mention()} {texts[reason]}",
             allowed_mentions=vip_allowed(),
         )
+
     except Exception:
         traceback.print_exc()
+
     finally:
         spam_tasks.pop(key, None)
 
 
-def ensure_spam_2shoot(code, lane, delta):
-    if code != "EX5B99":
-        return
+def ensure_spam(code, lane, delta):
     key = (code, lane["session_detail_code"])
+
     if key in spam_tasks and not spam_tasks[key].done():
         return
-    active = sum(1 for t in spam_tasks.values() if not t.done())
+
+    active = sum(
+        1 for t in spam_tasks.values()
+        if not t.done()
+    )
+
     if active >= MAX_CONCURRENT_SPAM:
         print(f"[SPAM] Skip {key}: sudah {active} task aktif")
         return
-    spam_tasks[key] = asyncio.create_task(spam_loop_2shoot(code, lane, delta))
+
+    spam_tasks[key] = asyncio.create_task(
+        spam_loop(code, lane, delta)
+    )
 
 
 async def poll_alert(text):
@@ -828,93 +909,289 @@ async def poll_alert(text):
 def process_report(code, lanes):
     restocks = []
     new_sessions = []
-    vip_active = []
+    sold_outs = []
     deltas = {}
+
     now = time.time()
 
     with lock:
         first_scan = code not in baselined
+
         baselined.add(code)
         last_report[code] = now
+
         members = known_members.setdefault(code, set())
 
         for lane in lanes:
-            sdc = str(lane.get("session_detail_code") or "").strip()
-            quota = parse_quota(lane.get("available_quota"))
-            name = str(lane.get("member_name") or "").strip()
+            sdc = str(
+                lane.get("session_detail_code") or ""
+            ).strip()
 
-            if not sdc or sdc == "Tidak diketahui" or quota is None:
+            quota = parse_quota(
+                lane.get("available_quota")
+            )
+
+            name = str(
+                lane.get("member_name") or ""
+            ).strip()
+
+            # --------------------------------------------------
+            # Validasi lane
+            # --------------------------------------------------
+            if (
+                not sdc
+                or sdc == "Tidak diketahui"
+                or quota is None
+            ):
                 continue
 
+            # --------------------------------------------------
+            # Simpan nama member
+            # --------------------------------------------------
             if name and name != "Tidak diketahui":
                 members.add(name)
 
             key = (code, sdc)
-            prev = quota_state.get(key)
-            quota_state[key] = quota
-            lane_state[key] = {**lane, "available_quota": quota}
 
-            # riwayat kuota + durasi sampai sold out
-            record_history(key, quota, now)
-            if prev is not None and prev > 0 and quota == 0:
+            # --------------------------------------------------
+            # Kuota sebelumnya
+            # --------------------------------------------------
+            prev = quota_state.get(key)
+
+            quota_state[key] = quota
+
+            lane_state[key] = {
+                **lane,
+                "available_quota": quota,
+            }
+
+            # --------------------------------------------------
+            # History kuota
+            # --------------------------------------------------
+            record_history(
+                key,
+                quota,
+                now,
+            )
+
+            # --------------------------------------------------
+            # SOLD OUT
+            #
+            # Contoh:
+            # 5 -> 0
+            # 10 -> 0
+            #
+            # Catat berapa lama sejak restock terakhir.
+            # --------------------------------------------------
+            if (
+                prev is not None
+                and prev > 0
+                and quota == 0
+            ):
                 started = last_restock.get(key)
-                if started and now - started < 21600:
-                    so_after[key] = now - started
+
+                duration = None
+
+                if started:
+                    elapsed = now - started
+
+                    # Maksimal 6 jam supaya timestamp lama
+                    # dari state sebelumnya tidak dianggap
+                    # sebagai durasi restock sekarang.
+                    if elapsed < 21600:
+                        duration = elapsed
+                        so_after[key] = elapsed
+
+                sold_outs.append(
+                    (
+                        {
+                            **lane,
+                            "available_quota": 0,
+                        },
+                        duration,
+                    )
+                )
+
+            # --------------------------------------------------
+            # Kalau masih tersedia, hapus status
+            # sold-out sementara.
+            # --------------------------------------------------
             elif quota > 0:
                 so_after.pop(key, None)
 
-            is_new_session = prev is None and not first_scan
+            # --------------------------------------------------
+            # SESSION BARU
+            # --------------------------------------------------
+            is_new_session = (
+                prev is None
+                and not first_scan
+            )
 
+            # --------------------------------------------------
+            # RESTOCK DETECTION
+            #
+            # prev=None + bukan first scan
+            #       -> lane baru muncul
+            #
+            # quota > prev
+            #       -> kuota bertambah
+            # --------------------------------------------------
             delta = 0
             is_restock = False
+
             if quota > 0:
+
                 if prev is None:
+
                     if not first_scan:
                         is_restock = True
                         delta = quota
+
                 elif quota > prev:
+
                     is_restock = True
                     delta = quota - prev
 
+            # --------------------------------------------------
+            # Simpan RESTOCK
+            # --------------------------------------------------
             if is_restock:
-                last = last_restock.get(key, 0)
-                if now - last >= RESTOCK_COOLDOWN:
-                    restocks.append(lane)
-                    deltas[key] = delta
-                    last_restock[key] = now
 
-                    if code == "EX5B99" and is_vip(code, lane):
-                        vip_active.append((lane, delta))
-
-            if is_new_session and quota > 0:
-                new_sessions.append(lane)
-
-    if bot.main_loop is None or not bot.is_ready():
-        return len(restocks), len(new_sessions), len(vip_active)
-
-    if code == "EX5B99":
-        if restocks:
-            asyncio.run_coroutine_threadsafe(
-                notify_subscribers(code, restocks, deltas), bot.main_loop
-            )
-        if new_sessions:
-            asyncio.run_coroutine_threadsafe(
-                notify_new_sessions(code, new_sessions), bot.main_loop
-            )
-        for lane, delta in vip_active:
-            bot.main_loop.call_soon_threadsafe(
-                ensure_spam_2shoot, code, dict(lane), delta
-            )
-    elif code == "EX24AE":
-        if restocks or new_sessions:
-            combined = restocks + [l for l in new_sessions if l not in restocks]
-            if combined:
-                asyncio.run_coroutine_threadsafe(
-                    notify_subscribers(code, combined, deltas), bot.main_loop
+                last = last_restock.get(
+                    key,
+                    0,
                 )
 
-    return len(restocks), len(new_sessions), len(vip_active)
+                # Hindari spam restock berulang
+                # dalam cooldown.
+                if (
+                    now - last
+                    >= RESTOCK_COOLDOWN
+                ):
+                    restocks.append(
+                        {
+                            **lane,
+                            "available_quota": quota,
+                        }
+                    )
 
+                    deltas[key] = delta
+
+                    # Mulai timer restock -> sold out
+                    last_restock[key] = now
+
+            # --------------------------------------------------
+            # SESSION BARU DENGAN KUOTA
+            # --------------------------------------------------
+            if (
+                is_new_session
+                and quota > 0
+            ):
+                new_sessions.append(
+                    {
+                        **lane,
+                        "available_quota": quota,
+                    }
+                )
+
+    # ==========================================================
+    # Jangan kirim Discord kalau bot belum siap
+    # ==========================================================
+    if (
+        bot.main_loop is None
+        or not bot.is_ready()
+    ):
+        return (
+            len(restocks),
+            len(new_sessions),
+            len(sold_outs),
+        )
+
+    # ==========================================================
+    # RESTOCK
+    #
+    # Berlaku untuk:
+    # EX5B99 = 2 Shoot
+    # EX24AE = MNG
+    # ==========================================================
+    if restocks:
+
+        asyncio.run_coroutine_threadsafe(
+            notify_subscribers(
+                code,
+                restocks,
+                deltas,
+            ),
+            bot.main_loop,
+        )
+
+        # Blast untuk semua event
+        for lane in restocks:
+
+            sdc = str(
+                lane.get(
+                    "session_detail_code"
+                ) or ""
+            )
+
+            delta = deltas.get(
+                (code, sdc),
+                0,
+            )
+
+            bot.main_loop.call_soon_threadsafe(
+                ensure_spam,
+                code,
+                dict(lane),
+                delta,
+            )
+
+    # ==========================================================
+    # SESSION BARU
+    # ==========================================================
+    if new_sessions:
+
+        asyncio.run_coroutine_threadsafe(
+            notify_new_sessions(
+                code,
+                new_sessions,
+            ),
+            bot.main_loop,
+        )
+
+    # ==========================================================
+    # SOLD OUT
+    # ==========================================================
+    if sold_outs:
+
+        for lane, duration in sold_outs:
+
+            asyncio.run_coroutine_threadsafe(
+                notify_sold_out(
+                    code,
+                    lane,
+                    duration,
+                ),
+                bot.main_loop,
+            )
+
+    # ==========================================================
+    # LOG
+    # ==========================================================
+    print(
+        f"[PROCESS] "
+        f"{EVENTS.get(code, code)} "
+        f"lanes={len(lanes)} "
+        f"restock={len(restocks)} "
+        f"new={len(new_sessions)} "
+        f"soldout={len(sold_outs)}"
+    )
+
+    return (
+        len(restocks),
+        len(new_sessions),
+        len(sold_outs),
+    )
 
 def record_remote_poll(code, error=""):
     prev = poll_status.get(code) or {}
