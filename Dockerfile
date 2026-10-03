@@ -13,7 +13,10 @@ COPY server/discord_notifier.py \
      server/dashboard.html \
      server/subscriptions.json \
      server/entrypoint.sh \
+     server/member_photos.py \
      ./
+
+COPY server/members/ ./members/
 
 RUN sed -i 's/\r$//' entrypoint.sh \
     && chmod +x entrypoint.sh \
