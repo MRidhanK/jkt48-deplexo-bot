@@ -761,52 +761,119 @@ async def notify_new_sessions(code, lanes):
         )
 
 async def notify_sold_out(code, lane, duration=None):
-    channel = await get_channel()
+    """
+    Mengirim notifikasi ketika satu lane berubah menjadi sold out.
 
-    embed = discord.Embed(
-        title=f"🔴 SOLD OUT · {lane.get('member_name')}",
-        color=COLOR_RED,
-        timestamp=datetime.now(timezone.utc),
-    )
+    duration:
+        waktu dari restock terakhir sampai sold out,
+        dalam detik.
+    """
 
-    embed.add_field(
-        name="🎫 Jalur",
-        value=str(lane.get("label") or "-"),
-        inline=True,
-    )
+    try:
+        channel = await get_channel()
 
-    embed.add_field(
-        name="🗓️ Sesi",
-        value=str(lane.get("session_label") or "-"),
-        inline=True,
-    )
+        event_name = EVENTS.get(code, code)
 
-    embed.add_field(
-        name="📅 Event",
-        value=EVENTS.get(code, code),
-        inline=True,
-    )
-
-    if duration:
-        if duration < 60:
-            txt = f"{int(duration)} detik"
-        elif duration < 3600:
-            txt = f"{round(duration / 60)} menit"
-        else:
-            txt = f"{duration / 3600:.1f} jam"
-
-        embed.add_field(
-            name="⏱️ Bertahan",
-            value=txt,
-            inline=False,
+        embed = discord.Embed(
+            title=(
+                f"🔴 SOLD OUT · "
+                f"{lane.get('member_name', '-')}"
+            ),
+            description=(
+                f"**{event_name}**\n"
+                f"{lane.get('label', '-')}"
+            ),
+            color=COLOR_RED,
+            timestamp=datetime.now(timezone.utc),
         )
 
-    await safe_send(
-        channel,
-        embed=embed,
-    )
+        # ==========================================
+        # INFO EVENT
+        # ==========================================
+        embed.add_field(
+            name="🎫 Jalur",
+            value=str(
+                lane.get("label") or "-"
+            ),
+            inline=True,
+        )
 
-# --------------- SPAM KHUSUS 2 SHOOT (hanya saat kuota nambah) ---------------
+        embed.add_field(
+            name="🗓️ Sesi",
+            value=str(
+                lane.get("session_label") or "-"
+            ),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="📅 Event",
+            value=str(event_name),
+            inline=True,
+        )
+
+        # ==========================================
+        # MEMBER
+        # ==========================================
+        embed.add_field(
+            name="👤 Member",
+            value=str(
+                lane.get("member_name") or "-"
+            ),
+            inline=True,
+        )
+
+        # ==========================================
+        # DURASI SAMPAI SOLD OUT
+        # ==========================================
+        if duration is not None and duration >= 0:
+
+            if duration < 60:
+                duration_text = (
+                    f"{int(duration)} detik"
+                )
+
+            elif duration < 3600:
+                duration_text = (
+                    f"{duration / 60:.1f} menit"
+                )
+
+            else:
+                duration_text = (
+                    f"{duration / 3600:.2f} jam"
+                )
+
+            embed.add_field(
+                name="⏱️ Bertahan",
+                value=(
+                    f"**{duration_text}**"
+                ),
+                inline=False,
+            )
+
+        # ==========================================
+        # FOOTER
+        # ==========================================
+        embed.set_footer(
+            text="JKT48 Ticket Radar · Sold Out Tracker"
+        )
+
+        await safe_send(
+            channel,
+            embed=embed,
+        )
+
+        print(
+            f"[SOLD OUT] "
+            f"{event_name} | "
+            f"{lane.get('member_name', '-')} | "
+            f"{lane.get('label', '-')} | "
+            f"duration={duration}"
+        )
+
+    except Exception:
+        traceback.print_exc()
+
 async def spam_loop(code, lane, delta):
     key = (code, lane["session_detail_code"])
     sent = 0
@@ -820,80 +887,168 @@ async def spam_loop(code, lane, delta):
                 quota_now = quota_state.get(key, 0)
                 age = time.time() - last_report.get(code, 0)
 
+            # ==========================================
+            # SOLD OUT
+            # ==========================================
             if quota_now <= 0:
                 reason = "so"
                 break
 
+            # ==========================================
+            # WORKER / DATA STALE
+            # ==========================================
             if age > STALE_SECONDS:
                 reason = "stale"
                 break
 
-            lane_now = {**lane, "available_quota": quota_now}
+            # ==========================================
+            # UPDATE QUOTA TERBARU
+            # ==========================================
+            lane_now = {
+                **lane,
+                "available_quota": quota_now,
+            }
+
+            event_name = EVENTS.get(code, code)
 
             await safe_send(
                 channel,
                 content=(
-                    f"{vip_mention()} 🚨 **RESTOCK {EVENTS.get(code, code)}**\n"
-                    f"👤 {lane['member_name']}\n"
-                    f"🎫 {lane['label']} ({lane.get('session_label')})\n"
+                    f"{vip_mention()} 🚨 **RESTOCK {event_name}**\n"
+                    f"👤 {lane.get('member_name', '-')}\n"
+                    f"🎫 {lane.get('label', '-')}"
+                    f" ({lane.get('session_label', '-')})\n"
                     f"📈 +{delta} tiket"
                 ),
-                embed=restock_embed(code, lane_now, delta),
+                embed=restock_embed(
+                    code,
+                    lane_now,
+                    delta,
+                ),
                 view=buy_view(code),
                 allowed_mentions=vip_allowed(),
             )
 
             sent += 1
+
+            # Jangan langsung spam tanpa jeda
             await asyncio.sleep(SPAM_INTERVAL)
 
-        texts = {
-            "so": (
-                f"🔴 **{lane['member_name']}** · "
-                f"{lane['label']} sold out kembali.\n"
+        # ==========================================
+        # PESAN AKHIR SPAM
+        # ==========================================
+        if reason == "so":
+            text = (
+                f"🔴 **{lane.get('member_name', '-')}** · "
+                f"{lane.get('label', '-')} sold out kembali.\n"
                 f"Spam dihentikan ({sent}x)."
-            ),
-            "stale": (
-                f"⚠️ Spam **{lane['member_name']}** dihentikan "
-                f"karena worker berhenti melapor."
-            ),
-            "cap": (
-                f"⚠️ Spam **{lane['member_name']}** dihentikan "
-                f"karena mencapai batas {SPAM_MAX}x."
-            ),
-        }
+            )
+
+        elif reason == "stale":
+            text = (
+                f"⚠️ Spam **{lane.get('member_name', '-')}** · "
+                f"{lane.get('label', '-')} dihentikan "
+                f"karena worker berhenti melaporkan data."
+            )
+
+        else:
+            text = (
+                f"⚠️ Spam **{lane.get('member_name', '-')}** · "
+                f"{lane.get('label', '-')} dihentikan karena "
+                f"mencapai batas **{SPAM_MAX}x**.\n"
+                f"🎫 Tiket masih tersedia."
+            )
 
         await safe_send(
             channel,
-            content=f"{vip_mention()} {texts[reason]}",
+            content=f"{vip_mention()} {text}",
             allowed_mentions=vip_allowed(),
         )
+
+    except asyncio.CancelledError:
+        # Task dibatalkan secara normal
+        raise
 
     except Exception:
         traceback.print_exc()
 
     finally:
+        # Pastikan task dibersihkan
         spam_tasks.pop(key, None)
 
-
 def ensure_spam(code, lane, delta):
-    key = (code, lane["session_detail_code"])
+    """
+    Memulai spam untuk semua event:
+    - EX5B99 = 2 Shoot
+    - EX24AE = MNG
 
-    if key in spam_tasks and not spam_tasks[key].done():
+    Hanya satu spam task aktif untuk satu session_detail_code.
+    """
+
+    session_code = lane.get("session_detail_code")
+
+    if not session_code:
+        print(
+            f"[SPAM] Skip {code}: "
+            f"session_detail_code tidak tersedia"
+        )
         return
 
+    key = (code, session_code)
+
+    # ==========================================
+    # CEK TASK YANG SUDAH AKTIF
+    # ==========================================
+    existing = spam_tasks.get(key)
+
+    if existing is not None and not existing.done():
+        print(
+            f"[SPAM] Already running: "
+            f"{EVENTS.get(code, code)} / {session_code}"
+        )
+        return
+
+    # ==========================================
+    # BATAS JUMLAH SPAM CONCURRENT
+    # ==========================================
     active = sum(
-        1 for t in spam_tasks.values()
-        if not t.done()
+        1
+        for task in spam_tasks.values()
+        if not task.done()
     )
 
     if active >= MAX_CONCURRENT_SPAM:
-        print(f"[SPAM] Skip {key}: sudah {active} task aktif")
+        print(
+            f"[SPAM] Skip {key}: "
+            f"sudah {active} task aktif "
+            f"(limit={MAX_CONCURRENT_SPAM})"
+        )
         return
 
-    spam_tasks[key] = asyncio.create_task(
-        spam_loop(code, lane, delta)
-    )
+    # ==========================================
+    # BUAT TASK BARU
+    # ==========================================
+    try:
+        task = asyncio.create_task(
+            spam_loop(
+                code,
+                lane,
+                delta,
+            )
+        )
 
+        spam_tasks[key] = task
+
+        print(
+            f"[SPAM] START "
+            f"{EVENTS.get(code, code)} | "
+            f"{lane.get('member_name', '-')} | "
+            f"{lane.get('label', '-')} | "
+            f"+{delta}"
+        )
+
+    except Exception:
+        traceback.print_exc()
 
 async def poll_alert(text):
     try:
