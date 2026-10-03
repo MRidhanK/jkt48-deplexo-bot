@@ -1,0 +1,14 @@
+{
+  "code": "EX5B99",
+  "pageUrl": "https://jkt48.com/purchase/exclusive?code=EX5B99",
+  "lanes": [{
+    "label": "Jalur Tes", "price": 50000,
+    "member_name": "Member Tes",
+    "session_detail_code": "TEST001",
+    "available_quota": 0,
+    "session_label": "Sesi 1",
+    "session_date": "2026-10-10",
+    "session_start_time": "10:00:00",
+    "session_end_time": "10:30:00"
+  }]
+}
