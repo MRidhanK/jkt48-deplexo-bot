@@ -699,6 +699,35 @@ table.hm{border-spacing:4px}
 @media(prefers-reduced-motion:reduce){
   *,*:before,*:after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
 }
+
+/* ---------- collapsible top controls ---------- */
+#headerToggle{
+  min-width:42px;height:40px;padding:0 12px;justify-content:center;
+  border-radius:12px;gap:7px;
+  color:var(--text);
+}
+#headerToggle .toggle-icon{
+  display:inline-block;font-size:17px;line-height:1;
+  transition:transform .22s ease;
+}
+#headerToggle[aria-expanded="false"] .toggle-icon{transform:rotate(-90deg)}
+#headerControls{
+  overflow:hidden;
+  max-height:520px;
+  opacity:1;
+  transform:translateY(0);
+  transition:max-height .28s ease,opacity .2s ease,transform .28s ease,margin .28s ease;
+}
+#headerControls.is-collapsed{
+  max-height:0;
+  opacity:0;
+  transform:translateY(-8px);
+  pointer-events:none;
+}
+@media(max-width:800px){
+  #headerToggle .toggle-label{display:none}
+}
+
 </style>
 </head>
 <body>
@@ -708,10 +737,14 @@ table.hm{border-spacing:4px}
     <span id="status" class="pill">memuat…</span>
     <button class="btn sq" id="refresh" title="Muat ulang sekarang" aria-label="Muat ulang">⟳</button>
     <button class="btn sq" id="theme" title="Ganti tema" aria-label="Ganti tema">🌓</button>
+    <button class="btn" id="headerToggle" type="button" aria-expanded="true" aria-controls="headerControls" title="Buka/tutup panel pencarian dan filter">
+      <span class="toggle-icon">⌄</span><span class="toggle-label">Filter</span>
+    </button>
     <a class="btn" id="buy" target="_blank" rel="noopener" title="Buka halaman pembelian di jkt48.com"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.2 10.2a1 1 0 0 0 1 .8h9.4a1 1 0 0 0 1-.8L20 8H6.2M9 20h.01M17 20h.01"/></svg>Beli tiket</a>
   </div>
-  <div class="row"><div class="tabs" id="tabs"></div><div class="tabs seg" id="views" role="group" aria-label="Tampilan"></div></div>
-  <div class="row">
+  <div id="headerControls">
+    <div class="row"><div class="tabs" id="tabs"></div><div class="tabs seg" id="views" role="group" aria-label="Tampilan"></div></div>
+    <div class="row">
     <input type="search" id="q" placeholder="Cari member…" aria-label="Cari member">
     <select id="sort" title="Urutkan" aria-label="Urutkan">
       <option value="avail">Urut: tersedia dulu</option>
@@ -723,8 +756,8 @@ table.hm{border-spacing:4px}
     <select id="date" title="Tanggal" aria-label="Filter tanggal"><option value="">Semua tanggal</option></select>
     <select id="lane" title="Jalur" aria-label="Filter jalur"><option value="">Semua jalur</option></select>
     <select id="price" title="Harga" aria-label="Filter harga"><option value="">Semua harga</option></select>
-  </div>
-  <div class="row"><div class="opts">
+    </div>
+    <div class="row"><div class="opts">
     <label class="pill"><input type="checkbox" id="only"> hanya tersedia</label>
     <label class="pill"><input type="checkbox" id="favOnly"> ⭐ favorit saja</label>
     <label class="pill"><input type="checkbox" id="vipOnly"> ★ VIP saja</label>
@@ -734,7 +767,8 @@ table.hm{border-spacing:4px}
     <label class="pill"><input type="checkbox" id="notif"> 📲 notifikasi</label>
     <label class="pill"><input type="checkbox" id="wake"> 🔆 layar nyala</label>
     <button class="btn" id="toggleAll" style="padding:3px 10px;font-size:12px">Buka semua</button>
-  </div></div>
+    </div></div>
+  </div>
 </header>
 <main>
   <div class="alert" id="staleBanner" role="alert" hidden></div>
@@ -1597,6 +1631,22 @@ $("theme").onclick = () => {
   const next = cur === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = next; store.set("theme", next);
 };
+// ---- Toggle panel atas: pencarian, filter, tab & opsi
+const headerControls = $("headerControls");
+const headerToggle = $("headerToggle");
+const savedHeaderCollapsed = store.get("headerCollapsed", false);
+const setHeaderCollapsed = collapsed => {
+  headerControls.classList.toggle("is-collapsed", collapsed);
+  headerToggle.setAttribute("aria-expanded", String(!collapsed));
+  headerToggle.title = collapsed ? "Buka panel pencarian dan filter" : "Tutup panel pencarian dan filter";
+  headerToggle.querySelector(".toggle-label").textContent = collapsed ? "Buka" : "Filter";
+  store.set("headerCollapsed", collapsed);
+};
+setHeaderCollapsed(savedHeaderCollapsed === true || savedHeaderCollapsed === "true");
+headerToggle.onclick = () => {
+  setHeaderCollapsed(!headerControls.classList.contains("is-collapsed"));
+};
+
 $("toggleAll").onclick = e => {
   const o = e.target.dataset.open !== "1";
   e.target.dataset.open = o ? "1" : ""; e.target.textContent = o ? "Tutup semua" : "Buka semua";
