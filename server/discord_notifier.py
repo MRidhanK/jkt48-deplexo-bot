@@ -7,6 +7,8 @@ Server ini juga bisa polling langsung ke jkt48.com kalau POLL_ENABLED=1.
 import asyncio
 import concurrent.futures
 import hmac
+import csv
+import io
 import json
 import os
 import sys   
@@ -96,6 +98,16 @@ TZ_OFFSET_HOURS = float(os.environ.get("TZ_OFFSET_HOURS", "7"))
 LOCAL_TZ = timezone(timedelta(hours=TZ_OFFSET_HOURS))
 ACTIVITY_KEEP_SECONDS = int(os.environ.get("ACTIVITY_KEEP_SECONDS", "172800"))  # 48 jam
 ACTIVITY_MAXLEN = 20000
+
+# Ringkasan harian ke Discord (jam lokal sesuai TZ_OFFSET_HOURS)
+SUMMARY_HOUR = int(os.environ.get("SUMMARY_HOUR", "23"))
+
+# Alert status
+HEALTH_CHECK_INTERVAL = int(os.environ.get("HEALTH_CHECK_INTERVAL", "60"))
+LATENCY_ALERT_MS = int(os.environ.get("LATENCY_ALERT_MS", "1500"))
+LATENCY_ALERT_CHECKS = int(os.environ.get("LATENCY_ALERT_CHECKS", "3"))  # berturut-turut
+API_ERR_WINDOW = int(os.environ.get("API_ERR_WINDOW", "300"))            # detik
+API_ERR_ALERT = int(os.environ.get("API_ERR_ALERT", "5"))                # jumlah 5xx
 
 # Pengelompokan event untuk halaman status
 EVENT_GROUP = {"EX5B99": "JKT", "EX24AE": "JKT", "EXD1A1": "AKB", "EXA6F1": "AKB"}
@@ -207,6 +219,10 @@ last_so = {}     # (code, sdc) -> detik restock -> sold out TERAKHIR; tidak diha
 activity = deque(maxlen=ACTIVITY_MAXLEN)   # [ts, jenis, code, sdc, jumlah, durasi]
 activity_since = time.time()               # kapan pencatatan analytics dimulai
 
+req_log = deque(maxlen=5000)          # (ts, status) tiap respons HTTP
+summary_meta = {"day": ""}            # tanggal terakhir ringkasan terkirim
+health_alerted = set()
+
 stats_lock = threading.Lock()
 request_total = 0
 request_errors = 0
@@ -269,10 +285,18 @@ def log_activity(now, kind, code, sdc, n, dur=None):
 
 def count_request(status):
     global request_total, request_errors
+    now = time.time()
     with stats_lock:
         request_total += 1
         if status >= 400:
             request_errors += 1
+        req_log.append((now, status))
+
+
+def recent_5xx(window):
+    cutoff = time.time() - window
+    with stats_lock:
+        return sum(1 for ts, st in req_log if ts >= cutoff and st >= 500)
 
 def load_subs():
     try:
@@ -341,6 +365,9 @@ def load_state():
         activity_since = float(raw.get("activity_since") or activity_since)
     except (TypeError, ValueError):
         pass
+
+    summary_meta["day"] = str(raw.get("summary_day") or "")
+
     print(f"[STATE] Dimuat: {len(quota_state)} lane, {len(lane_state)} data jalur, "
           f"{len(baselined)} event, {len(history)} riwayat")
     
@@ -360,6 +387,7 @@ def save_state():
                 },
                 "activity": list(activity),
                 "activity_since": activity_since,
+                "summary_day": summary_meta["day"],
             }
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
@@ -528,11 +556,15 @@ class RadarBot(discord.Client):
         self.main_loop = None
         self.save_task = None
         self.stale_task = None
+        self.summary_task = None
+        self.health_task = None
 
     async def setup_hook(self):
         self.main_loop = asyncio.get_running_loop()
         self.save_task = asyncio.create_task(save_state_loop())
         self.stale_task = asyncio.create_task(stale_watch_loop())
+        self.summary_task = asyncio.create_task(daily_summary_loop())
+        self.health_task = asyncio.create_task(health_watch_loop())
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -734,6 +766,37 @@ async def cmd_2shoot_akb(interaction: discord.Interaction, member: str):
 async def cmd_mng_akb(interaction: discord.Interaction, member: str):
     await show_stock(interaction, "EXA6F1", member)
 
+@bot.tree.command(name="analytics", description="Ringkasan restock hari ini")
+async def cmd_analytics(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    a = analytics_snapshot()
+    top = top_members(5)
+    await interaction.followup.send(
+        embed=analytics_embed("📊 Analytics Hari Ini", a, top), ephemeral=True
+    )
+
+
+@bot.tree.command(name="top", description="Top 5 member dengan restock terbanyak hari ini")
+@app_commands.describe(event="Filter event (kosongkan untuk semua event)")
+@app_commands.choices(event=EVENT_CHOICES)
+async def cmd_top(interaction: discord.Interaction,
+                  event: app_commands.Choice[str] = None):
+    code = event.value if event else "*"
+    rows = top_members(5, code)
+    if not rows:
+        await interaction.response.send_message(
+            "Belum ada restock tercatat hari ini.", ephemeral=True
+        )
+        return
+    where = "semua event" if code == "*" else EVENTS.get(code, code)
+    embed = discord.Embed(
+        title="🏆 Top Member Hari Ini",
+        description=f"{where}\n\n{top_lines(rows)}",
+        color=COLOR_GREEN,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="JKT48 Ticket Radar")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="berhenti", description="Berhenti memantau member")
 @app_commands.describe(member="Nama member (atau 'semua' untuk menghapus semua)")
@@ -1530,6 +1593,64 @@ async def stale_watch_loop():
                 stale_alerted.discard(code)
                 await poll_alert(f"✅ Data **{name}** segar lagi.")
 
+async def daily_summary_loop():
+    await bot.wait_until_ready()
+    while True:
+        await asyncio.sleep(30)
+        try:
+            local = datetime.now(LOCAL_TZ)
+            today = local.strftime("%Y-%m-%d")
+            if local.hour < SUMMARY_HOUR or summary_meta["day"] == today:
+                continue
+            a = analytics_snapshot()
+            top = top_members(5)
+            channel = await get_channel()
+            await safe_send(channel, embed=analytics_embed("📊 Ringkasan Harian", a, top))
+            summary_meta["day"] = today
+            save_state()
+        except Exception:
+            traceback.print_exc()
+
+
+async def health_watch_loop():
+    await bot.wait_until_ready()
+    high = low = 0
+    while True:
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+        try:
+            # ---- latensi Discord
+            lat = bot.latency
+            if lat == lat and lat != float("inf"):
+                ms = lat * 1000
+                if ms >= LATENCY_ALERT_MS:
+                    high, low = high + 1, 0
+                else:
+                    high, low = 0, low + 1
+                if high >= LATENCY_ALERT_CHECKS and "latency" not in health_alerted:
+                    health_alerted.add("latency")
+                    await poll_alert(
+                        f"🐌 Latensi Discord tinggi: **{ms:.0f} ms** "
+                        f"(batas {LATENCY_ALERT_MS} ms, {high}x pengecekan berturut-turut). "
+                        f"Notifikasi bisa terlambat."
+                    )
+                elif low >= 2 and "latency" in health_alerted:
+                    health_alerted.discard("latency")
+                    await poll_alert(f"✅ Latensi Discord normal lagi (**{ms:.0f} ms**).")
+
+            # ---- lonjakan error server (5xx)
+            errs = recent_5xx(API_ERR_WINDOW)
+            if errs >= API_ERR_ALERT and "api5xx" not in health_alerted:
+                health_alerted.add("api5xx")
+                await poll_alert(
+                    f"🔥 API mengembalikan **{errs}** error 5xx dalam "
+                    f"{API_ERR_WINDOW // 60} menit terakhir. Cek log server."
+                )
+            elif errs == 0 and "api5xx" in health_alerted:
+                health_alerted.discard("api5xx")
+                await poll_alert("✅ Error API sudah berhenti.")
+        except Exception:
+            traceback.print_exc()
+
 async def save_state_loop():
     await bot.wait_until_ready()
     while True:
@@ -1929,6 +2050,130 @@ def health_snapshot():
         "stale_after": STALE_SECONDS,
     }
 
+def day_start_ts(now=None):
+    local = datetime.fromtimestamp(now or time.time(), LOCAL_TZ)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def fmt_ms(sec):
+    if sec is None:
+        return "-"
+    s = max(0, int(round(sec)))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    return f"{s // 3600}j {s % 3600 // 60}m"
+
+
+def hour_range(h):
+    return "-" if h is None else f"{h:02d}:00–{(h + 1) % 24:02d}:00"
+
+
+def top_members(limit=5, code=None):
+    """Member dengan restock terbanyak hari ini (opsional per event)."""
+    since = day_start_ts()
+    agg = {}
+    with lock:
+        for ts, kind, c, sdc, n, dur in activity:
+            if ts < since or kind == "sold":
+                continue
+            if code and code != "*" and c != code:
+                continue
+            v = lane_state.get((c, sdc)) or {}
+            name = str(v.get("member_name") or "").strip()
+            if not name:
+                continue
+            e = agg.setdefault(norm(name), {
+                "member": name, "restock": 0, "tickets_in": 0, "sold_out": 0,
+            })
+            if kind == "in":
+                e["restock"] += 1
+                e["tickets_in"] += n
+            elif kind == "so":
+                e["sold_out"] += 1
+    rows = [e for e in agg.values() if e["restock"] > 0]
+    rows.sort(key=lambda e: (-e["restock"], -e["tickets_in"], e["member"]))
+    return rows[:limit]
+
+
+def top_lines(rows):
+    medals = ["🥇", "🥈", "🥉", "4.", "5."]
+    return "\n".join(
+        f"{medals[i] if i < len(medals) else str(i + 1) + '.'} **{r['member']}** · "
+        f"{r['restock']}x restock · +{r['tickets_in']} tiket"
+        for i, r in enumerate(rows)
+    )
+
+
+def analytics_embed(title, a, top):
+    t = a["today"]
+    embed = discord.Embed(
+        title=title,
+        description=f"📅 {a['day_label']}",
+        color=COLOR_GREEN if t["restock"] else COLOR_AMBER,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="📈 Restock", value=f"**{t['restock']}**", inline=True)
+    embed.add_field(name="🎟️ Tiket masuk", value=f"**{t['tickets_in']}**", inline=True)
+    embed.add_field(name="🛒 Tiket terjual", value=f"**{t['tickets_sold']}**", inline=True)
+    embed.add_field(name="🔴 Sold out", value=f"**{t['sold_out']}**", inline=True)
+    embed.add_field(
+        name="⏱️ Rata-rata sampai SO",
+        value=f"**{fmt_ms(a['avg_so'])}**" + (f"\n-# {a['so_samples']} sampel" if a["so_samples"] else ""),
+        inline=True,
+    )
+    embed.add_field(name="🕒 Jam restock terbanyak", value=f"**{hour_range(a['peak_hour'])}**", inline=True)
+
+    mc = a.get("most_active")
+    if mc and mc in a["events"]:
+        e = a["events"][mc]
+        embed.add_field(
+            name="🔥 Event paling aktif",
+            value=f"**{e['name']}** · {e['restock']}x restock · +{e['tickets_in']} tiket",
+            inline=False,
+        )
+    if top:
+        embed.add_field(name="🏆 Top member", value=top_lines(top), inline=False)
+    if a["fastest"]:
+        lines = [
+            f"{i}. **{f['member']}** · {f['event']} {f['lane']} → {fmt_ms(f['duration'])}"
+            for i, f in enumerate(a["fastest"][:3], 1)
+        ]
+        embed.add_field(name="⚡ Turnover tercepat", value="\n".join(lines), inline=False)
+
+    if a.get("tracked_since") and a["tracked_since"] > a["day_start"] + 60:
+        since = datetime.fromtimestamp(a["tracked_since"], LOCAL_TZ).strftime("%H:%M")
+        embed.set_footer(text=f"JKT48 Ticket Radar · pencatatan mulai {since}")
+    else:
+        embed.set_footer(text="JKT48 Ticket Radar")
+    return embed
+
+
+CSV_KIND = {"in": "restock", "sold": "terjual", "so": "sold_out"}
+
+
+def export_csv(only_today=False):
+    since = day_start_ts() if only_today else 0
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["waktu_lokal", "epoch", "jenis", "kode_event", "event", "member",
+                "jalur", "sesi", "tanggal_sesi", "jam_mulai", "jumlah", "durasi_detik"])
+    with lock:
+        for ts, kind, code, sdc, n, dur in activity:
+            if ts < since:
+                continue
+            v = lane_state.get((code, sdc)) or {}
+            w.writerow([
+                datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                int(ts), CSV_KIND.get(kind, kind), code, EVENTS.get(code, code),
+                v.get("member_name") or "", v.get("label") or "",
+                v.get("session_label") or "", v.get("session_date") or "",
+                hhmm(v.get("session_start_time")) if v else "",
+                n, "" if dur is None else dur,
+            ])
+    return buf.getvalue()
+
 def _same(a, b):
     """Bandingkan string secara aman dan tidak error untuk karakter non-ASCII."""
     return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
@@ -1956,6 +2201,16 @@ class Handler(BaseHTTPRequestHandler):
     def send_html(self, status, raw):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def send_csv(self, filename, text):
+        raw = ("\ufeff" + text).encode("utf-8")   # BOM supaya Excel membaca UTF-8
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -1998,6 +2253,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/api/status":
             return self.send_json(200, health_snapshot())
+
+        if url.path == "/api/export.csv":
+            only_today = (parse_qs(url.query).get("range") or [""])[0] == "today"
+            stamp = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+            name = f"jkt48-radar-{stamp}.csv" if only_today else f"jkt48-radar-{stamp}-48jam.csv"
+            return self.send_csv(name, export_csv(only_today))
 
         if url.path == "/api/members":
             with lock:

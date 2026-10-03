@@ -742,6 +742,10 @@ function renderAnalytics() {
     ft.append(fb); fw.append(ft); fc.append(fw);
   }
   pg.append(fc);
+  const dl = el("div", "acts"), kq = KEY ? "&key=" + encodeURIComponent(KEY) : "";
+  const d1 = el("a", "btn", "⬇ CSV hari ini"); d1.href = "/api/export.csv?range=today" + kq; d1.download = "";
+  const d2 = el("a", "btn", "⬇ CSV semua (48 jam)"); d2.href = "/api/export.csv?range=all" + kq; d2.download = "";
+  dl.append(d1, d2); pg.append(dl);
   return pg;
 }
 
