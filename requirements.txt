@@ -2,3 +2,4 @@ discord.py>=2.3
 aiohttp
 curl_cffi>=0.7
 playwright
+pywebpush>=2.0.0
