@@ -943,6 +943,30 @@ table.hm{border-spacing:4px}
   .radar-live-dot{animation:none}
 }
 
+
+/* =========================================================
+   RADAR SUITE 12 FEATURES
+   ========================================================= */
+.r12-wrap{display:grid;gap:12px;margin:12px 0}
+.r12-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:10px}
+.r12-card{grid-column:span 4;background:linear-gradient(145deg,var(--card),color-mix(in srgb,var(--card) 82%,var(--acc)));border:1px solid var(--line);border-radius:14px;padding:13px;box-shadow:0 10px 30px rgba(0,0,0,.08)}
+.r12-card.wide{grid-column:span 8}.r12-card.full{grid-column:1/-1}
+.r12-title{display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:700}.r12-sub{color:var(--mut);font-size:12px;margin-top:2px}.r12-kpi{font-size:26px;font-weight:800;margin-top:8px}.r12-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.r12-list{display:grid;gap:7px;margin-top:10px;max-height:260px;overflow:auto}.r12-row{border:1px solid var(--line);background:color-mix(in srgb,var(--card) 86%,var(--soft));border-radius:10px;padding:9px;cursor:pointer}.r12-row:hover{border-color:var(--acc);transform:translateY(-1px)}
+.r12-score{font-weight:800;padding:3px 8px;border-radius:99px;background:var(--soft);font-size:11px}.r12-score.hot{color:var(--no);border:1px solid var(--no)}
+.r12-bar{height:7px;background:var(--soft);border-radius:99px;overflow:hidden;margin-top:7px}.r12-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),#ff6b9a);border-radius:99px}
+.r12-grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}.r12-mini{padding:9px;border:1px solid var(--line);border-radius:10px}.r12-mini b{display:block;font-size:17px}.r12-mini span{font-size:11px;color:var(--mut)}
+.r12-input{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:9px;padding:8px;font:inherit}
+.r12-select{width:100%;margin-top:7px}.r12-check{font-size:12px;color:var(--mut);display:flex;gap:6px;align-items:center}
+.r12-empty{padding:16px;text-align:center;color:var(--mut);border:1px dashed var(--line);border-radius:10px}
+.r12-countdown{font-size:34px;font-weight:900;letter-spacing:.04em}.r12-window{color:var(--warn);font-size:12px;font-weight:700}.r12-watch{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.r12-rank{display:flex;align-items:center;gap:8px}.r12-ranknum{width:25px;height:25px;border-radius:8px;background:var(--soft);display:grid;place-items:center;font-weight:800}
+.r12-flash{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:rgba(5,7,12,.72);backdrop-filter:blur(10px);padding:20px}.r12-flash.on{display:flex}.r12-flash-box{width:min(560px,100%);border:1px solid color-mix(in srgb,var(--acc) 70%,white);background:var(--card);border-radius:22px;padding:22px;box-shadow:0 30px 100px rgba(0,0,0,.5);animation:r12pop .22s ease-out}.r12-flash-title{font-size:13px;color:var(--acc);font-weight:800;letter-spacing:.08em}.r12-flash-member{font-size:30px;font-weight:900;margin:6px 0}.r12-flash-meta{color:var(--mut)}.r12-flash-ticket{font-size:48px;font-weight:900;margin:12px 0}.r12-flash-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.r12-flash-grid .btn{justify-content:center;min-height:44px}
+.r12-mobile{display:none}.r12-mobile.on{display:block;position:fixed;inset:0;z-index:9990;background:var(--bg);padding:calc(12px + env(safe-area-inset-top)) 12px calc(18px + env(safe-area-inset-bottom));overflow:auto}.r12-mobile-card{border:1px solid var(--line);border-radius:18px;background:var(--card);padding:18px;margin-top:12px}.r12-mobile-buy{width:100%;justify-content:center;font-size:17px;padding:13px!important;background:var(--acc);color:#fff;border-color:var(--acc)}
+.r12-rule{border:1px solid var(--line);border-radius:10px;padding:9px;display:grid;gap:6px}.r12-rule-head{display:flex;justify-content:space-between;gap:8px}.r12-toggle{display:inline-flex;align-items:center;gap:6px;font-size:12px}.r12-rule-actions{display:flex;gap:5px}
+.radar-focus .r12-wrap{display:none!important}.radar-focus #radarCommand,.radar-focus #radarHot{display:block}.radar-focus .radar-intel{grid-template-columns:1fr}.radar-focus .radar-intel>.radar-panel:nth-child(2){display:none}.radar-focus #list{grid-template-columns:1fr}.radar-focus header .radar-top-inner{display:none}
+@keyframes r12pop{from{transform:scale(.94);opacity:0}to{transform:scale(1);opacity:1}}
+@media(max-width:900px){.r12-card,.r12-card.wide{grid-column:span 6}}
+@media(max-width:600px){.r12-grid{grid-template-columns:1fr}.r12-card,.r12-card.wide{grid-column:1/-1}.r12-grid2{grid-template-columns:1fr 1fr}.r12-flash-member{font-size:24px}.r12-flash-ticket{font-size:38px}}
 </style>
 </head>
 <body>
@@ -1051,6 +1075,88 @@ table.hm{border-spacing:4px}
   </section>
 
 
+
+
+  <section class="r12-wrap" id="radarSuite" aria-label="Radar Suite 12 fitur">
+    <div class="r12-grid">
+      <div class="r12-card wide">
+        <div class="r12-title"><span>🔥 Restock Heat Score</span><span class="r12-score" id="r12TopScore">—</span></div>
+        <div class="r12-sub">Skor 0–100 berdasarkan kuota, recency, velocity, VIP, favorit, dan intensitas restock.</div>
+        <div class="r12-list" id="r12Scores"><div class="r12-empty">Menganalisis radar…</div></div>
+      </div>
+      <div class="r12-card">
+        <div class="r12-title"><span>🎯 Watchlist</span><span id="r12WatchCount">0</span></div>
+        <div class="r12-sub">Prioritas member yang ingin diburu.</div>
+        <div class="r12-actions"><input class="r12-input" id="r12WatchInput" placeholder="Tambah member…"><button class="btn" id="r12WatchAdd">+ Tambah</button></div>
+        <div class="r12-list" id="r12WatchList"><div class="r12-empty">Belum ada watchlist.</div></div>
+      </div>
+      <div class="r12-card wide">
+        <div class="r12-title"><span>🧠 Member Intelligence</span><button class="btn" id="r12MemberFocus">Filter kartu</button></div>
+        <select class="r12-input r12-select" id="r12MemberSelect"><option value="">Pilih member…</option></select>
+        <div class="r12-grid2" id="r12MemberStats" style="margin-top:8px"><div class="r12-mini"><b>—</b><span>pilih member</span></div></div>
+        <div class="r12-list" id="r12MemberHistory"></div>
+      </div>
+      <div class="r12-card">
+        <div class="r12-title"><span>⏱ Restock Countdown</span><span class="r12-window" id="r12Window">—</span></div>
+        <div class="r12-countdown" id="r12Countdown">--:--:--</div>
+        <div class="r12-sub" id="r12NextSession">Mencari sesi berikutnya…</div>
+        <div class="r12-actions"><button class="btn" id="r12CountdownFocus">Lihat sesi</button></div>
+      </div>
+      <div class="r12-card">
+        <div class="r12-title"><span>⚔ War Mode 2.0</span><span id="r12WarState">READY</span></div>
+        <div class="r12-sub">Mode hunting agresif untuk watchlist + VIP + restock baru.</div>
+        <div class="r12-grid2" style="margin-top:9px"><div class="r12-mini"><b id="r12WarTargets">0</b><span>target</span></div><div class="r12-mini"><b id="r12WarPoll">10s</b><span>polling</span></div></div>
+        <div class="r12-actions"><button class="btn" id="r12WarToggle">⚔ Aktifkan War</button><button class="btn" id="r12OpenTargets">Buka target</button></div>
+      </div>
+      <div class="r12-card">
+        <div class="r12-title"><span>📱 Mobile Hunting</span><span>ONE TAP</span></div>
+        <div class="r12-sub">Tampilan khusus HP: restock → member → beli.</div>
+        <div class="r12-actions"><button class="btn" id="r12MobileOpen">Buka Mobile Hunting</button></div>
+      </div>
+      <div class="r12-card wide">
+        <div class="r12-title"><span>📈 Restock History</span><button class="btn" id="r12HistoryClear">Bersihkan</button></div>
+        <div class="r12-sub">Riwayat disimpan lokal di browser perangkat ini.</div>
+        <div class="r12-list" id="r12History"><div class="r12-empty">Belum ada riwayat.</div></div>
+      </div>
+      <div class="r12-card">
+        <div class="r12-title"><span>🏆 Member Ranking</span><span>LIVE</span></div>
+        <div class="r12-list" id="r12Ranking"><div class="r12-empty">Menghitung ranking…</div></div>
+      </div>
+      <div class="r12-card wide">
+        <div class="r12-title"><span>🔔 Alert Rules</span><button class="btn" id="r12RuleAdd">+ Rule</button></div>
+        <div class="r12-sub">Aturan lokal untuk flash, suara, browser notification, dan Auto Buy Preparation.</div>
+        <div class="r12-list" id="r12Rules"><div class="r12-empty">Belum ada rule.</div></div>
+      </div>
+      <div class="r12-card full">
+        <div class="r12-title"><span>🎯 Smart Recommendation</span><span id="r12RecoBadge">AI-style scoring</span></div>
+        <div class="r12-sub">Prioritas hunting yang dihitung dari data radar saat ini.</div>
+        <div class="r12-grid" id="r12Reco"><div class="r12-empty" style="grid-column:1/-1">Belum ada rekomendasi.</div></div>
+      </div>
+      <div class="r12-card full">
+        <div class="r12-title"><span>💾 Session Bookmarks</span><button class="btn" id="r12BookmarkAdd">Bookmark sesi aktif</button></div>
+        <div class="r12-sub">Simpan sesi favorit untuk dibuka kembali kapan saja.</div>
+        <div class="r12-list" id="r12Bookmarks"><div class="r12-empty">Belum ada bookmark.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="r12-flash" id="r12Flash" role="dialog" aria-modal="true" aria-label="Restock terdeteksi">
+    <div class="r12-flash-box">
+      <div class="r12-flash-title">🚨 RESTOCK TERDETEKSI</div>
+      <div class="r12-flash-member" id="r12FlashMember">—</div>
+      <div class="r12-flash-meta" id="r12FlashMeta">—</div>
+      <div class="r12-flash-ticket" id="r12FlashTicket">+0</div>
+      <div class="r12-flash-meta" id="r12FlashScore">Heat Score —</div>
+      <div class="r12-flash-grid" style="margin-top:14px"><button class="btn" id="r12FlashBuy">🛒 BELI SEKARANG</button><button class="btn" id="r12FlashPrep">⚡ SIAPKAN BELI</button></div>
+      <div class="r12-actions"><button class="btn" id="r12FlashWatch">⭐ Watchlist</button><button class="btn" id="r12FlashClose">Tutup</button></div>
+    </div>
+  </div>
+
+  <div class="r12-mobile" id="r12Mobile">
+    <div class="r12-title"><span>📱 MOBILE HUNTING</span><button class="btn" id="r12MobileClose">Tutup</button></div>
+    <div class="r12-mobile-card" id="r12MobileCard"><div class="r12-empty">Menunggu restock…</div></div>
+    <div class="r12-mobile-card"><div class="r12-title"><span>Watchlist</span><span id="r12MobileWatch">0</span></div><div class="r12-list" id="r12MobileWatchList"></div></div>
+  </div>
   <section class="radar-intel" aria-label="Radar Intelligence">
     <div class="radar-panel">
       <div class="radar-panel-head">
@@ -2546,6 +2652,108 @@ load(); setPoll(10000);
   }, 1000);
 
   setTimeout(renderAllEnhancements, 50);
+})();
+</script>
+
+
+<script>
+/* =========================================================
+   RADAR SUITE — 12 FEATURES
+   Client-side only; uses the existing radar API/data model.
+   ========================================================= */
+(() => {
+  const K = {watch:'r12_watch', hist:'r12_history', rules:'r12_rules', bm:'r12_bookmarks'};
+  const get = (k,d=[]) => { try { const x=JSON.parse(localStorage.getItem(k)); return x ?? d; } catch { return d; } };
+  const put = (k,v) => localStorage.setItem(k,JSON.stringify(v));
+  let watch = new Set(get(K.watch,[]).map(x=>String(x)));
+  let history = get(K.hist,[]);
+  let rules = get(K.rules,[]);
+  let bookmarks = get(K.bm,[]);
+  let lastFeedSig = null, initialized = false, currentFlash = null;
+
+  const q = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const memberKey = s => String(s||'').trim().toLowerCase();
+  const watched = name => watch.has(memberKey(name));
+  const rows = () => {
+    if (!window.data?.events) return [];
+    const out=[]; for (const [code,ev] of Object.entries(data.events)) for (const l of (ev.lanes||[])) out.push({...l,code,event:ev.name,updated:ev.updated});
+    return out;
+  };
+  const scoreMap = () => {
+    const rs=rows(), now=data?.now||Math.floor(Date.now()/1000), m=new Map();
+    for(const l of rs){
+      const k=memberKey(l.member); if(!m.has(k))m.set(k,{member:l.member,quota:0,available:0,lanes:0,rate:0,recent:0,vip:false,fav:false,last:0,events:new Set()});
+      const x=m.get(k); const quota=Number(l.quota||0), rate=Number(l.rate||0); x.quota+=quota; x.lanes++; x.rate+=rate; if(quota>0)x.available++; if(l.vip)x.vip=true; if(watched(l.member))x.fav=true; x.last=Math.max(x.last,Number(l.restock_at||0)); x.events.add(l.event);
+      if(l.restock_at && now-Number(l.restock_at)<=900) x.recent+=Math.max(0,quota);
+    }
+    const arr=[...m.values()]; const maxQ=Math.max(1,...arr.map(x=>x.quota)); const maxR=Math.max(1,...arr.map(x=>x.rate));
+    for(const x of arr){ const raw=(x.quota/maxQ)*30+(x.recent/Math.max(1,maxQ))*25+(x.rate/maxR)*15+Math.min(x.available,10)*2+(x.vip?10:0)+(x.fav?10:0); x.score=Math.min(100,Math.round(raw)); }
+    return arr.sort((a,b)=>b.score-a.score);
+  };
+  const scoreFor = member => scoreMap().find(x=>memberKey(x.member)===memberKey(member))?.score||0;
+  const latest = () => (Array.isArray(feed)?feed:[]).slice().sort((a,b)=>Number(b.at||0)-Number(a.at||0))[0];
+  const addWatch = name => { if(!name)return; const key=memberKey(name); watch.add(key); put(K.watch,[...watch]); renderAll(); };
+  const removeWatch = name => { watch.delete(memberKey(name)); put(K.watch,[...watch]); renderAll(); };
+  const addHistory = f => { if(!f?.member)return; const key=[f.member,f.sdc,f.at,f.delta].join('|'); if(history.some(x=>x.key===key))return; history.unshift({...f,key,score:scoreFor(f.member),savedAt:Date.now()}); history=history.slice(0,200); put(K.hist,history); };
+
+  function renderScores(){
+    const box=q('r12Scores'); if(!box)return; const arr=scoreMap().slice(0,7); box.innerHTML='';
+    if(!arr.length){box.innerHTML='<div class="r12-empty">Belum ada data.</div>';return;}
+    q('r12TopScore').textContent=arr[0].score+'/100';
+    const max=Math.max(1,...arr.map(x=>x.score));
+    arr.forEach((x,i)=>{ const d=document.createElement('div');d.className='r12-row';d.onclick=()=>focusMember(x.member);d.innerHTML=`<div class="r12-title"><span>${i+1}. ${esc(x.member)} ${x.vip?'★':''}</span><span class="r12-score ${x.score>=80?'hot':''}">${x.score}/100</span></div><div class="r12-sub">${x.quota.toLocaleString('id-ID')} tiket · ${x.available} jalur · velocity ${x.rate.toFixed(1)}</div><div class="r12-bar"><i style="width:${Math.max(4,x.score/max*100)}%"></i></div>`;box.append(d);});
+  }
+  function renderWatch(){
+    const box=q('r12WatchList'); if(!box)return; q('r12WatchCount').textContent=watch.size; box.innerHTML='';
+    if(!watch.size){box.innerHTML='<div class="r12-empty">Belum ada watchlist.</div>';return;}
+    [...watch].forEach(k=>{const actual=scoreMap().find(x=>memberKey(x.member)===k)?.member||k;const d=document.createElement('div');d.className='r12-row r12-watch';d.innerHTML=`<span>⭐ ${esc(actual)}</span><button class="btn" type="button">Hapus</button>`;d.querySelector('button').onclick=e=>{e.stopPropagation();removeWatch(actual)};d.onclick=()=>focusMember(actual);box.append(d);});
+  }
+  function focusMember(name){const inp=q('q');if(inp){inp.value=name; if(typeof render==='function')render();}q('r12MemberSelect').value=name; renderMember(); q('r12MemberSelect').scrollIntoView({behavior:'smooth',block:'center'});}
+  function renderMemberOptions(){const s=q('r12MemberSelect');if(!s)return;const names=scoreMap().map(x=>x.member).sort((a,b)=>String(a).localeCompare(String(b)));const cur=s.value;s.innerHTML='<option value="">Pilih member…</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');if(names.includes(cur))s.value=cur;}
+  function renderMember(){
+    const name=q('r12MemberSelect')?.value, stat=q('r12MemberStats'), hist=q('r12MemberHistory'); if(!stat||!hist)return;stat.innerHTML='';hist.innerHTML='';
+    if(!name){stat.innerHTML='<div class="r12-mini"><b>—</b><span>pilih member</span></div>';return;}
+    const x=scoreMap().find(v=>memberKey(v.member)===memberKey(name));const hs=history.filter(v=>memberKey(v.member)===memberKey(name)).slice(0,8);
+    const vals=[[x?.score||0,'Heat score'],[x?.quota||0,'Tiket tersedia'],[x?.available||0,'Jalur tersedia'],[x?.rate?.toFixed(1)||0,'Velocity']];vals.forEach(([a,b])=>{const d=document.createElement('div');d.className='r12-mini';d.innerHTML=`<b>${a}</b><span>${b}</span>`;stat.append(d);});
+    if(!hs.length){hist.innerHTML='<div class="r12-empty">Belum ada histori member ini.</div>';return;}hs.forEach(f=>{const d=document.createElement('div');d.className='r12-row';d.innerHTML=`<b>+${Number(f.delta||0).toLocaleString('id-ID')} · ${esc(f.event||'')}</b><div class="r12-sub">${esc(f.lane||'')} · ${esc(f.session||'')} · ${f.at?new Date(f.at*1000).toLocaleString('id-ID'):''}</div>`;hist.append(d);});
+  }
+  function renderHistory(){const box=q('r12History');if(!box)return;box.innerHTML='';if(!history.length){box.innerHTML='<div class="r12-empty">Belum ada riwayat.</div>';return;}history.slice(0,40).forEach(f=>{const d=document.createElement('div');d.className='r12-row';d.innerHTML=`<div class="r12-title"><span>+${Number(f.delta||0).toLocaleString('id-ID')} · ${esc(f.member)}</span><span class="r12-score">${f.score||0}/100</span></div><div class="r12-sub">${esc(f.event||'')} · ${esc(f.lane||'')} · ${esc(f.session||'')} · ${f.at?new Date(f.at*1000).toLocaleTimeString('id-ID'):''}</div>`;box.append(d);});}
+  function renderRanking(){const box=q('r12Ranking');if(!box)return;box.innerHTML='';scoreMap().slice(0,10).forEach((x,i)=>{const d=document.createElement('div');d.className='r12-row';d.innerHTML=`<div class="r12-rank"><span class="r12-ranknum">${i+1}</span><span style="flex:1"><b>${esc(x.member)}</b><div class="r12-sub">${x.quota.toLocaleString('id-ID')} tiket · ${x.available} jalur</div></span><span class="r12-score">${x.score}</span></div>`;d.onclick=()=>focusMember(x.member);box.append(d);});if(!box.children.length)box.innerHTML='<div class="r12-empty">Belum ada ranking.</div>';}
+  function nextSession(){
+    const rs=rows(), now=new Date(); let best=null;
+    for(const l of rs){ if(!l.date||!l.start)continue; const d=new Date(`${l.date}T${String(l.start).slice(0,5)}:00`); if(Number.isNaN(d.getTime())||d<=now)continue; if(!best||d<best.d)best={d,l}; }
+    return best;
+  }
+  function renderCountdown(){const c=q('r12Countdown'),sub=q('r12NextSession'),w=q('r12Window');if(!c)return;const n=nextSession();if(!n){c.textContent='--:--:--';sub.textContent='Tidak ada sesi mendatang yang terdeteksi.';w.textContent='—';return;}const sec=Math.max(0,Math.floor((n.d-Date.now())/1000));const h=String(Math.floor(sec/3600)).padStart(2,'0'),m=String(Math.floor(sec%3600/60)).padStart(2,'0'),s=String(sec%60).padStart(2,'0');c.textContent=`${h}:${m}:${s}`;sub.textContent=`${n.l.member||'—'} · ${n.l.event||''} · ${n.l.session||''} · ${n.l.start}`;w.textContent=sec<300?'WAR WINDOW':'NEXT SESSION';}
+  function renderBookmarks(){const box=q('r12Bookmarks');if(!box)return;box.innerHTML='';if(!bookmarks.length){box.innerHTML='<div class="r12-empty">Belum ada bookmark.</div>';return;}bookmarks.forEach((b,i)=>{const d=document.createElement('div');d.className='r12-row';d.innerHTML=`<div class="r12-title"><span>🔖 ${esc(b.member)} · ${esc(b.session||'')}</span><button class="btn">Hapus</button></div><div class="r12-sub">${esc(b.event||'')} · ${esc(b.date||'')} · ${esc(b.start||'')}</div>`;d.querySelector('button').onclick=e=>{e.stopPropagation();bookmarks.splice(i,1);put(K.bm,bookmarks);renderBookmarks()};d.onclick=()=>focusMember(b.member);box.append(d);});}
+  function renderReco(){const box=q('r12Reco');if(!box)return;box.innerHTML='';const arr=scoreMap().slice(0,4);arr.forEach((x,i)=>{const d=document.createElement('div');d.className='r12-card';d.style.margin=0;d.innerHTML=`<div class="r12-title"><span>${i+1}. ${esc(x.member)}</span><span class="r12-score ${x.score>=80?'hot':''}">${x.score}/100</span></div><div class="r12-sub">${x.available} jalur tersedia · ${x.quota.toLocaleString('id-ID')} tiket · ${x.vip?'VIP · ':''}${watched(x.member)?'WATCHLIST':''}</div><div class="r12-actions"><button class="btn">🎯 Fokus</button><button class="btn">⭐ ${watched(x.member)?'Hapus watch':'Watch'}</button></div>`;d.querySelectorAll('button')[0].onclick=()=>focusMember(x.member);d.querySelectorAll('button')[1].onclick=()=>watched(x.member)?removeWatch(x.member):addWatch(x.member);box.append(d);});if(!arr.length)box.innerHTML='<div class="r12-empty" style="grid-column:1/-1">Belum ada rekomendasi.</div>';}
+  function renderRules(){const box=q('r12Rules');if(!box)return;box.innerHTML='';if(!rules.length){box.innerHTML='<div class="r12-empty">Belum ada rule. Contoh: Nayla + minimal 20 tiket.</div>';return;}rules.forEach((r,i)=>{const d=document.createElement('div');d.className='r12-rule';d.innerHTML=`<div class="r12-rule-head"><b>${esc(r.member||'Semua member')} · ≥${r.min||1} tiket</b><label class="r12-toggle"><input type="checkbox" ${r.on?'checked':''}> aktif</label></div><div class="r12-sub">${r.flash?'Flash ':''}${r.sound?'Suara ':''}${r.notify?'Notifikasi ':''}${r.prep?'Auto Buy Prep':''}</div><div class="r12-rule-actions"><button class="btn">Hapus</button></div>`;d.querySelector('input').onchange=e=>{r.on=e.target.checked;put(K.rules,rules)};d.querySelector('button').onclick=()=>{rules.splice(i,1);put(K.rules,rules);renderRules()};box.append(d);});}
+  function flash(f){if(!f||!q('r12Flash'))return;currentFlash=f;q('r12FlashMember').textContent=f.member||'Member';q('r12FlashMeta').textContent=`${f.event||''} · ${f.lane||''} · ${f.session||''} · ${f.at?new Date(f.at*1000).toLocaleTimeString('id-ID'):''}`;q('r12FlashTicket').textContent='+'+Number(f.delta||0).toLocaleString('id-ID');q('r12FlashScore').textContent='🔥 Heat Score '+scoreFor(f.member)+'/100';q('r12Flash').classList.add('on');}
+  function maybeNotify(f){const hits=rules.filter(r=>r.on&&( !r.member || memberKey(r.member)===memberKey(f.member)) && Number(f.delta||0)>=Number(r.min||1));hits.forEach(r=>{if(r.flash) flash(f); if(r.sound&&typeof beep==='function')try{beep()}catch{};if(r.notify&&window.Notification&&Notification.permission==='granted')try{new Notification('JKT48 Restock', {body:`${f.member} +${f.delta} · ${f.event||''}`})}catch{};if(r.prep&&typeof prepareBuy==='function')try{prepareBuy(f)}catch{};});}
+  function detectNew(){const fs=Array.isArray(feed)?feed:[];const newest=fs.slice().sort((a,b)=>Number(b.at||0)-Number(a.at||0))[0];const sig=newest?[newest.member,newest.sdc,newest.at,newest.delta].join('|'):'';if(!initialized){lastFeedSig=sig;initialized=true;return;}if(sig&&sig!==lastFeedSig){const f=newest;addHistory(f);maybeNotify(f);if(scoreFor(f.member)>=50||watched(f.member)||isVipSafe(f))flash(f);lastFeedSig=sig;}else if(sig)lastFeedSig=sig;}
+  const isVipSafe=f=>{try{return typeof isVipFor==='function'&&isVipFor(f)}catch{return false}};
+  function renderMobile(){const card=q('r12MobileCard');if(!card)return;const f=latest();if(!f){card.innerHTML='<div class="r12-empty">Menunggu restock…</div>';return;}card.innerHTML=`<div class="r12-title"><span>🔥 ${esc(f.member)}</span><span class="r12-score">${scoreFor(f.member)}/100</span></div><div class="r12-kpi">+${Number(f.delta||0).toLocaleString('id-ID')}</div><div class="r12-sub">${esc(f.event||'')} · ${esc(f.lane||'')} · ${esc(f.session||'')}</div><div class="r12-actions"><a class="btn r12-mobile-buy" target="_blank" rel="noopener" href="${typeof buyFor==='function'?buyFor(f.code):'#'}">🛒 BELI SEKARANG</a><button class="btn" id="r12MPrep">⚡ Siapkan</button></div>`;q('r12MPrep').onclick=()=>{if(typeof prepareBuy==='function')prepareBuy(f)};q('r12MobileWatch').textContent=watch.size;const wb=q('r12MobileWatchList');wb.innerHTML=[...watch].map(k=>`<div class="r12-row">⭐ ${esc(k)}</div>`).join('')||'<div class="r12-empty">Kosong.</div>';}
+  function renderAll(){renderScores();renderWatch();renderMemberOptions();renderMember();renderHistory();renderRanking();renderRules();renderReco();renderBookmarks();renderCountdown();renderMobile();}
+
+  q('r12WatchAdd').onclick=()=>{const v=q('r12WatchInput').value.trim();if(v)addWatch(v);q('r12WatchInput').value='';};q('r12WatchInput').onkeydown=e=>{if(e.key==='Enter')q('r12WatchAdd').click()};
+  q('r12MemberSelect').onchange=renderMember;q('r12MemberFocus').onclick=()=>{const n=q('r12MemberSelect').value;if(n)focusMember(n)};
+  q('r12HistoryClear').onclick=()=>{history=[];put(K.hist,history);renderHistory();};
+  q('r12RuleAdd').onclick=()=>{const member=prompt('Member untuk alert (kosong = semua):','');const min=Number(prompt('Minimal tiket restock:', '20'));if(!Number.isFinite(min))return;rules.unshift({member:member||'',min,on:true,flash:true,sound:true,notify:false,prep:false});put(K.rules,rules);renderRules();toast('Alert rule dibuat.')};
+  q('r12BookmarkAdd').onclick=()=>{const rs=rows();const selected=q('r12MemberSelect').value;const l=rs.find(x=>memberKey(x.member)===memberKey(selected))||rs.find(x=>Number(x.quota)>0)||rs[0];if(!l){toast('Belum ada sesi yang bisa dibookmark.');return;}bookmarks.unshift({member:l.member,event:l.event,session:l.session,date:l.date,start:l.start,code:l.code});bookmarks=bookmarks.slice(0,50);put(K.bm,bookmarks);renderBookmarks();toast('Sesi dibookmark.');};
+  q('r12CountdownFocus').onclick=()=>{const n=nextSession();if(n)focusMember(n.l.member)};
+  q('r12WarToggle').onclick=()=>{const b=document.getElementById('warToggle');if(b)b.click();else toast('War Mode utama tidak ditemukan.')};
+  q('r12OpenTargets').onclick=()=>{const f=[...watch];if(!f.length){toast('Watchlist masih kosong.');return;}q('q').value=f[0];if(typeof render==='function')render();window.scrollTo({top:0,behavior:'smooth'});};
+  q('r12MobileOpen').onclick=()=>q('r12Mobile').classList.add('on');q('r12MobileClose').onclick=()=>q('r12Mobile').classList.remove('on');
+  q('r12FlashClose').onclick=()=>q('r12Flash').classList.remove('on');q('r12FlashPrep').onclick=()=>{if(currentFlash&&typeof prepareBuy==='function')prepareBuy(currentFlash);q('r12Flash').classList.remove('on')};q('r12FlashWatch').onclick=()=>{if(currentFlash)addWatch(currentFlash.member)};q('r12FlashBuy').onclick=()=>{if(currentFlash&&typeof buyFor==='function')window.open(buyFor(currentFlash.code),'_blank','noopener');};
+  q('r12Flash').onclick=e=>{if(e.target===q('r12Flash'))q('r12Flash').classList.remove('on')};
+
+  /* Keep history synced even if the core render function is wrapped by other modules. */
+  const timer=setInterval(()=>{try{detectNew();renderCountdown();renderMobile();renderCommandSafe();}catch{}},1000);
+  function renderCommandSafe(){const hot=scoreMap()[0];if(q('r12WarTargets'))q('r12WarTargets').textContent=watch.size;const interval=Number(data?.poller?.interval||10);if(q('r12WarPoll'))q('r12WarPoll').textContent=interval+'s';const wb=q('r12WarState');if(wb)wb.textContent=watch.size?'ARMED':'READY';}
+  const oldRender=window.render; if(typeof oldRender==='function'){window.render=function(){const r=oldRender.apply(this,arguments);setTimeout(renderAll,0);return r;};}
+  const oldDetect=window.detectRestock; if(typeof oldDetect==='function'){window.detectRestock=function(j){const r=oldDetect.apply(this,arguments);setTimeout(()=>{try{detectNew()}catch{};renderAll()},0);return r;};}
+  renderAll();
 })();
 </script>
 
