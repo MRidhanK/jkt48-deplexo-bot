@@ -968,6 +968,31 @@ table.hm{border-spacing:4px}
 @media(max-width:900px){.r12-card,.r12-card.wide{grid-column:span 6}}
 @media(max-width:600px){.r12-grid{grid-template-columns:1fr}.r12-card,.r12-card.wide{grid-column:1/-1}.r12-grid2{grid-template-columns:1fr 1fr}.r12-flash-member{font-size:24px}.r12-flash-ticket{font-size:38px}}
 </style>
+<style>
+/* ===== Feature visibility manager ===== */
+.r12-display{margin:14px 0 10px;background:linear-gradient(145deg,rgba(20,25,39,.96),rgba(14,18,29,.96));border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+.r12-display-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 15px}
+.r12-display-title{font-weight:900;font-size:14px;letter-spacing:.1px}
+.r12-display-sub{font-size:11px;color:var(--mut);margin-top:3px}
+.r12-display-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.r12-display-actions .btn{font-size:11px;padding:7px 10px}
+.r12-display-toggle{border-color:rgba(255,23,103,.42)!important;background:rgba(255,23,103,.08)!important}
+.r12-feature-controls{display:flex;flex-wrap:wrap;gap:7px;padding:0 15px 13px;border-top:1px solid transparent;transition:.2s ease}
+.r12-feature-controls.is-collapsed{display:none}
+.r12-feature-switch{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.025);font-size:11px;font-weight:750;color:var(--mut);cursor:pointer;user-select:none;transition:.18s ease}
+.r12-feature-switch:hover{border-color:rgba(255,23,103,.38);color:var(--txt);transform:translateY(-1px)}
+.r12-feature-switch input{accent-color:#ff1767;width:14px;height:14px;margin:0}
+.r12-feature-switch:has(input:checked){color:var(--txt);background:rgba(255,23,103,.08);border-color:rgba(255,23,103,.38)}
+.r12-feature-card.is-hidden{display:none!important}
+.r12-visibility-block.is-hidden{display:none!important}
+.r12-wrap.r12-none{display:none!important}
+@media(max-width:760px){
+  .r12-display-head{align-items:flex-start;flex-direction:column}
+  .r12-display-actions{width:100%;justify-content:flex-start}
+  .r12-display-actions .btn{flex:1 1 auto}
+  .r12-feature-controls{padding-top:2px}
+}
+</style>
 </head>
 <body>
 <header>
@@ -1025,7 +1050,7 @@ table.hm{border-spacing:4px}
     <div><b id="s-tix">-</b><span>total tiket tersisa</span></div>
   </div>
 
-  <section class="radar-command" id="radarCommand" aria-label="Radar Command Center">
+  <section class="radar-command r12-visibility-block" data-feature-block="command" id="radarCommand" aria-label="Radar Command Center">
     <div class="radar-command-brand">
       <div class="radar-command-orb">✦</div>
       <div>
@@ -1064,7 +1089,7 @@ table.hm{border-spacing:4px}
     </div>
   </section>
 
-  <section class="radar-hot" id="radarHot" aria-label="Smart Hot Picks">
+  <section class="radar-hot r12-visibility-block" data-feature-block="hotpicks" id="radarHot" aria-label="Smart Hot Picks">
     <div class="radar-hot-head">
       <div class="radar-hot-title"><span class="fire">🔥</span> Smart Hot Picks</div>
       <span class="radar-hot-note">ranking berdasarkan kuota + restock terbaru + velocity</span>
@@ -1077,62 +1102,96 @@ table.hm{border-spacing:4px}
 
 
 
+  <section class="r12-display" id="r12Display" aria-label="Pengaturan tampilan fitur baru">
+    <div class="r12-display-head">
+      <div>
+        <div class="r12-display-title">⚙️ Tampilan Fitur Baru</div>
+        <div class="r12-display-sub">Pilih fitur mana yang ingin ditampilkan. Pengaturan tersimpan otomatis di browser ini.</div>
+      </div>
+      <div class="r12-display-actions">
+        <button class="btn r12-display-preset" type="button" data-preset="all">Semua</button>
+        <button class="btn r12-display-preset" type="button" data-preset="hunting">Hunting</button>
+        <button class="btn r12-display-preset" type="button" data-preset="compact">Ringkas</button>
+        <button class="btn r12-display-preset" type="button" data-preset="none">Sembunyikan</button>
+        <button class="btn r12-display-toggle" id="r12DisplayToggle" type="button" aria-expanded="true">⚙ Atur fitur</button>
+      </div>
+    </div>
+    <div class="r12-feature-controls" id="r12FeatureControls">
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="command" checked><span>🎛 Command Center</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="hotpicks" checked><span>🔥 Smart Hot Picks</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="timeline" checked><span>📡 Live Timeline</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="alertcenter" checked><span>🚨 Alert Center</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="autobuy" checked><span>🛒 Auto Buy</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="heat" checked><span>🔥 Heat Score</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="watchlist" checked><span>🎯 Watchlist</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="intelligence" checked><span>🧠 Intelligence</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="countdown" checked><span>⏱ Countdown</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="war" checked><span>⚔ War Mode</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="mobile" checked><span>📱 Mobile</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="history" checked><span>📈 History</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="ranking" checked><span>🏆 Ranking</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="alerts" checked><span>🔔 Alerts</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="recommendation" checked><span>🎯 Recommendation</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="bookmarks" checked><span>💾 Bookmarks</span></label>
+    </div>
+  </section>
+
   <section class="r12-wrap" id="radarSuite" aria-label="Radar Suite 12 fitur">
     <div class="r12-grid">
-      <div class="r12-card wide">
+      <div class="r12-card wide r12-feature-card" data-feature="heat">
         <div class="r12-title"><span>🔥 Restock Heat Score</span><span class="r12-score" id="r12TopScore">—</span></div>
         <div class="r12-sub">Skor 0–100 berdasarkan kuota, recency, velocity, VIP, favorit, dan intensitas restock.</div>
         <div class="r12-list" id="r12Scores"><div class="r12-empty">Menganalisis radar…</div></div>
       </div>
-      <div class="r12-card">
+      <div class="r12-card r12-feature-card" data-feature="watchlist">
         <div class="r12-title"><span>🎯 Watchlist</span><span id="r12WatchCount">0</span></div>
         <div class="r12-sub">Prioritas member yang ingin diburu.</div>
         <div class="r12-actions"><input class="r12-input" id="r12WatchInput" placeholder="Tambah member…"><button class="btn" id="r12WatchAdd">+ Tambah</button></div>
         <div class="r12-list" id="r12WatchList"><div class="r12-empty">Belum ada watchlist.</div></div>
       </div>
-      <div class="r12-card wide">
+      <div class="r12-card wide r12-feature-card" data-feature="intelligence">
         <div class="r12-title"><span>🧠 Member Intelligence</span><button class="btn" id="r12MemberFocus">Filter kartu</button></div>
         <select class="r12-input r12-select" id="r12MemberSelect"><option value="">Pilih member…</option></select>
         <div class="r12-grid2" id="r12MemberStats" style="margin-top:8px"><div class="r12-mini"><b>—</b><span>pilih member</span></div></div>
         <div class="r12-list" id="r12MemberHistory"></div>
       </div>
-      <div class="r12-card">
+      <div class="r12-card r12-feature-card" data-feature="countdown">
         <div class="r12-title"><span>⏱ Restock Countdown</span><span class="r12-window" id="r12Window">—</span></div>
         <div class="r12-countdown" id="r12Countdown">--:--:--</div>
         <div class="r12-sub" id="r12NextSession">Mencari sesi berikutnya…</div>
         <div class="r12-actions"><button class="btn" id="r12CountdownFocus">Lihat sesi</button></div>
       </div>
-      <div class="r12-card">
+      <div class="r12-card r12-feature-card" data-feature="war">
         <div class="r12-title"><span>⚔ War Mode 2.0</span><span id="r12WarState">READY</span></div>
         <div class="r12-sub">Mode hunting agresif untuk watchlist + VIP + restock baru.</div>
         <div class="r12-grid2" style="margin-top:9px"><div class="r12-mini"><b id="r12WarTargets">0</b><span>target</span></div><div class="r12-mini"><b id="r12WarPoll">10s</b><span>polling</span></div></div>
         <div class="r12-actions"><button class="btn" id="r12WarToggle">⚔ Aktifkan War</button><button class="btn" id="r12OpenTargets">Buka target</button></div>
       </div>
-      <div class="r12-card">
+      <div class="r12-card r12-feature-card" data-feature="mobile">
         <div class="r12-title"><span>📱 Mobile Hunting</span><span>ONE TAP</span></div>
         <div class="r12-sub">Tampilan khusus HP: restock → member → beli.</div>
         <div class="r12-actions"><button class="btn" id="r12MobileOpen">Buka Mobile Hunting</button></div>
       </div>
-      <div class="r12-card wide">
+      <div class="r12-card wide r12-feature-card" data-feature="history">
         <div class="r12-title"><span>📈 Restock History</span><button class="btn" id="r12HistoryClear">Bersihkan</button></div>
         <div class="r12-sub">Riwayat disimpan lokal di browser perangkat ini.</div>
         <div class="r12-list" id="r12History"><div class="r12-empty">Belum ada riwayat.</div></div>
       </div>
-      <div class="r12-card">
+      <div class="r12-card r12-feature-card" data-feature="ranking">
         <div class="r12-title"><span>🏆 Member Ranking</span><span>LIVE</span></div>
         <div class="r12-list" id="r12Ranking"><div class="r12-empty">Menghitung ranking…</div></div>
       </div>
-      <div class="r12-card wide">
+      <div class="r12-card wide r12-feature-card" data-feature="alerts">
         <div class="r12-title"><span>🔔 Alert Rules</span><button class="btn" id="r12RuleAdd">+ Rule</button></div>
         <div class="r12-sub">Aturan lokal untuk flash, suara, browser notification, dan Auto Buy Preparation.</div>
         <div class="r12-list" id="r12Rules"><div class="r12-empty">Belum ada rule.</div></div>
       </div>
-      <div class="r12-card full">
+      <div class="r12-card full r12-feature-card" data-feature="recommendation">
         <div class="r12-title"><span>🎯 Smart Recommendation</span><span id="r12RecoBadge">AI-style scoring</span></div>
         <div class="r12-sub">Prioritas hunting yang dihitung dari data radar saat ini.</div>
         <div class="r12-grid" id="r12Reco"><div class="r12-empty" style="grid-column:1/-1">Belum ada rekomendasi.</div></div>
       </div>
-      <div class="r12-card full">
+      <div class="r12-card full r12-feature-card" data-feature="bookmarks">
         <div class="r12-title"><span>💾 Session Bookmarks</span><button class="btn" id="r12BookmarkAdd">Bookmark sesi aktif</button></div>
         <div class="r12-sub">Simpan sesi favorit untuk dibuka kembali kapan saja.</div>
         <div class="r12-list" id="r12Bookmarks"><div class="r12-empty">Belum ada bookmark.</div></div>
@@ -1158,7 +1217,7 @@ table.hm{border-spacing:4px}
     <div class="r12-mobile-card"><div class="r12-title"><span>Watchlist</span><span id="r12MobileWatch">0</span></div><div class="r12-list" id="r12MobileWatchList"></div></div>
   </div>
   <section class="radar-intel" aria-label="Radar Intelligence">
-    <div class="radar-panel">
+    <div class="radar-panel r12-visibility-block" data-feature-block="timeline">
       <div class="radar-panel-head">
         <div class="radar-panel-title"><span class="live-dot"></span><span>Live Restock Timeline</span></div>
         <span class="radar-panel-count" id="timelineCount">0 event</span>
@@ -1169,7 +1228,7 @@ table.hm{border-spacing:4px}
       </div>
     </div>
 
-    <div class="radar-panel">
+    <div class="radar-panel r12-visibility-block" data-feature-block="alertcenter">
       <div class="radar-panel-head">
         <div class="radar-panel-title">🚨 Restock Alert Center</div>
         <span class="radar-panel-count" id="alertCount">0 alert</span>
@@ -1185,7 +1244,7 @@ table.hm{border-spacing:4px}
     </div>
   </section>
 
-  <section class="radar-panel radar-buy">
+  <section class="radar-panel radar-buy r12-visibility-block" data-feature-block="autobuy">
     <div class="radar-panel-head">
       <div class="radar-panel-title">🛒 Auto Buy Preparation <span class="radar-panel-count">siapkan halaman beli + kode sesi saat restock</span></div>
       <button class="btn" id="clearBuyPrep" type="button">Bersihkan</button>
@@ -2757,5 +2816,74 @@ load(); setPoll(10000);
 })();
 </script>
 
+<script>
+/* ===== Feature visibility manager ===== */
+(() => {
+  const KEY = 'jkt48-radar-feature-visibility-v2';
+  const OPEN_KEY = 'jkt48-radar-feature-controls-open-v1';
+  const defaults = {
+    command:true, hotpicks:true, timeline:true, alertcenter:true, autobuy:true,
+    heat:true, watchlist:true, intelligence:true, countdown:true, war:true,
+    mobile:true, history:true, ranking:true, alerts:true, recommendation:true, bookmarks:true
+  };
+  const labels = Object.keys(defaults);
+  const q = id => document.getElementById(id);
+  const cards = () => [...document.querySelectorAll('.r12-feature-card[data-feature]')];
+  const blocks = () => [...document.querySelectorAll('.r12-visibility-block[data-feature-block]')];
+  const controls = () => [...document.querySelectorAll('[data-feature-toggle]')];
+  let state = {...defaults};
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
+    labels.forEach(k => { if (typeof saved[k] === 'boolean') state[k] = saved[k]; });
+  } catch {}
+
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
+  function apply(){
+    cards().forEach(card => card.classList.toggle('is-hidden', state[card.dataset.feature] === false));
+    blocks().forEach(block => block.classList.toggle('is-hidden', state[block.dataset.featureBlock] === false));
+    controls().forEach(c => c.checked = state[c.dataset.featureToggle] !== false);
+    const suite = q('radarSuite');
+    if(suite) suite.classList.toggle('r12-none', labels.every(k => state[k] === false));
+    updatePresetState();
+  }
+  function updatePresetState(){
+    const vals = labels.map(k => !!state[k]);
+    document.querySelectorAll('.r12-display-preset').forEach(b => b.classList.remove('active'));
+    if(vals.every(Boolean)) document.querySelector('[data-preset="all"]')?.classList.add('active');
+    else if(vals.every(v => !v)) document.querySelector('[data-preset="none"]')?.classList.add('active');
+  }
+  function setAll(value){ labels.forEach(k => state[k] = value); save(); apply(); }
+  function setPreset(name){
+    if(name === 'all') return setAll(true);
+    if(name === 'none') return setAll(false);
+    if(name === 'hunting'){
+      labels.forEach(k => state[k] = ['command','hotpicks','timeline','alertcenter','autobuy','heat','watchlist','countdown','war','mobile','alerts','recommendation'].includes(k));
+      save(); apply(); return;
+    }
+    if(name === 'compact'){
+      labels.forEach(k => state[k] = ['command','hotpicks','timeline','heat','watchlist','countdown','ranking','recommendation'].includes(k));
+      save(); apply(); return;
+    }
+  }
+
+  function init(){
+    controls().forEach(c => c.addEventListener('change', () => {
+      state[c.dataset.featureToggle] = c.checked;
+      save(); apply();
+    }));
+    document.querySelectorAll('.r12-display-preset').forEach(b => b.addEventListener('click', () => setPreset(b.dataset.preset)));
+    const btn = q('r12DisplayToggle'), panel = q('r12FeatureControls');
+    if(btn && panel){
+      let open = true;
+      try { open = localStorage.getItem(OPEN_KEY) !== '0'; } catch {}
+      const setOpen = v => { open=v; panel.classList.toggle('is-collapsed', !v); btn.setAttribute('aria-expanded', String(v)); btn.textContent = v ? '⌃ Sembunyikan pengaturan' : '⚙ Atur fitur'; try{localStorage.setItem(OPEN_KEY,v?'1':'0')}catch{} };
+      btn.addEventListener('click', () => setOpen(!open));
+      setOpen(open);
+    }
+    apply();
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+})();
+</script>
 </body>
 </html>
