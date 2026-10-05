@@ -983,6 +983,7 @@ table.hm{border-spacing:4px}
 .r12-feature-switch:hover{border-color:rgba(255,23,103,.38);color:var(--txt);transform:translateY(-1px)}
 .r12-feature-switch input{accent-color:#ff1767;width:14px;height:14px;margin:0}
 .r12-feature-switch:has(input:checked){color:var(--txt);background:rgba(255,23,103,.08);border-color:rgba(255,23,103,.38)}
+.r10-menu-divider{display:inline-flex;align-items:center;padding:6px 3px;font-size:10px;font-weight:900;letter-spacing:.08em;color:var(--acc);width:100%;margin-top:2px}
 .r12-feature-card.is-hidden{display:none!important}
 .r12-visibility-block.is-hidden{display:none!important}
 .r12-wrap.r12-none{display:none!important}
@@ -993,6 +994,33 @@ table.hm{border-spacing:4px}
   .r12-feature-controls{padding-top:2px}
 }
 </style>
+
+<style>
+/* ===== RADAR 10 NEW FEATURES ===== */
+.r10-wrap{margin:12px 0 14px}
+.r10-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:10px}
+.r10-card{grid-column:span 4;background:linear-gradient(145deg,rgba(20,25,39,.98),rgba(28,20,38,.96));border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:var(--shadow);min-width:0;transition:.2s ease}
+.r10-card:hover{transform:translateY(-2px);border-color:rgba(255,23,103,.3)}
+.r10-card.wide{grid-column:span 6}.r10-card.full{grid-column:1/-1}
+.r10-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.r10-title{font-size:14px;font-weight:900}.r10-sub{font-size:11px;color:var(--mut);margin-top:4px;line-height:1.45}
+.r10-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:10px}.r10-kpi{border:1px solid var(--line);border-radius:11px;padding:9px;background:rgba(255,255,255,.02)}.r10-kpi b{display:block;font-size:18px}.r10-kpi span{display:block;font-size:10px;color:var(--mut);margin-top:2px}
+.r10-list{display:grid;gap:7px;margin-top:10px;max-height:235px;overflow:auto}.r10-row{border:1px solid var(--line);border-radius:10px;padding:9px;background:rgba(255,255,255,.02);cursor:pointer}.r10-row:hover{border-color:rgba(255,23,103,.35)}
+.r10-row-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.r10-badge{font-size:10px;font-weight:850;border:1px solid var(--line);padding:3px 7px;border-radius:99px}.r10-badge.hot{color:#ff4f8b;border-color:rgba(255,23,103,.4);background:rgba(255,23,103,.08)}
+.r10-bar{height:6px;background:var(--soft);border-radius:99px;overflow:hidden;margin-top:7px}.r10-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),#ff5a9a);border-radius:99px}
+.r10-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.r10-actions .btn{font-size:11px}
+.r10-chart{height:112px;margin-top:10px;border:1px solid var(--line);border-radius:11px;padding:8px;display:flex;align-items:end;gap:4px;overflow:hidden;background:rgba(255,255,255,.018)}.r10-chart i{display:block;flex:1;min-width:4px;border-radius:5px 5px 2px 2px;background:linear-gradient(180deg,#ff1767,var(--acc));opacity:.9}
+.r10-heatmap{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin-top:10px}.r10-cell{height:25px;border-radius:5px;background:rgba(255,255,255,.035);border:1px solid var(--line);display:grid;place-items:center;font-size:9px;color:var(--mut)}
+.r10-command{display:grid;grid-template-columns:1.4fr repeat(4,1fr);gap:8px;margin-top:10px}.r10-command .r10-kpi{min-height:62px}
+.r10-key{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:22px;padding:0 6px;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;font-size:10px;font-weight:900;background:rgba(255,255,255,.035)}
+.r10-focus-mode .r10-wrap{display:none!important}.r10-focus-mode #radarCommand{display:block!important}.r10-focus-mode .radar-hot,.r10-focus-mode .radar-intel,.r10-focus-mode .radar-buy{display:none!important}.r10-focus-mode #list{grid-template-columns:1fr}.r10-focus-mode .sum{margin-top:8px}
+.r10-health-good{color:#18d88a}.r10-health-warn{color:#ffc857}.r10-health-bad{color:#ff5b6e}
+.r10-mini-line{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:11px}.r10-mini-line:last-child{border-bottom:0}.r10-mini-line span{color:var(--mut)}
+.r10-mode-pill{padding:5px 9px;border-radius:99px;font-size:10px;font-weight:900;border:1px solid var(--line)}
+.r10-mode-pill.on{color:#18d88a;border-color:rgba(24,216,138,.35);background:rgba(24,216,138,.07)}
+@media(max-width:1000px){.r10-card,.r10-card.wide{grid-column:span 6}.r10-command{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:620px){.r10-grid{grid-template-columns:1fr}.r10-card,.r10-card.wide{grid-column:1/-1}.r10-kpis{grid-template-columns:1fr 1fr}.r10-heatmap{grid-template-columns:repeat(6,1fr)}}
+</style>
+
 </head>
 <body>
 <header>
@@ -1105,8 +1133,8 @@ table.hm{border-spacing:4px}
   <section class="r12-display" id="r12Display" aria-label="Pengaturan tampilan fitur baru">
     <div class="r12-display-head">
       <div>
-        <div class="r12-display-title">⚙️ Tampilan Fitur Baru</div>
-        <div class="r12-display-sub">Pilih fitur mana yang ingin ditampilkan. Pengaturan tersimpan otomatis di browser ini.</div>
+        <div class="r12-display-title">⚙️ Tampilan Fitur Baru · 26 Fitur</div>
+        <div class="r12-display-sub">Pilih fitur mana yang ingin ditampilkan. Pengaturan tersimpan otomatis di browser ini. ⚡ 10 fitur baru ada di bagian bawah menu.</div>
       </div>
       <div class="r12-display-actions">
         <button class="btn r12-display-preset" type="button" data-preset="all">Semua</button>
@@ -1133,6 +1161,17 @@ table.hm{border-spacing:4px}
       <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="alerts" checked><span>🔔 Alerts</span></label>
       <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="recommendation" checked><span>🎯 Recommendation</span></label>
       <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="bookmarks" checked><span>💾 Bookmarks</span></label>
+      <span class="r10-menu-divider">⚡ 10 FITUR BARU</span>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="warcockpit" checked><span>⚔ War Cockpit</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="priority" checked><span>🚦 Smart Priority</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="health" checked><span>🩺 System Health</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="pulse" checked><span>📊 Quota Pulse</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="heatmap" checked><span>🗺 Session Heatmap</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="eta" checked><span>⏳ Sellout ETA</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="pattern" checked><span>🧬 Restock Pattern</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="keyboard" checked><span>⌨ Keyboard Hunt</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="focus" checked><span>🎯 Focus Mode</span></label>
+      <label class="r12-feature-switch"><input type="checkbox" data-feature-toggle="huntscore" checked><span>🏹 Hunting Score</span></label>
     </div>
   </section>
 
@@ -1216,6 +1255,76 @@ table.hm{border-spacing:4px}
     <div class="r12-mobile-card" id="r12MobileCard"><div class="r12-empty">Menunggu restock…</div></div>
     <div class="r12-mobile-card"><div class="r12-title"><span>Watchlist</span><span id="r12MobileWatch">0</span></div><div class="r12-list" id="r12MobileWatchList"></div></div>
   </div>
+
+  <section class="r10-wrap" id="radarTen" aria-label="10 fitur baru">
+    <div class="r10-grid">
+      <div class="r10-card full r12-feature-card" data-feature="warcockpit">
+        <div class="r10-head"><div><div class="r10-title">⚔ War Cockpit</div><div class="r10-sub">Satu panel untuk melihat target paling mendesak, kuota, velocity, dan aksi berikutnya.</div></div><span class="r10-mode-pill" id="r10WarMode">READY</span></div>
+        <div class="r10-command" id="r10Cockpit"><div class="r10-kpi"><b id="r10Target">—</b><span>target utama</span></div><div class="r10-kpi"><b id="r10TargetScore">—</b><span>priority</span></div><div class="r10-kpi"><b id="r10TargetQuota">—</b><span>tiket</span></div><div class="r10-kpi"><b id="r10TargetRate">—</b><span>velocity</span></div><div class="r10-kpi"><b id="r10TargetAction">—</b><span>aksi</span></div></div>
+        <div class="r10-actions"><button class="btn" id="r10WarFocus">⚔ Fokus target</button><button class="btn" id="r10WarBuy">🛒 Buka beli</button><button class="btn" id="r10WarRefresh">⟳ Refresh</button></div>
+      </div>
+
+      <div class="r10-card wide r12-feature-card" data-feature="priority">
+        <div class="r10-head"><div><div class="r10-title">🚦 Smart Priority Queue</div><div class="r10-sub">Antrian otomatis berdasarkan kuota, velocity, VIP, watchlist, dan recency.</div></div><span class="r10-badge hot" id="r10PriorityCount">0 target</span></div>
+        <div class="r10-list" id="r10PriorityList"><div class="r12-empty">Menghitung prioritas…</div></div>
+      </div>
+
+      <div class="r10-card r12-feature-card" data-feature="health">
+        <div class="r10-head"><div class="r10-title">🩺 System Health</div><span class="r10-badge" id="r10HealthBadge">CHECKING</span></div>
+        <div id="r10Health" style="margin-top:8px"><div class="r10-mini-line"><b>Data</b><span>memuat…</span></div></div>
+        <div class="r10-actions"><button class="btn" id="r10HealthRefresh">⟳ Cek sekarang</button></div>
+      </div>
+
+      <div class="r10-card wide r12-feature-card" data-feature="pulse">
+        <div class="r10-head"><div><div class="r10-title">📊 Live Quota Pulse</div><div class="r10-sub">Perubahan total tiket antar polling, supaya kenaikan/penurunan kuota langsung terlihat.</div></div><span class="r10-badge" id="r10PulseDelta">—</span></div>
+        <div class="r10-kpis"><div class="r10-kpi"><b id="r10PulseTotal">0</b><span>total tersedia</span></div><div class="r10-kpi"><b id="r10PulseAvail">0</b><span>jalur aktif</span></div><div class="r10-kpi"><b id="r10PulseMembers">0</b><span>member aktif</span></div></div>
+        <div class="r10-chart" id="r10PulseChart" aria-label="Grafik quota pulse"></div>
+      </div>
+
+      <div class="r10-card wide r12-feature-card" data-feature="heatmap">
+        <div class="r10-head"><div><div class="r10-title">🗺 Session Heatmap</div><div class="r10-sub">Jam yang paling padat berdasarkan jadwal sesi yang terdeteksi.</div></div><span class="r10-badge" id="r10HeatmapPeak">peak —</span></div>
+        <div class="r10-heatmap" id="r10Heatmap"></div>
+        <div class="r10-sub" id="r10HeatmapNote">Belum ada sesi terdeteksi.</div>
+      </div>
+
+      <div class="r10-card r12-feature-card" data-feature="eta">
+        <div class="r10-head"><div class="r10-title">⏳ Sellout ETA</div><span class="r10-badge" id="r10EtaBadge">—</span></div>
+        <div class="r10-list" id="r10EtaList"><div class="r12-empty">Menunggu velocity…</div></div>
+      </div>
+
+      <div class="r10-card r12-feature-card" data-feature="pattern">
+        <div class="r10-head"><div><div class="r10-title">🧬 Restock Pattern</div><div class="r10-sub">Membaca jarak antar restock dari histori lokal.</div></div><span class="r10-badge" id="r10PatternBadge">LEARNING</span></div>
+        <div class="r10-kpis"><div class="r10-kpi"><b id="r10PatternEvents">0</b><span>event tersimpan</span></div><div class="r10-kpi"><b id="r10PatternAvg">—</b><span>rata-rata jeda</span></div><div class="r10-kpi"><b id="r10PatternLast">—</b><span>restock terakhir</span></div></div>
+        <div class="r10-sub" id="r10PatternNote" style="margin-top:10px">Belum cukup histori untuk membaca pola.</div>
+      </div>
+
+      <div class="r10-card wide r12-feature-card" data-feature="keyboard">
+        <div class="r10-head"><div><div class="r10-title">⌨ Keyboard Hunting</div><div class="r10-sub">Shortcut untuk hunting cepat tanpa banyak klik.</div></div><span class="r10-mode-pill on" id="r10KeyboardState">ON</span></div>
+        <div class="r10-list">
+          <div class="r10-row"><span class="r10-key">W</span> War Cockpit · target teratas</div>
+          <div class="r10-row"><span class="r10-key">F</span> Focus Mode</div>
+          <div class="r10-row"><span class="r10-key">R</span> Refresh radar</div>
+          <div class="r10-row"><span class="r10-key">/</span> Fokus ke pencarian</div>
+          <div class="r10-row"><span class="r10-key">Esc</span> Tutup flash / keluar focus</div>
+        </div>
+        <div class="r10-actions"><button class="btn" id="r10KeyboardToggle">⌨ Matikan shortcut</button></div>
+      </div>
+
+      <div class="r10-card r12-feature-card" data-feature="focus">
+        <div class="r10-head"><div><div class="r10-title">🎯 Focus Mode</div><div class="r10-sub">Sembunyikan panel distraksi dan fokus ke kartu tiket.</div></div><span class="r10-mode-pill" id="r10FocusState">OFF</span></div>
+        <div class="r10-kpi" style="margin-top:10px"><b id="r10FocusTarget">—</b><span>target fokus</span></div>
+        <div class="r10-actions"><button class="btn" id="r10FocusToggle">🎯 Aktifkan Focus</button></div>
+      </div>
+
+      <div class="r10-card full r12-feature-card" data-feature="huntscore">
+        <div class="r10-head"><div><div class="r10-title">🏹 Hunting Score</div><div class="r10-sub">Skor kesiapan hunting dari kualitas data, target, watchlist, kecepatan polling, dan alert.</div></div><span class="r10-badge hot" id="r10HuntScore">—/100</span></div>
+        <div class="r10-bar" style="height:10px;margin-top:12px"><i id="r10HuntBar" style="width:0%"></i></div>
+        <div class="r10-kpis"><div class="r10-kpi"><b id="r10HuntData">—</b><span>data health</span></div><div class="r10-kpi"><b id="r10HuntTarget">—</b><span>target ready</span></div><div class="r10-kpi"><b id="r10HuntSpeed">—</b><span>poll speed</span></div></div>
+        <div class="r10-actions"><button class="btn" id="r10HuntOptimize">⚡ Optimalkan hunting</button></div>
+      </div>
+    </div>
+  </section>
+
   <section class="radar-intel" aria-label="Radar Intelligence">
     <div class="radar-panel r12-visibility-block" data-feature-block="timeline">
       <div class="radar-panel-head">
@@ -2735,7 +2844,7 @@ load(); setPoll(10000);
   const memberKey = s => String(s||'').trim().toLowerCase();
   const watched = name => watch.has(memberKey(name));
   const rows = () => {
-    if (!window.data?.events) return [];
+    if (!data?.events) return [];
     const out=[]; for (const [code,ev] of Object.entries(data.events)) for (const l of (ev.lanes||[])) out.push({...l,code,event:ev.name,updated:ev.updated});
     return out;
   };
@@ -2824,7 +2933,8 @@ load(); setPoll(10000);
   const defaults = {
     command:true, hotpicks:true, timeline:true, alertcenter:true, autobuy:true,
     heat:true, watchlist:true, intelligence:true, countdown:true, war:true,
-    mobile:true, history:true, ranking:true, alerts:true, recommendation:true, bookmarks:true
+    mobile:true, history:true, ranking:true, alerts:true, recommendation:true, bookmarks:true,
+    warcockpit:true, priority:true, health:true, pulse:true, heatmap:true, eta:true, pattern:true, keyboard:true, focus:true, huntscore:true
   };
   const labels = Object.keys(defaults);
   const q = id => document.getElementById(id);
@@ -2857,11 +2967,11 @@ load(); setPoll(10000);
     if(name === 'all') return setAll(true);
     if(name === 'none') return setAll(false);
     if(name === 'hunting'){
-      labels.forEach(k => state[k] = ['command','hotpicks','timeline','alertcenter','autobuy','heat','watchlist','countdown','war','mobile','alerts','recommendation'].includes(k));
+      labels.forEach(k => state[k] = ['command','hotpicks','timeline','alertcenter','autobuy','heat','watchlist','countdown','war','mobile','alerts','recommendation','warcockpit','priority','health','pulse','eta','keyboard','focus','huntscore'].includes(k));
       save(); apply(); return;
     }
     if(name === 'compact'){
-      labels.forEach(k => state[k] = ['command','hotpicks','timeline','heat','watchlist','countdown','ranking','recommendation'].includes(k));
+      labels.forEach(k => state[k] = ['command','hotpicks','timeline','heat','watchlist','countdown','ranking','recommendation','warcockpit','priority','health','huntscore'].includes(k));
       save(); apply(); return;
     }
   }
@@ -2885,5 +2995,151 @@ load(); setPoll(10000);
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
 </script>
+
+<script>
+/* ===== RADAR 10 NEW FEATURES ENGINE ===== */
+(() => {
+  const byId = id => document.getElementById(id);
+  const esc10 = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const key10 = s => String(s||'').trim().toLowerCase();
+  const rows10 = () => {
+    const d = data;
+    if(!d?.events) return [];
+    const out=[];
+    for(const [code,ev] of Object.entries(d.events)) for(const l of (ev.lanes||[])) out.push({...l,code,event:ev.name,updated:ev.updated,sale:ev.sale});
+    return out;
+  };
+  const score10 = name => { try { return typeof scoreFor === 'function' ? scoreFor(name) : 0; } catch { return 0; } };
+  const watched10 = name => { try { return typeof watched === 'function' ? watched(name) : false; } catch { return false; } };
+  const feed10 = () => Array.isArray(feed) ? feed : [];
+  let pulseHistory = (() => { try{return JSON.parse(localStorage.getItem('r10_quota_pulse')||'[]')}catch{return []} })();
+  let keyboardOn = localStorage.getItem('r10_keyboard') !== '0';
+
+  function priorityRows(){
+    const rs=rows10().filter(x=>Number(x.quota||0)>0);
+    const maxQ=Math.max(1,...rs.map(x=>Number(x.quota||0)));
+    const maxR=Math.max(1,...rs.map(x=>Number(x.rate||0)));
+    const now=Number(data?.now||Math.floor(Date.now()/1000));
+    return rs.map(x=>{
+      const age=x.restock_at ? Math.max(0,now-Number(x.restock_at)) : 999999;
+      const recency=Math.max(0,1-Math.min(age,1800)/1800);
+      const score=Math.min(100,Math.round((Number(x.quota||0)/maxQ)*35+(Number(x.rate||0)/maxR)*25+recency*15+(x.vip?15:0)+(watched10(x.member)?10:0)));
+      return {...x,priority:score};
+    }).sort((a,b)=>b.priority-a.priority);
+  }
+
+  function renderWarCockpit(){
+    const top=priorityRows()[0];
+    byId('r10Target').textContent=top?.member||'—';
+    byId('r10TargetScore').textContent=top?top.priority+'/100':'—';
+    byId('r10TargetQuota').textContent=top?Number(top.quota||0).toLocaleString('id-ID'):'—';
+    byId('r10TargetRate').textContent=top?Number(top.rate||0).toFixed(1):'—';
+    byId('r10TargetAction').textContent=top ? (top.priority>=80?'BUY':'WATCH') : '—';
+    byId('r10FocusTarget').textContent=top?.member||'—';
+    const wm=byId('r10WarMode'); if(wm){wm.textContent=top?'ARMED':'READY';wm.classList.toggle('on',!!top)}
+    return top;
+  }
+
+  function renderPriority(){
+    const box=byId('r10PriorityList'), arr=priorityRows().slice(0,8); if(!box)return;
+    byId('r10PriorityCount').textContent=priorityRows().length+' target'; box.innerHTML='';
+    if(!arr.length){box.innerHTML='<div class="r12-empty">Tidak ada tiket tersedia.</div>';return;}
+    arr.forEach((x,i)=>{
+      const d=document.createElement('div'); d.className='r10-row';
+      d.innerHTML=`<div class="r10-row-head"><b>${i+1}. ${esc10(x.member)} ${x.vip?'★':''}</b><span class="r10-badge ${x.priority>=80?'hot':''}">${x.priority}</span></div><div class="r10-sub">${Number(x.quota||0).toLocaleString('id-ID')} tiket · ${Number(x.rate||0).toFixed(1)} t/m · ${x.lane||'jalur'} · ${x.session||''}</div><div class="r10-bar"><i style="width:${x.priority}%"></i></div>`;
+      d.onclick=()=>{try{focus10(x.member)}catch{};window.scrollTo({top:0,behavior:'smooth'})}; box.append(d);
+    });
+  }
+
+  function renderHealth(){
+    const d=data, box=byId('r10Health'), badge=byId('r10HealthBadge'); if(!box||!badge)return;
+    if(!d){badge.textContent='OFFLINE';badge.className='r10-badge r10-health-bad';box.innerHTML='<div class="r10-mini-line"><b>Data</b><span>belum tersedia</span></div>';return;}
+    const now=Number(d.now||Math.floor(Date.now()/1000));
+    const events=Object.values(d.events||{}), fresh=events.filter(e=>e.updated && now-Number(e.updated)<=Number(d.stale_after||60)).length;
+    const poll=Number(d.poller?.interval||10), statuses=Object.values(d.poller?.status||{}), bad=statuses.filter(x=>x&&!x.ok).length;
+    const age=Math.max(0,...events.map(e=>e.updated?now-Number(e.updated):99999));
+    const status=bad?'WARN':(fresh===events.length?'HEALTHY':'STALE');
+    badge.textContent=status; badge.className='r10-badge '+(status==='HEALTHY'?'r10-health-good':status==='WARN'?'r10-health-warn':'r10-health-bad');
+    box.innerHTML=`<div class="r10-mini-line"><b>Event fresh</b><span>${fresh}/${events.length}</span></div><div class="r10-mini-line"><b>Data age</b><span>${age>9999?'—':age+'s'}</span></div><div class="r10-mini-line"><b>Poll interval</b><span>${poll}s</span></div><div class="r10-mini-line"><b>Poller error</b><span>${bad||0}</span></div>`;
+    return {fresh,total:events.length,poll,bad,age};
+  }
+
+  function renderPulse(){
+    const rs=rows10(), total=rs.reduce((a,x)=>a+Number(x.quota||0),0), avail=rs.filter(x=>Number(x.quota||0)>0).length, members=new Set(rs.filter(x=>Number(x.quota||0)>0).map(x=>key10(x.member))).size;
+    const prev=pulseHistory.at(-1)?.total; const delta=prev==null?0:total-prev;
+    byId('r10PulseTotal').textContent=total.toLocaleString('id-ID'); byId('r10PulseAvail').textContent=avail.toLocaleString('id-ID'); byId('r10PulseMembers').textContent=members;
+    const db=byId('r10PulseDelta'); db.textContent=(delta>0?'+':'')+delta.toLocaleString('id-ID'); db.className='r10-badge '+(delta>0?'hot':'');
+    if(!pulseHistory.length || pulseHistory.at(-1).total!==total){pulseHistory.push({t:Date.now(),total});pulseHistory=pulseHistory.slice(-32);try{localStorage.setItem('r10_quota_pulse',JSON.stringify(pulseHistory))}catch{}}
+    const chart=byId('r10PulseChart'); if(chart){const vals=pulseHistory.map(x=>x.total), min=Math.min(...vals,0), max=Math.max(...vals,1);chart.innerHTML=vals.map(v=>`<i style="height:${Math.max(5,((v-min)/(max-min||1))*100)}%" title="${v.toLocaleString('id-ID')} tiket"></i>`).join('')||'<span class="r10-sub">Belum ada histori polling.</span>';}
+  }
+
+  function renderHeatmap(){
+    const rs=rows10().filter(x=>x.start), hours=Array(24).fill(0);
+    rs.forEach(x=>{const h=parseInt(String(x.start).slice(0,2),10);if(Number.isFinite(h))hours[h]++});
+    const max=Math.max(1,...hours), peak=hours.indexOf(Math.max(...hours));
+    byId('r10HeatmapPeak').textContent=hours[peak]?'peak '+String(peak).padStart(2,'0')+':00':'peak —';
+    byId('r10Heatmap').innerHTML=hours.map((v,h)=>`<div class="r10-cell" style="opacity:${.28+(v/max)*.72}" title="${String(h).padStart(2,'0')}:00 · ${v} sesi">${String(h).padStart(2,'0')}</div>`).join('');
+    byId('r10HeatmapNote').textContent=hours[peak]?`Jam ${String(peak).padStart(2,'0')}:00 paling padat dengan ${hours[peak]} sesi.`:'Belum ada sesi terdeteksi.';
+  }
+
+  function renderEta(){
+    const box=byId('r10EtaList'), arr=rows10().filter(x=>Number(x.quota)>0&&Number(x.rate)>0).map(x=>({...x,mins:Number(x.quota)/Number(x.rate)})).sort((a,b)=>a.mins-b.mins).slice(0,6); if(!box)return; box.innerHTML='';
+    byId('r10EtaBadge').textContent=arr[0]?fmtMin(arr[0].mins):'—';
+    if(!arr.length){box.innerHTML='<div class="r12-empty">Velocity belum tersedia.</div>';return;}
+    arr.forEach(x=>{const d=document.createElement('div');d.className='r10-row';d.innerHTML=`<div class="r10-row-head"><b>${esc10(x.member)}</b><span class="r10-badge ${x.mins<5?'hot':''}">${fmtMin(x.mins)}</span></div><div class="r10-sub">${Number(x.quota).toLocaleString('id-ID')} tiket · velocity ${Number(x.rate).toFixed(1)} t/m · ${esc10(x.session||'')}</div>`;d.onclick=()=>{try{focus10(x.member)}catch{}};box.append(d)});
+  }
+  function fmtMin(m){if(!Number.isFinite(m))return '—';if(m<1)return '<1m';if(m<60)return Math.round(m)+'m';return Math.floor(m/60)+'j '+Math.round(m%60)+'m'}
+
+  function renderPattern(){
+    const fs=feed10().slice().sort((a,b)=>Number(a.at||0)-Number(b.at||0)), badge=byId('r10PatternBadge');
+    byId('r10PatternEvents').textContent=fs.length;
+    const gaps=[];for(let i=1;i<fs.length;i++){const g=Number(fs[i].at||0)-Number(fs[i-1].at||0);if(g>0&&g<86400)gaps.push(g)}
+    const avg=gaps.length?gaps.reduce((a,b)=>a+b,0)/gaps.length:0;
+    byId('r10PatternAvg').textContent=avg?fmtMin(avg/60):'—';
+    byId('r10PatternLast').textContent=fs.length?new Date(Number(fs.at(-1).at||0)*1000).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}):'—';
+    if(gaps.length>=3){badge.textContent='LEARNING';byId('r10PatternNote').textContent=`Pola awal: rata-rata jeda restock ${fmtMin(avg/60)}. Gunakan sebagai sinyal, bukan jaminan restock.`}
+    else{badge.textContent='DATA KURANG';byId('r10PatternNote').textContent='Butuh minimal 4 aktivitas restock untuk membaca pola dengan lebih stabil.'}
+  }
+
+  function renderHuntScore(){
+    const h=renderHealth()||{fresh:0,total:1,poll:10,bad:1}; const targets=priorityRows(); const top=targets[0]?.priority||0;
+    const dataScore=h.total?Math.round(h.fresh/h.total*35):0, targetScore=Math.min(35,Math.round(top/100*35)), speedScore=Math.max(0,Math.min(20,Math.round(20-Math.max(0,h.poll-5)*2))), alertScore=(watchlistSize()+Math.min(10,targets.length))/20*10;
+    const score=Math.min(100,Math.round(dataScore+targetScore+speedScore+alertScore));
+    byId('r10HuntScore').textContent=score+'/100';byId('r10HuntBar').style.width=score+'%';byId('r10HuntData').textContent=dataScore+'/35';byId('r10HuntTarget').textContent=top+'/35';byId('r10HuntSpeed').textContent=speedScore+'/20';
+    return score;
+  }
+  function watchlistSize(){try{return JSON.parse(localStorage.getItem('r12_watch')||'[]').length}catch{return 0}}
+  function focus10(name){const inp=byId('q');if(inp){inp.value=name||'';if(typeof render==='function')render();}byId('r12MemberSelect')?.scrollIntoView({behavior:'smooth',block:'center'});}
+
+  function focusMode(on){document.body.classList.toggle('r10-focus-mode',on);const b=byId('r10FocusState'),t=byId('r10FocusToggle');if(b){b.textContent=on?'ON':'OFF';b.classList.toggle('on',on)}if(t)t.textContent=on?'✕ Keluar Focus':'🎯 Aktifkan Focus';localStorage.setItem('r10_focus',on?'1':'0')}
+  function refresh10(){renderWarCockpit();renderPriority();renderHealth();renderPulse();renderHeatmap();renderEta();renderPattern();renderHuntScore();}
+
+  function bind(){
+    byId('r10WarFocus')?.addEventListener('click',()=>{const t=renderWarCockpit();if(t){try{focus10(t.member)}catch{};window.scrollTo({top:0,behavior:'smooth'})}});
+    byId('r10WarBuy')?.addEventListener('click',()=>{const t=renderWarCockpit();if(t?.code)window.open(buyFor(t.code),'_blank','noopener')});
+    byId('r10WarRefresh')?.addEventListener('click',()=>byId('refresh')?.click());
+    byId('r10HealthRefresh')?.addEventListener('click',renderHealth);
+    byId('r10FocusToggle')?.addEventListener('click',()=>focusMode(!document.body.classList.contains('r10-focus-mode')));
+    byId('r10HuntOptimize')?.addEventListener('click',()=>{byId('radarTopToggle')?.click();byId('q')?.focus();try{toast('Hunting dioptimalkan: fokus pencarian + filter tersedia.')}catch{}});
+    byId('r10KeyboardToggle')?.addEventListener('click',()=>{keyboardOn=!keyboardOn;localStorage.setItem('r10_keyboard',keyboardOn?'1':'0');updateKeyboardUI()});
+    document.addEventListener('keydown',e=>{
+      if(!keyboardOn)return;
+      const tag=(e.target?.tagName||'').toLowerCase(); if(['input','textarea','select'].includes(tag)) return;
+      if(e.key==='/'){e.preventDefault();byId('q')?.focus();return}
+      if(e.key.toLowerCase()==='w'){e.preventDefault();const t=renderWarCockpit();if(t)try{focus10(t.member)}catch{};window.scrollTo({top:0,behavior:'smooth'});return}
+      if(e.key.toLowerCase()==='f'){e.preventDefault();focusMode(!document.body.classList.contains('r10-focus-mode'));return}
+      if(e.key.toLowerCase()==='r'){e.preventDefault();byId('refresh')?.click();return}
+      if(e.key==='Escape'){byId('r12Flash')?.classList.remove('on');if(document.body.classList.contains('r10-focus-mode'))focusMode(false)}
+    });
+    updateKeyboardUI();
+    if(localStorage.getItem('r10_focus')==='1')focusMode(true);
+  }
+  function updateKeyboardUI(){const b=byId('r10KeyboardState'),t=byId('r10KeyboardToggle');if(b){b.textContent=keyboardOn?'ON':'OFF';b.classList.toggle('on',keyboardOn)}if(t)t.textContent=keyboardOn?'⌨ Matikan shortcut':'⌨ Aktifkan shortcut'}
+
+  const timer=setInterval(()=>{try{refresh10()}catch{}},1000);
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{bind();refresh10()});else{bind();refresh10()}
+})();
+</script>
+
 </body>
 </html>
