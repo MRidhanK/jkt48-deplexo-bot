@@ -2082,6 +2082,8 @@ def record_purchase_server_event(now, code, sdc, prev, quota, lane):
         "session": lane.get("session_label") or "-",
         "date": lane.get("session_date") or "",
         "start": hhmm(lane.get("session_start_time")),
+        "end": hhmm(lane.get("session_end_time")),
+        "detected_at": datetime.fromtimestamp(now, LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         "prev": int(prev),
         "quota": int(quota),
         "delta": delta,

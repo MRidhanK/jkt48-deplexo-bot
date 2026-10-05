@@ -1755,7 +1755,7 @@ function renderPurchaseServerTimeline(a) {
     kcard(ps.events || 0, "stock decrease events"),
     kcard(ps.tickets || 0, "tiket berkurang"),
     kcard(ps.largest_drop ? "-" + ps.largest_drop : "0", "penurunan terbesar"),
-    kcard(ps.latest && ps.latest.length ? hm(ps.latest[0].at) : "-", "purchase signal terakhir")
+    kcard(ps.latest && ps.latest.length ? hm(ps.latest[0].at) : "-", "jam signal terakhir")
   );
   box.append(stats);
 
@@ -1766,10 +1766,19 @@ function renderPurchaseServerTimeline(a) {
   } else {
     for (const x of rows.slice(0, 20)) {
       const row = el("div", "psv-row");
-      row.append(el("time", "psv-time", hm(x.at)));
+      const tm = el("time", "psv-time", hm(x.at));
+      tm.title = x.date ? fdate(x.date) + " · terdeteksi " + hm(x.at) : "Terdeteksi " + hm(x.at);
+      row.append(tm);
       const main = el("div", "psv-main");
       main.append(el("b", "", x.member || "-"));
-      main.append(el("div", "psv-meta", [x.event, x.lane, x.session, x.sdc].filter(Boolean).join(" · ")));
+      const meta = el("div", "psv-meta");
+      meta.append(
+        el("span", "psv-chip", x.event || "-"),
+        el("span", "psv-chip", "Sesi " + (x.session || "-")),
+        el("span", "psv-chip", "Jalur " + (x.lane || "-")),
+        el("span", "psv-chip", "🕒 " + ((x.start || "-") + (x.end ? "–" + x.end : "")))
+      );
+      main.append(meta);
       row.append(main);
       const drop = el("div", "psv-drop", "-" + Number(x.delta || 0));
       drop.append(el("span", "psv-flow", String(x.prev) + " → " + String(x.quota)));
