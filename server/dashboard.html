@@ -967,6 +967,21 @@ table.hm{border-spacing:4px}
 @keyframes r12pop{from{transform:scale(.94);opacity:0}to{transform:scale(1);opacity:1}}
 @media(max-width:900px){.r12-card,.r12-card.wide{grid-column:span 6}}
 @media(max-width:600px){.r12-grid{grid-template-columns:1fr}.r12-card,.r12-card.wide{grid-column:1/-1}.r12-grid2{grid-template-columns:1fr 1fr}.r12-flash-member{font-size:24px}.r12-flash-ticket{font-size:38px}}
+
+/* ================================================================
+   PURCHASE SERVER TIMELINE · stock decrease analytics
+   ================================================================ */
+.psv-wrap{margin:14px 0;border:1px solid rgba(255,255,255,.09);border-radius:18px;background:linear-gradient(135deg,rgba(255,255,255,.045),rgba(255,255,255,.018));overflow:hidden}
+.psv-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.07)}
+.psv-title{font-weight:800;display:flex;align-items:center;gap:8px}.psv-title small{font-weight:500;opacity:.58}
+.psv-note{font-size:11px;opacity:.58;margin-top:3px}.psv-badge{font-size:11px;padding:5px 8px;border-radius:999px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.22);white-space:nowrap}
+.psv-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:12px 14px}
+.psv-stat{padding:10px 11px;border:1px solid rgba(255,255,255,.07);border-radius:13px;background:rgba(0,0,0,.12)}
+.psv-stat b{display:block;font-size:19px;line-height:1.1}.psv-stat span{display:block;font-size:10px;opacity:.56;margin-top:4px}
+.psv-list{display:flex;flex-direction:column;padding:0 14px 14px}.psv-row{display:grid;grid-template-columns:72px 1fr auto;gap:10px;align-items:center;padding:10px 0;border-top:1px solid rgba(255,255,255,.055)}
+.psv-time{font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;opacity:.7}.psv-main b{font-size:13px}.psv-meta{font-size:10px;opacity:.55;margin-top:3px}.psv-drop{font-weight:900;font-size:14px;color:#ff7b7b;white-space:nowrap}.psv-flow{font-size:10px;opacity:.55;margin-left:5px}
+.psv-empty{padding:18px 4px;opacity:.55;font-size:12px}.psv-foot{padding:0 14px 14px;font-size:10px;opacity:.45}
+@media(max-width:700px){.psv-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.psv-row{grid-template-columns:58px 1fr auto}.psv-drop{font-size:12px}.psv-note{max-width:230px}}
 </style>
 <style>
 /* ===== Feature visibility manager ===== */
@@ -1725,6 +1740,48 @@ async function loadExtra() {
 }
 
 // ---- tab Analytics
+function renderPurchaseServerTimeline(a) {
+  const ps = a.purchase_server || {};
+  const box = el("div", "psv-wrap");
+  const head = el("div", "psv-head");
+  const left = el("div");
+  left.append(el("div", "psv-title", "🛒 Purchase Server Timeline"));
+  left.append(el("div", "psv-note", "Sinyal purchase berdasarkan pengurangan stok yang terdeteksi server/poller."));
+  const badge = el("span", "psv-badge", "SERVER SIGNAL");
+  head.append(left, badge); box.append(head);
+
+  const stats = el("div", "psv-stats");
+  stats.append(
+    kcard(ps.events || 0, "stock decrease events"),
+    kcard(ps.tickets || 0, "tiket berkurang"),
+    kcard(ps.largest_drop ? "-" + ps.largest_drop : "0", "penurunan terbesar"),
+    kcard(ps.latest && ps.latest.length ? hm(ps.latest[0].at) : "-", "purchase signal terakhir")
+  );
+  box.append(stats);
+
+  const list = el("div", "psv-list");
+  const rows = ps.latest || [];
+  if (!rows.length) {
+    list.append(el("div", "psv-empty", "Belum ada pengurangan stok yang terdeteksi hari ini."));
+  } else {
+    for (const x of rows.slice(0, 20)) {
+      const row = el("div", "psv-row");
+      row.append(el("time", "psv-time", hm(x.at)));
+      const main = el("div", "psv-main");
+      main.append(el("b", "", x.member || "-"));
+      main.append(el("div", "psv-meta", [x.event, x.lane, x.session, x.sdc].filter(Boolean).join(" · ")));
+      row.append(main);
+      const drop = el("div", "psv-drop", "-" + Number(x.delta || 0));
+      drop.append(el("span", "psv-flow", String(x.prev) + " → " + String(x.quota)));
+      row.append(drop);
+      list.append(row);
+    }
+  }
+  box.append(list);
+  box.append(el("div", "psv-foot", "Catatan: server hanya melihat perubahan quota. Ini tidak membuktikan siapa yang melakukan pembelian; satu polling dapat merefleksikan satu atau beberapa tiket yang terjual."));
+  return box;
+}
+
 function renderAnalytics() {
   const pg = el("div", "pg");
   if (!ana) { pg.append(el("div", "empty", extraErr ? "Gagal memuat analytics: " + extraErr : "Memuat analytics…")); return pg; }
@@ -1737,6 +1794,17 @@ function renderAnalytics() {
   r1.append(kcard(t.restock, "restock"), kcard(t.tickets_in, "tiket masuk"), kcard(t.tickets_sold, "tiket terjual"), kcard(t.sold_out, "sold out"));
   pg.append(r1);
 
+  const ps = a.purchase_server || {};
+  const pr = el("div", "sum txt");
+  pr.append(
+    kcard(ps.tickets || 0, "purchase signal · tiket berkurang"),
+    kcard(ps.events || 0, "purchase signal · event"),
+    kcard(ps.largest_drop ? "-" + ps.largest_drop : "0", "penurunan stok terbesar"),
+    kcard(ps.latest && ps.latest.length ? hm(ps.latest[0].at) : "-", "signal terakhir")
+  );
+  pg.append(pr);
+  pg.append(renderPurchaseServerTimeline(a));
+
   const f0 = (a.fastest || [])[0];
   const r2 = el("div", "sum txt");
   r2.append(
@@ -1747,7 +1815,6 @@ function renderAnalytics() {
   );
   pg.append(r2);
 
-  // restock per jam
   const hc = el("div", "card"); hc.append(el("h2", "", "RESTOCK PER JAM"));
   const bars = el("div", "hbars"), mx = Math.max(1, ...a.hours);
   a.hours.forEach((n, h) => {
@@ -1761,7 +1828,6 @@ function renderAnalytics() {
   for (const h of ["00", "06", "12", "18", "23"]) ax.append(el("span", "", h));
   hc.append(ax); pg.append(hc);
 
-  // per event
   const ec = el("div", "card"), ew = el("div", "tw"), et = el("table", "at"), eh = el("thead"), er = el("tr");
   ec.append(el("h2", "", "PER EVENT"));
   for (const h of ["Event", "Restock", "Masuk", "Terjual", "SO"]) er.append(el("th", "", h));
@@ -1774,7 +1840,6 @@ function renderAnalytics() {
   }
   et.append(eb); ew.append(et); ec.append(ew); pg.append(ec);
 
-  // turnover tercepat
   const fc = el("div", "card"); fc.append(el("h2", "", "TURNOVER TERCEPAT (HABIS PALING CEPAT SETELAH RESTOCK)"));
   if (!(a.fastest || []).length) fc.append(el("div", "", "Belum ada sold out dengan durasi terukur hari ini."));
   else {
@@ -2885,486 +2950,5 @@ load(); setPoll(10000);
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
 </script>
-
-
-<!-- =========================================================
-     MY PURCHASE TIMELINE — PERSONAL USER PURCHASE TRACKER
-     ========================================================= -->
-<style id="purchaseTimelineStyles">
-  .purchase-timeline-wrap{margin:12px 0 14px}
-  .purchase-panel{background:linear-gradient(145deg,rgba(19,24,38,.98),rgba(12,16,27,.98));border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
-  .purchase-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 15px;border-bottom:1px solid var(--line)}
-  .purchase-title{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:900}
-  .purchase-live{width:8px;height:8px;border-radius:50%;background:#35e58b;box-shadow:0 0 0 4px rgba(53,229,139,.10);animation:purchasePulse 1.8s infinite}
-  .purchase-sub{font-size:11px;color:var(--mut);margin-top:3px}
-  .purchase-head-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-  .purchase-head-actions .btn{font-size:11px;padding:7px 10px}
-  .purchase-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:11px 15px;border-bottom:1px solid var(--line)}
-  .purchase-stat{border:1px solid var(--line);background:color-mix(in srgb,var(--card) 84%,var(--soft));border-radius:11px;padding:9px 10px;min-width:0}
-  .purchase-stat b{display:block;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .purchase-stat span{display:block;font-size:10px;color:var(--mut);margin-top:2px}
-  .purchase-toolbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:10px 15px;border-bottom:1px solid var(--line)}
-  .purchase-filter{border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:9px;padding:7px 9px;font:inherit;font-size:11px;outline:none}
-  .purchase-filter:focus{border-color:var(--acc)}
-  .purchase-timeline{padding:13px 15px 15px;max-height:470px;overflow:auto}
-  .purchase-empty{padding:22px 14px;text-align:center;color:var(--mut);border:1px dashed var(--line);border-radius:12px}
-  .purchase-empty-icon{font-size:27px;margin-bottom:5px}
-  .purchase-item{position:relative;display:grid;grid-template-columns:18px minmax(0,1fr);gap:10px;padding:0 0 14px}
-  .purchase-item:last-child{padding-bottom:0}
-  .purchase-rail{position:relative;display:flex;justify-content:center}
-  .purchase-rail:after{content:"";position:absolute;top:18px;bottom:-14px;width:1px;background:linear-gradient(var(--line),transparent)}
-  .purchase-item:last-child .purchase-rail:after{display:none}
-  .purchase-dot{width:11px;height:11px;margin-top:4px;border-radius:50%;background:var(--mut);border:2px solid var(--card);box-shadow:0 0 0 1px var(--line);z-index:2}
-  .purchase-dot.checkout{background:#f0b84b}.purchase-dot.prepared{background:#8b7cff}.purchase-dot.purchased{background:#35e58b}.purchase-dot.cancelled{background:#ff5d75}
-  .purchase-card{border:1px solid var(--line);background:color-mix(in srgb,var(--card) 90%,var(--soft));border-radius:13px;padding:11px;transition:.18s ease}
-  .purchase-card:hover{border-color:color-mix(in srgb,var(--acc) 65%,var(--line));transform:translateY(-1px)}
-  .purchase-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
-  .purchase-status{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:900;letter-spacing:.04em;padding:4px 7px;border-radius:99px;border:1px solid var(--line);white-space:nowrap}
-  .purchase-status.checkout{color:#f0b84b}.purchase-status.prepared{color:#a49bff}.purchase-status.purchased{color:#35e58b}.purchase-status.cancelled{color:#ff7185}
-  .purchase-member{font-size:14px;font-weight:900;line-height:1.25}
-  .purchase-meta{font-size:11px;color:var(--mut);margin-top:3px;line-height:1.45}
-  .purchase-price{font-size:13px;font-weight:900;margin-top:7px}
-  .purchase-time{font-size:10px;color:var(--mut);white-space:nowrap}
-  .purchase-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
-  .purchase-actions .btn{font-size:10px;padding:6px 9px}
-  .purchase-note{margin-top:7px;font-size:10px;color:var(--mut)}
-  .purchase-source{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9px;color:var(--mut);opacity:.8;margin-top:5px}
-  .purchase-modal{position:fixed;inset:0;z-index:10050;display:none;align-items:center;justify-content:center;background:rgba(4,7,12,.74);backdrop-filter:blur(10px);padding:18px}
-  .purchase-modal.on{display:flex}
-  .purchase-modal-box{width:min(520px,100%);max-height:min(720px,92vh);overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:0 30px 100px rgba(0,0,0,.55);padding:16px}
-  .purchase-modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
-  .purchase-modal-title{font-weight:900;font-size:15px}
-  .purchase-form{display:grid;gap:9px}
-  .purchase-form label{font-size:10px;color:var(--mut);font-weight:700}
-  .purchase-form input,.purchase-form select{width:100%;box-sizing:border-box;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:9px;padding:9px;font:inherit;font-size:12px;margin-top:4px}
-  .purchase-modal-actions{display:flex;gap:7px;justify-content:flex-end;margin-top:13px}
-  .purchase-toast{position:fixed;right:16px;bottom:16px;z-index:10100;max-width:min(420px,calc(100vw - 32px));padding:11px 13px;border-radius:12px;background:rgba(18,23,36,.97);border:1px solid var(--line);box-shadow:0 18px 50px rgba(0,0,0,.35);font-size:11px;transform:translateY(12px);opacity:0;pointer-events:none;transition:.2s}
-  .purchase-toast.on{transform:translateY(0);opacity:1}
-  .purchase-kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9px;color:var(--mut);padding:2px 5px;border:1px solid var(--line);border-radius:5px}
-  @keyframes purchasePulse{50%{opacity:.45;transform:scale(.78)}}
-  @media(max-width:760px){.purchase-stats{grid-template-columns:repeat(2,1fr)}.purchase-head{align-items:flex-start}.purchase-head-actions{max-width:48%}.purchase-time{font-size:9px}.purchase-timeline{max-height:520px}}
-  @media(max-width:480px){.purchase-head{display:block}.purchase-head-actions{max-width:none;margin-top:9px;justify-content:flex-start}.purchase-toolbar{display:grid;grid-template-columns:1fr 1fr}.purchase-filter:first-child{grid-column:1/-1}.purchase-stat b{font-size:15px}}
-</style>
-
-<section class="purchase-timeline-wrap r12-visibility-block" data-feature-block="purchase" id="myPurchaseTimeline" aria-label="My Purchase Timeline">
-  <div class="purchase-panel">
-    <div class="purchase-head">
-      <div>
-        <div class="purchase-title"><span class="purchase-live"></span><span>🧾 My Purchase Timeline</span></div>
-        <div class="purchase-sub">Riwayat aktivitas tiket yang kamu buka, siapkan, dan tandai sudah dibeli.</div>
-      </div>
-      <div class="purchase-head-actions">
-        <button class="btn" type="button" id="purchaseAddBtn">＋ Tambah manual</button>
-        <button class="btn" type="button" id="purchaseClearBtn">🗑 Bersihkan</button>
-      </div>
-    </div>
-
-    <div class="purchase-stats">
-      <div class="purchase-stat"><b id="purchaseTodayCount">0</b><span>Tiket hari ini</span></div>
-      <div class="purchase-stat"><b id="purchaseTodayValue">Rp0</b><span>Nilai hari ini</span></div>
-      <div class="purchase-stat"><b id="purchaseBoughtCount">0</b><span>Sudah dibeli</span></div>
-      <div class="purchase-stat"><b id="purchaseTotalCount">0</b><span>Total aktivitas</span></div>
-    </div>
-
-    <div class="purchase-toolbar">
-      <select class="purchase-filter" id="purchaseStatusFilter" aria-label="Filter status">
-        <option value="all">Semua status</option>
-        <option value="checkout">🛒 Checkout</option>
-        <option value="prepared">⚡ Prepared</option>
-        <option value="purchased">✅ Purchased</option>
-        <option value="cancelled">❌ Cancelled</option>
-      </select>
-      <select class="purchase-filter" id="purchaseEventFilter" aria-label="Filter event">
-        <option value="all">Semua event</option>
-      </select>
-      <input class="purchase-filter" id="purchaseSearch" placeholder="🔎 Cari member / sesi…" autocomplete="off">
-      <button class="btn" type="button" id="purchaseExportBtn">⇩ Export JSON</button>
-    </div>
-
-    <div class="purchase-timeline" id="purchaseTimelineList">
-      <div class="purchase-empty"><div class="purchase-empty-icon">🧾</div>Belum ada aktivitas pembelian.<br><small>Tekan <b>Beli</b> pada radar atau tambahkan manual.</small></div>
-    </div>
-  </div>
-</section>
-
-<div class="purchase-modal" id="purchaseModal" role="dialog" aria-modal="true" aria-labelledby="purchaseModalTitle">
-  <div class="purchase-modal-box">
-    <div class="purchase-modal-head">
-      <div class="purchase-modal-title" id="purchaseModalTitle">＋ Tambah Pembelian</div>
-      <button class="btn" type="button" id="purchaseModalClose">✕</button>
-    </div>
-    <form class="purchase-form" id="purchaseForm">
-      <label>Member
-        <input id="purchaseMemberInput" required placeholder="Contoh: Nayla Suji">
-      </label>
-      <label>Event
-        <input id="purchaseEventInput" required placeholder="Contoh: 2-Shoot JKT48">
-      </label>
-      <label>Sesi / Jalur
-        <input id="purchaseSessionInput" placeholder="Contoh: Sesi 3 · Jalur 12">
-      </label>
-      <label>Jumlah tiket
-        <input id="purchaseQtyInput" type="number" min="1" value="1">
-      </label>
-      <label>Harga total
-        <input id="purchasePriceInput" type="number" min="0" value="0" placeholder="250000">
-      </label>
-      <label>Status
-        <select id="purchaseStatusInput">
-          <option value="purchased">✅ Sudah dibeli</option>
-          <option value="checkout">🛒 Checkout</option>
-          <option value="prepared">⚡ Prepared</option>
-        </select>
-      </label>
-      <div class="purchase-modal-actions">
-        <button class="btn" type="button" id="purchaseModalCancel">Batal</button>
-        <button class="btn buyp" type="submit">✓ Simpan</button>
-      </div>
-    </form>
-  </div>
-</div>
-<div class="purchase-toast" id="purchaseToast"></div>
-
-<script>
-/* =========================================================
-   MY PURCHASE TIMELINE v1
-   Personal client-side purchase activity tracker.
-   - localStorage persistence
-   - intercepts existing JKT48 purchase links
-   - status progression: checkout -> prepared -> purchased
-   - manual entry
-   - filter/search/export
-   ========================================================= */
-(() => {
-  'use strict';
-
-  const KEY = 'jkt48-radar-my-purchase-timeline-v1';
-  const MAX = 150;
-  let items = [];
-  let toastTimer = null;
-
-  const $ = id => document.getElementById(id);
-  const safe = v => String(v == null ? '' : v);
-  const esc = v => safe(v).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-  const now = () => Date.now();
-
-  function load() {
-    try {
-      const x = JSON.parse(localStorage.getItem(KEY) || '[]');
-      items = Array.isArray(x) ? x.filter(x => x && typeof x === 'object') : [];
-    } catch { items = []; }
-  }
-
-  function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(items.slice(0, MAX))); } catch {}
-  }
-
-  function id() {
-    return 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-  }
-
-  function rupiah(n) {
-    const x = Number(n || 0);
-    if (!Number.isFinite(x) || x <= 0) return 'Rp0';
-    return 'Rp' + Math.round(x).toLocaleString('id-ID');
-  }
-
-  function dateKey(ts) {
-    const d = new Date(ts);
-    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
-  }
-
-  function todayKey() { return dateKey(now()); }
-
-  function timeText(ts) {
-    try { return new Date(ts).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}); } catch { return '--:--'; }
-  }
-
-  function dateText(ts) {
-    try { return new Date(ts).toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'}); } catch { return '-'; }
-  }
-
-  function statusInfo(status) {
-    return ({
-      checkout:{icon:'🛒',label:'CHECKOUT',cls:'checkout'},
-      prepared:{icon:'⚡',label:'PREPARED',cls:'prepared'},
-      purchased:{icon:'✅',label:'PURCHASED',cls:'purchased'},
-      cancelled:{icon:'❌',label:'CANCELLED',cls:'cancelled'}
-    })[status] || {icon:'•',label:'ACTIVITY',cls:''};
-  }
-
-  function showToast(msg) {
-    const box = $('purchaseToast'); if (!box) return;
-    box.textContent = msg; box.classList.add('on');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => box.classList.remove('on'), 2400);
-  }
-
-  function currentData() {
-    try { return typeof data !== 'undefined' ? data : null; } catch { return null; }
-  }
-
-  function codeFromUrl(url) {
-    try { return new URL(url, location.href).searchParams.get('code') || ''; } catch { return ''; }
-  }
-
-  function findLane(code, text) {
-    const d = currentData();
-    if (!d || !d.events) return null;
-    const ev = d.events[code];
-    if (!ev || !Array.isArray(ev.lanes)) return null;
-    const hay = safe(text).toLowerCase();
-    let best = null;
-    let score = -1;
-    for (const l of ev.lanes) {
-      let s = 0;
-      const member = safe(l.member || l.member_name);
-      const session = safe(l.session || l.session_label);
-      const lane = safe(l.lane || l.lane_code);
-      if (member && hay.includes(member.toLowerCase())) s += 8;
-      if (session && hay.includes(session.toLowerCase())) s += 4;
-      if (lane && hay.includes(lane.toLowerCase())) s += 2;
-      if (Number(l.quota || l.available_quota) > 0) s += 1;
-      if (s > score) { score = s; best = l; }
-    }
-    return best;
-  }
-
-  function contextFromAnchor(a) {
-    const href = a && a.href ? a.href : '';
-    const code = codeFromUrl(href);
-    let root = a;
-    for (let i=0; i<5 && root; i++, root=root.parentElement) {
-      const txt = root.innerText || root.textContent || '';
-      if (txt.length > 10 && txt.length < 1600) {
-        const lane = findLane(code, txt);
-        if (lane) {
-          const ev = currentData()?.events?.[code];
-          return {
-            code,
-            member: safe(lane.member || lane.member_name || '').trim(),
-            event: safe(ev?.name || code).trim(),
-            session: safe(lane.session || lane.session_label || '').trim(),
-            lane: safe(lane.lane || lane.lane_code || '').trim(),
-            date: safe(lane.date || lane.session_date || '').trim(),
-            price: Number(lane.price || 0),
-            qty: 1,
-            sdc: safe(lane.sdc || lane.session_detail_code || '').trim()
-          };
-        }
-      }
-    }
-    const ev = currentData()?.events?.[code];
-    return {code,event:safe(ev?.name || code || 'JKT48'),member:'',session:'',lane:'',date:'',price:0,qty:1,sdc:''};
-  }
-
-  function add(item) {
-    const x = {
-      id:id(),
-      at:now(),
-      status:item.status || 'checkout',
-      member:safe(item.member || 'Member tidak diketahui').trim(),
-      event:safe(item.event || 'JKT48').trim(),
-      session:safe(item.session || '').trim(),
-      lane:safe(item.lane || '').trim(),
-      date:safe(item.date || '').trim(),
-      code:safe(item.code || '').trim(),
-      sdc:safe(item.sdc || '').trim(),
-      qty:Math.max(1, Number(item.qty || 1)),
-      price:Math.max(0, Number(item.price || 0)),
-      note:safe(item.note || '').trim()
-    };
-    items.unshift(x);
-    items = items.slice(0, MAX);
-    save(); render();
-    return x;
-  }
-
-  function updateStatus(pid, status) {
-    const x = items.find(v => v.id === pid); if (!x) return;
-    x.status = status;
-    x.updatedAt = now();
-    save(); render();
-    showToast(status === 'purchased' ? '✓ Ditandai sudah dibeli.' : 'Status pembelian diperbarui.');
-  }
-
-  function remove(pid) {
-    items = items.filter(v => v.id !== pid);
-    save(); render();
-  }
-
-  function filtered() {
-    const st = $('purchaseStatusFilter')?.value || 'all';
-    const ev = $('purchaseEventFilter')?.value || 'all';
-    const q = safe($('purchaseSearch')?.value).trim().toLowerCase();
-    return items.filter(x => {
-      if (st !== 'all' && x.status !== st) return false;
-      if (ev !== 'all' && x.event !== ev) return false;
-      if (q) {
-        const hay = [x.member,x.event,x.session,x.lane,x.code,x.sdc].join(' ').toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-  }
-
-  function renderEventFilter() {
-    const select = $('purchaseEventFilter'); if (!select) return;
-    const current = select.value || 'all';
-    const events = [...new Set(items.map(x => x.event).filter(Boolean))];
-    select.innerHTML = '<option value="all">Semua event</option>' + events.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
-    select.value = events.includes(current) ? current : 'all';
-  }
-
-  function renderStats() {
-    const today = items.filter(x => dateKey(x.at) === todayKey());
-    const bought = items.filter(x => x.status === 'purchased');
-    const qtyToday = today.reduce((a,x) => a + Number(x.qty || 1), 0);
-    const valueToday = today.reduce((a,x) => a + Number(x.price || 0), 0);
-    $('purchaseTodayCount').textContent = qtyToday.toLocaleString('id-ID');
-    $('purchaseTodayValue').textContent = rupiah(valueToday);
-    $('purchaseBoughtCount').textContent = bought.reduce((a,x)=>a+Number(x.qty||1),0).toLocaleString('id-ID');
-    $('purchaseTotalCount').textContent = items.length.toLocaleString('id-ID');
-  }
-
-  function render() {
-    renderEventFilter();
-    renderStats();
-    const box = $('purchaseTimelineList'); if (!box) return;
-    const list = filtered();
-    if (!list.length) {
-      box.innerHTML = `<div class="purchase-empty"><div class="purchase-empty-icon">🧾</div>${items.length ? 'Tidak ada aktivitas yang cocok dengan filter.' : 'Belum ada aktivitas pembelian.'}<br><small>${items.length ? 'Coba ubah filter atau pencarian.' : 'Tekan <b>Beli</b> pada radar atau tambahkan manual.'}</small></div>`;
-      return;
-    }
-    box.innerHTML = list.map(x => {
-      const s = statusInfo(x.status);
-      const detail = [x.event, x.session, x.lane].filter(Boolean).join(' · ');
-      const total = Number(x.price || 0) * (x.price && x.qty > 1 ? 1 : 1);
-      let action = '';
-      if (x.status === 'checkout' || x.status === 'prepared') {
-        action += `<button class="btn buyp purchase-bought-btn" data-purchase-action="bought" data-id="${esc(x.id)}">✓ Sudah Dibeli</button>`;
-      }
-      if (x.status !== 'cancelled') {
-        action += `<button class="btn purchase-cancel-btn" data-purchase-action="cancel" data-id="${esc(x.id)}">Batal</button>`;
-      }
-      if (x.code) {
-        action += `<a class="btn" target="_blank" rel="noopener" href="https://jkt48.com/purchase/exclusive?code=${encodeURIComponent(x.code)}">🛒 Buka</a>`;
-      }
-      action += `<button class="btn" data-purchase-action="delete" data-id="${esc(x.id)}">Hapus</button>`;
-      return `<div class="purchase-item">
-        <div class="purchase-rail"><span class="purchase-dot ${s.cls}"></span></div>
-        <article class="purchase-card">
-          <div class="purchase-card-top">
-            <div>
-              <div class="purchase-member">${esc(x.member)}</div>
-              <div class="purchase-meta">${esc(detail || 'Detail belum tersedia')}</div>
-            </div>
-            <div class="purchase-time">${esc(timeText(x.at))}<br>${esc(dateText(x.at))}</div>
-          </div>
-          <div style="margin-top:7px"><span class="purchase-status ${s.cls}">${s.icon} ${s.label}</span></div>
-          ${x.qty ? `<div class="purchase-price">${x.qty} tiket${x.price ? ' · ' + rupiah(total) : ''}</div>` : ''}
-          ${x.note ? `<div class="purchase-note">📝 ${esc(x.note)}</div>` : ''}
-          ${x.sdc ? `<div class="purchase-source">session: ${esc(x.sdc)}</div>` : ''}
-          <div class="purchase-actions">${action}</div>
-        </article>
-      </div>`;
-    }).join('');
-  }
-
-  function openModal(prefill) {
-    $('purchaseMemberInput').value = prefill?.member || '';
-    $('purchaseEventInput').value = prefill?.event || '';
-    $('purchaseSessionInput').value = [prefill?.session,prefill?.lane].filter(Boolean).join(' · ');
-    $('purchaseQtyInput').value = prefill?.qty || 1;
-    $('purchasePriceInput').value = prefill?.price || 0;
-    $('purchaseStatusInput').value = prefill?.status || 'purchased';
-    $('purchaseModal').classList.add('on');
-    setTimeout(() => $('purchaseMemberInput').focus(), 30);
-  }
-
-  function closeModal() { $('purchaseModal').classList.remove('on'); }
-
-  function exportJson() {
-    const blob = new Blob([JSON.stringify(items,null,2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download='jkt48-purchase-timeline.json'; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showToast('Riwayat pembelian berhasil diexport.');
-  }
-
-  function clearAll() {
-    if (!items.length) return showToast('Timeline sudah kosong.');
-    if (!confirm('Hapus seluruh riwayat My Purchase Timeline?')) return;
-    items=[]; save(); render(); showToast('Riwayat dihapus.');
-  }
-
-  function interceptPurchaseClicks() {
-    document.addEventListener('click', e => {
-      const a = e.target.closest && e.target.closest('a[href*="jkt48.com/purchase/exclusive"]');
-      if (!a) return;
-      if (a.dataset.purchaseTracked === '1') return;
-      a.dataset.purchaseTracked = '1';
-      const ctx = contextFromAnchor(a);
-      add({...ctx,status:'checkout',note:'Dibuka dari tombol Beli'});
-      showToast(`🛒 Checkout dicatat: ${ctx.member || ctx.event}`);
-    }, true);
-  }
-
-  function bind() {
-    $('purchaseAddBtn')?.addEventListener('click', () => openModal({status:'purchased'}));
-    $('purchaseModalClose')?.addEventListener('click', closeModal);
-    $('purchaseModalCancel')?.addEventListener('click', closeModal);
-    $('purchaseModal')?.addEventListener('click', e => { if (e.target === $('purchaseModal')) closeModal(); });
-    $('purchaseClearBtn')?.addEventListener('click', clearAll);
-    $('purchaseExportBtn')?.addEventListener('click', exportJson);
-    ['purchaseStatusFilter','purchaseEventFilter','purchaseSearch'].forEach(id => $(id)?.addEventListener('input', render));
-    $('purchaseSearch')?.addEventListener('keydown', e => { if (e.key === 'Escape') { e.target.value=''; render(); } });
-
-    $('purchaseForm')?.addEventListener('submit', e => {
-      e.preventDefault();
-      const sessionRaw = safe($('purchaseSessionInput').value).trim();
-      const parts = sessionRaw.split('·').map(x=>x.trim()).filter(Boolean);
-      add({
-        member:$('purchaseMemberInput').value,
-        event:$('purchaseEventInput').value,
-        session:parts[0] || sessionRaw,
-        lane:parts.slice(1).join(' · '),
-        qty:Number($('purchaseQtyInput').value || 1),
-        price:Number($('purchasePriceInput').value || 0),
-        status:$('purchaseStatusInput').value,
-        note:'Ditambahkan manual'
-      });
-      closeModal(); showToast('✓ Aktivitas pembelian ditambahkan.');
-    });
-
-    $('purchaseTimelineList')?.addEventListener('click', e => {
-      const btn = e.target.closest('[data-purchase-action]'); if (!btn) return;
-      const pid = btn.dataset.id;
-      const action = btn.dataset.purchaseAction;
-      if (action === 'bought') updateStatus(pid,'purchased');
-      else if (action === 'cancel') updateStatus(pid,'cancelled');
-      else if (action === 'delete') remove(pid);
-    });
-
-    document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && $('purchaseModal')?.classList.contains('on')) closeModal();
-    });
-  }
-
-  load();
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { bind(); render(); interceptPurchaseClicks(); });
-  else { bind(); render(); interceptPurchaseClicks(); }
-
-  // Expose small API so existing radar features can explicitly record a purchase.
-  window.myPurchaseTimeline = {
-    add,
-    bought: id => updateStatus(id,'purchased'),
-    cancel: id => updateStatus(id,'cancelled'),
-    open: openModal,
-    refresh: render,
-    getAll: () => items.slice()
-  };
-})();
-</script>
-
 </body>
 </html>

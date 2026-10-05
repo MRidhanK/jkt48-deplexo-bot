@@ -322,6 +322,10 @@ so_after = {}    # (code, sdc) -> detik dari restock sampai sold out
 last_so = {}     # (code, sdc) -> detik restock -> sold out TERAKHIR; tidak dihapus saat restock
 
 activity = deque(maxlen=ACTIVITY_MAXLEN)   # [ts, jenis, code, sdc, jumlah, durasi]
+# Timeline penurunan stok yang terdeteksi dari server.
+# Ini adalah inferensi dari quota sebelumnya -> quota terbaru, bukan konfirmasi identitas pembeli.
+PURCHASE_TIMELINE_MAXLEN = int(os.environ.get("PURCHASE_TIMELINE_MAXLEN", "500"))
+purchase_timeline = deque(maxlen=PURCHASE_TIMELINE_MAXLEN)  # dict event stock decrease
 activity_since = time.time()               # kapan pencatatan analytics dimulai
 
 req_log = deque(maxlen=5000)          # (ts, status) tiap respons HTTP
@@ -464,6 +468,10 @@ def load_state():
             ((float(t), int(q)) for t, q in v), maxlen=HIST_MAXLEN
         )
     activity.clear()
+    purchase_timeline.clear()
+    for item in raw.get("purchase_timeline") or []:
+        if isinstance(item, dict):
+            purchase_timeline.append(item)
     for r in raw.get("activity") or []:
         try:
             activity.append([float(r[0]), str(r[1]), str(r[2]), str(r[3]),
@@ -495,6 +503,7 @@ def save_state():
                     for (c, s), dq in history.items()
                 },
                 "activity": list(activity),
+                "purchase_timeline": list(purchase_timeline),
                 "activity_since": activity_since,
                 "summary_day": summary_meta["day"],
                 "extra_events": {c: n for c, n in EVENTS.items() if c not in BASE_EVENTS},
@@ -1480,7 +1489,9 @@ def process_report(code, lanes):
                 now,
             )
             if prev is not None and quota < prev:
-                sold_total += prev - quota
+                delta_down = prev - quota
+                sold_total += delta_down
+                record_purchase_server_event(now, code, sdc, prev, quota, lane)
 
             # --------------------------------------------------
             # SOLD OUT
@@ -2056,6 +2067,37 @@ def snapshot():
     return {"now": now, "stale_after": STALE_SECONDS, "events": events, "war": war_info(),
             "poller": poller_info(), "photos": member_photos.photos_for(names)}
 
+def record_purchase_server_event(now, code, sdc, prev, quota, lane):
+    """Catat penurunan stok yang terlihat dari dua snapshot server berturut-turut."""
+    delta = int(prev - quota)
+    if delta <= 0:
+        return
+    purchase_timeline.append({
+        "at": round(now, 1),
+        "code": code,
+        "event": EVENTS.get(code, code),
+        "sdc": sdc,
+        "member": lane.get("member_name") or "-",
+        "lane": lane.get("label") or "-",
+        "session": lane.get("session_label") or "-",
+        "date": lane.get("session_date") or "",
+        "start": hhmm(lane.get("session_start_time")),
+        "prev": int(prev),
+        "quota": int(quota),
+        "delta": delta,
+        "source": "server_stock_decrease",
+    })
+
+
+def purchase_timeline_snapshot(limit=100):
+    limit = max(1, min(int(limit or 100), PURCHASE_TIMELINE_MAXLEN))
+    with lock:
+        rows = list(purchase_timeline)[-limit:]
+        rows.reverse()
+    return {"now": time.time(), "items": rows, "count": len(rows),
+            "note": "Purchase di sini berarti penurunan stok yang terdeteksi server; bukan konfirmasi identitas pembeli."}
+
+
 def analytics_snapshot():
     now = time.time()
     local_now = datetime.fromtimestamp(now, LOCAL_TZ)
@@ -2070,6 +2112,8 @@ def analytics_snapshot():
         for code, name in EVENTS.items()
     }
     restock = tin = sold = so = 0
+    purchase_events = purchase_tickets = largest_purchase = 0
+    purchase_by_event = {code: 0 for code in EVENTS}
     durs, in_by, fast = [], {}, {}
 
     with lock:
@@ -2099,6 +2143,23 @@ def analytics_snapshot():
                     if k not in fast or dur < fast[k]:
                         fast[k] = dur
 
+        # Server-side purchase / stock decrease analytics
+        for item in purchase_timeline:
+            try:
+                if float(item.get("at", 0)) < start:
+                    continue
+                delta = int(item.get("delta", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if delta <= 0:
+                continue
+            purchase_events += 1
+            purchase_tickets += delta
+            largest_purchase = max(largest_purchase, delta)
+            code2 = item.get("code")
+            if code2 in purchase_by_event:
+                purchase_by_event[code2] += delta
+
         fastest = []
         for (code, sdc), dur in sorted(fast.items(), key=lambda kv: kv[1])[:5]:
             v = lane_state.get((code, sdc)) or {}
@@ -2127,7 +2188,17 @@ def analytics_snapshot():
         "hour_now": local_now.hour,
         "tracked_since": tracked_since,
         "today": {"restock": restock, "tickets_in": tin,
-                  "tickets_sold": sold, "sold_out": so},
+                  "tickets_sold": sold, "sold_out": so,
+                  "purchase_events": purchase_events,
+                  "purchase_tickets": purchase_tickets,
+                  "largest_purchase": largest_purchase},
+        "purchase_server": {
+            "events": purchase_events,
+            "tickets": purchase_tickets,
+            "largest_drop": largest_purchase,
+            "by_event": purchase_by_event,
+            "latest": list(reversed([x for x in purchase_timeline if float(x.get("at", 0)) >= start]))[:20],
+        },
         "avg_so": (sum(durs) / len(durs)) if durs else None,
         "so_samples": len(durs),
         "most_active": most_active,
@@ -2315,7 +2386,7 @@ def analytics_embed(title, a, top):
     return embed
 
 
-CSV_KIND = {"in": "restock", "sold": "terjual", "so": "sold_out"}
+CSV_KIND = {"in": "restock", "sold": "terjual", "so": "sold_out", "purchase": "purchase_server"}
 
 
 def export_csv(only_today=False):
@@ -2336,6 +2407,20 @@ def export_csv(only_today=False):
                 v.get("session_label") or "", v.get("session_date") or "",
                 hhmm(v.get("session_start_time")) if v else "",
                 n, "" if dur is None else dur,
+            ])
+        for item in purchase_timeline:
+            try:
+                ts = float(item.get("at", 0))
+            except (TypeError, ValueError):
+                continue
+            if ts < since:
+                continue
+            w.writerow([
+                datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                int(ts), "purchase_server", item.get("code", ""),
+                item.get("event", ""), item.get("member", ""), item.get("lane", ""),
+                item.get("session", ""), item.get("date", ""), item.get("start", ""),
+                item.get("delta", 0), "",
             ])
     return buf.getvalue()
 
@@ -2912,6 +2997,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/api/analytics":
             return self.send_json(200, analytics_snapshot())
+
+        if url.path == "/api/purchase-timeline":
+            try:
+                limit = int((parse_qs(url.query).get("limit") or ["100"])[0])
+            except (TypeError, ValueError):
+                limit = 100
+            return self.send_json(200, purchase_timeline_snapshot(limit))
 
         if url.path == "/api/status":
             return self.send_json(200, health_snapshot())
