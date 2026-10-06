@@ -221,20 +221,6 @@ a.hmv:hover{text-decoration:underline}
 }
 
 /* ====== BROWSER SESSION BRIDGE ====== */
-#jkt48-account-bridge-frame{
-  position:fixed !important;
-  left:-10000px !important;
-  top:-10000px !important;
-  width:1px !important;
-  height:1px !important;
-  min-width:1px !important;
-  min-height:1px !important;
-  border:0 !important;
-  opacity:0 !important;
-  visibility:hidden !important;
-  pointer-events:none !important;
-  z-index:-2147483647 !important;
-}
 .my-ticket-fetch-card .note{margin-top:8px}
 
 /* ====== ANALYTICS & STATUS ====== */
@@ -1793,6 +1779,7 @@ async function loadExtra() {
   render();
 }
 
+/* JKT48_BROWSER_SESSION_BRIDGE: browser userscript runs on this dashboard page. */
 async function myTicketsRequest(path, options = {}) {
   const sep = path.includes("?") ? "&" : "?";
   const url = path + (KEY ? sep + "key=" + encodeURIComponent(KEY) : "");
@@ -1818,7 +1805,7 @@ async function fetchMyTickets() {
 
   myTicketsLoading = true;
   myTicketsError = "";
-  myTicketsBridgeStatus = "Menyiapkan Browser Bridge JKT48…";
+  myTicketsBridgeStatus = "Menyiapkan Browser Session Bridge…";
   myTicketsBridgeProgress = 0;
 
   if (view === "tickets") render();
@@ -1826,32 +1813,21 @@ async function fetchMyTickets() {
   let bridgeToken = "";
   let fetchFrom = "";
   let fetchTo = "";
-  let iframe = null;
-  let resolved = false;
   let timeoutId = null;
+  let finished = false;
 
   const cleanup = () => {
     if (timeoutId) {
       clearTimeout(timeoutId);
       timeoutId = null;
     }
-
-    if (iframe) {
-      try { iframe.remove(); } catch (_) {}
-      iframe = null;
-    }
-
-    const oldFrame = $("jkt48-account-bridge-frame");
-    if (oldFrame) {
-      try { oldFrame.remove(); } catch (_) {}
-    }
-
     window.removeEventListener("message", onBridgeMessage);
   };
 
   const fail = (message) => {
+    if (finished) return;
+    finished = true;
     cleanup();
-    resolved = true;
     myTicketsBridgeStatus = "";
     myTicketsBridgeProgress = null;
     myTicketsError = message || "Gagal membaca akun JKT48.";
@@ -1860,22 +1836,32 @@ async function fetchMyTickets() {
   };
 
   async function onBridgeMessage(event) {
-    /* Hanya terima message yang benar-benar berasal dari JKT48. */
-    if (event.origin !== "https://jkt48.com") return;
+    /*
+     * Userscript sekarang berjalan DI HALAMAN DASHBOARD,
+     * bukan di iframe JKT48.
+     */
+    if (event.origin !== location.origin) return;
 
     const msg = event.data;
     if (!msg || msg.source !== "jkt48-ticket-radar") return;
     if (!bridgeToken || msg.token !== bridgeToken) return;
 
     if (msg.type === "status") {
-      myTicketsBridgeStatus = String(msg.message || "Membaca tiket dari JKT48…");
-      myTicketsBridgeProgress = Number.isFinite(Number(msg.progress)) ? Number(msg.progress) : null;
+      myTicketsBridgeStatus = String(
+        msg.message || "Membaca tiket dari JKT48…"
+      );
+      myTicketsBridgeProgress = Number.isFinite(Number(msg.progress))
+        ? Number(msg.progress)
+        : null;
       if (view === "tickets") render();
       return;
     }
 
     if (msg.type === "error") {
-      fail(msg.error || "Browser Bridge JKT48 gagal membaca tiket.");
+      fail(
+        msg.error ||
+        "Browser Session Bridge gagal membaca tiket JKT48."
+      );
       return;
     }
 
@@ -1886,16 +1872,13 @@ async function fetchMyTickets() {
       return;
     }
 
-    myTicketsBridgeStatus = `✅ ${msg.tickets.length} tiket terbaca · menyimpan ke server…`;
+    myTicketsBridgeStatus =
+      `✅ ${msg.tickets.length} tiket terbaca · menyimpan ke server…`;
     myTicketsBridgeProgress = 92;
+
     if (view === "tickets") render();
 
     try {
-      /*
-       * Browser membaca halaman JKT48.
-       * Dashboard hanya mengirim HASIL tiket ke backend.
-       * Credential browser tidak pernah dikirim.
-       */
       const imported = await myTicketsRequest(
         "/api/my-tickets/import",
         {
@@ -1908,95 +1891,117 @@ async function fetchMyTickets() {
             token: bridgeToken,
             from: msg.from || fetchFrom,
             to: msg.to || fetchTo,
-            fetched_at: msg.fetched_at || Math.floor(Date.now() / 1000),
-            pages_fetched: msg.pages_fetched || 1,
-            source: "jkt48_browser_dom",
+            fetched_at:
+              msg.fetched_at ||
+              Math.floor(Date.now() / 1000),
+            pages_fetched:
+              msg.pages_fetched || 1,
+            source:
+              "jkt48_browser_session",
             tickets: msg.tickets
           })
         }
       );
 
       if (!imported || imported.ok === false) {
-        throw new Error(imported?.error || imported?.message || "Backend menolak hasil My Tickets.");
+        throw new Error(
+          imported?.error ||
+          imported?.message ||
+          "Backend menolak hasil My Tickets."
+        );
       }
 
-      /* Gunakan response import agar dashboard langsung terisi tanpa request tambahan. */
       myTickets = imported;
-      resolved = true;
       myTicketsError = "";
       myTicketsBridgeStatus = "";
       myTicketsBridgeProgress = null;
       myTicketsLoading = false;
+      finished = true;
       cleanup();
 
       if (view === "tickets") render();
     } catch (e) {
-      fail(e?.message || "Gagal menyimpan hasil tiket akun JKT48.");
+      fail(
+        e?.message ||
+        "Gagal menyimpan hasil tiket akun JKT48."
+      );
     }
   }
 
-  window.addEventListener("message", onBridgeMessage);
+  window.addEventListener(
+    "message",
+    onBridgeMessage
+  );
 
   try {
     const now = new Date();
     const dateFrom = now.toISOString().slice(0, 10);
-    const dateTo = new Date(now.getTime() + 32 * 86400000).toISOString().slice(0, 10);
+    const dateTo = new Date(
+      now.getTime() + 32 * 86400000
+    )
+      .toISOString()
+      .slice(0, 10);
+
     fetchFrom = dateFrom;
     fetchTo = dateTo;
 
-    /* Minta one-time bridge token. Token ini bukan credential akun. */
+    /* One-time token; token ini bukan credential akun JKT48. */
     const bridge = await myTicketsRequest(
       `/api/my-tickets/bridge-token?from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}`
     );
 
-    bridgeToken = String(bridge?.token || "");
+    bridgeToken = String(
+      bridge?.token || ""
+    );
+
     if (!bridgeToken) {
-      throw new Error("Bridge token tidak diterima dari server.");
+      throw new Error(
+        "Bridge token tidak diterima dari server."
+      );
     }
 
-    myTicketsBridgeStatus = "🔐 Memuat sesi browser JKT48…";
+    myTicketsBridgeStatus =
+      "🔐 Menghubungkan ke sesi JKT48 di browser…";
     myTicketsBridgeProgress = 5;
+
     if (view === "tickets") render();
-
-    const parentOrigin = location.origin;
-
-    const jktUrl =
-      "https://jkt48.com/my-page" +
-      "?radar_fetch=1" +
-      "&embedded=1" +
-      "&from=" + encodeURIComponent(dateFrom) +
-      "&to=" + encodeURIComponent(dateTo) +
-      "&token=" + encodeURIComponent(bridgeToken) +
-      "&parent_origin=" + encodeURIComponent(parentOrigin);
 
     /*
      * PENTING:
-     * Tidak menggunakan window.open().
-     * Tidak membuat popup.
-     * Tidak membuka tab baru.
-     * JKT48 dimuat dalam iframe tersembunyi di halaman dashboard.
+     * Tidak membuat iframe.
+     * Tidak window.open().
+     * Tidak membuka tab/window baru.
+     *
+     * Userscript harus terpasang pada DOMAIN DASHBOARD.
+     * Userscript menerima event ini lalu melakukan GM_xmlhttpRequest
+     * ke jkt48.com menggunakan cookie browser secara lokal.
      */
-    iframe = document.createElement("iframe");
-    iframe.id = "jkt48-account-bridge-frame";
-    iframe.title = "JKT48 Browser Session Bridge";
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.setAttribute("tabindex", "-1");
-    iframe.src = jktUrl;
-
-    document.body.appendChild(iframe);
+    window.postMessage(
+      {
+        source: "jkt48-ticket-radar",
+        type: "fetch",
+        token: bridgeToken,
+        from: dateFrom,
+        to: dateTo,
+        requested_at: Date.now()
+      },
+      location.origin
+    );
 
     timeoutId = setTimeout(() => {
-      if (resolved) return;
+      if (finished) return;
+
       fail(
-        "Browser Bridge tidak mengirim hasil dalam 90 detik. " +
-        "Pastikan userscript JKT48 sudah aktif dan akun JKT48 sedang login. " +
-        "Jika browser menolak iframe JKT48, gunakan userscript versi terbaru."
+        "Browser Session Bridge tidak mengirim hasil dalam 90 detik. " +
+        "Pastikan userscript dipasang pada halaman DASHBOARD ini, " +
+        "bukan hanya pada jkt48.com."
       );
     }, 90000);
-
-    if (view === "tickets") render();
   } catch (e) {
-    fail(e?.message || "Gagal memulai Browser Bridge JKT48.");
+    fail(
+      e?.message ||
+      "Gagal memulai Browser Session Bridge JKT48."
+    );
   }
 }
 
@@ -2745,7 +2750,7 @@ async function pushInit() {
     btn.disabled = true; return;
   }
   try {
-    PUSH.reg = await navigator.serviceWorker.register("/sw.js");
+    PUSH.reg = await navigator.serviceWorker.register("/sw.js?v=20261006-browser-session", { updateViaCache: "none" });
     await navigator.serviceWorker.ready;
     const k = await pushApi("/api/push/key");
     if (!k.enabled) { info.textContent = "Push belum aktif di server (VAPID key belum diatur)."; btn.disabled = true; return; }

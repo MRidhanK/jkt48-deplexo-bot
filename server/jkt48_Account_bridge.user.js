@@ -1,10 +1,41 @@
 // ==UserScript==
-// @name         JKT48 Ticket Radar - Browser Ticket Reader
+// @name         JKT48 Ticket Radar - Browser Session Fetch
 // @namespace    voltvoltre.jkt48.radar
-// @version      3.1.0
-// @description  Membaca tiket dari My Page JKT48 di browser dan mengirim hasilnya ke Dashboard Radar tanpa membuka tab baru
-// @match        https://jkt48.com/*
-// @grant        none
+// @version      5.0.0
+// @description  Fetch My Tickets JKT48 langsung dari browser tanpa membuka tab, popup, atau iframe
+//
+// ============================================================
+// CONFIG UTAMA
+// ============================================================
+//
+// GANTI domain ini dengan domain dashboard kamu.
+//
+// Contoh:
+// @match https://jkt48-deplexo-bot-production.up.railway.app/
+//
+// Untuk localhost:
+// @match http://localhost:*/*
+// @match http://127.0.0.1:*/*
+//
+// ============================================================
+//
+// @match        https://jkt48-deplexo-bot-production.up.railway.app/
+// @match        http://localhost:*/*
+// @match        http://127.0.0.1:*/*
+//
+// ============================================================
+//
+// JKT48
+// ============================================================
+//
+// @connect      jkt48.com
+//
+// ============================================================
+//
+// Tampermonkey
+// ============================================================
+//
+// @grant        GM_xmlhttpRequest
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -12,111 +43,144 @@
     "use strict";
 
     // =========================================================
-    // CONFIGURATION
+    // CONFIG
     // =========================================================
 
-    const params = new URLSearchParams(
-        window.location.search
-    );
+    const CONFIG = {
 
-    /*
-     * Script HANYA dijalankan ketika dashboard
-     * memanggil halaman JKT48 sebagai browser bridge.
-     */
-    if (
-        params.get("radar_fetch") !== "1"
-    ) {
-        return;
-    }
+        // -----------------------------------------------------
+        // Domain JKT48
+        // -----------------------------------------------------
 
-    /*
-     * Temporary bridge token.
-     *
-     * INI BUKAN:
-     * - access_token
-     * - refresh_token
-     * - cf_clearance
-     *
-     * Token ini hanya untuk mencocokkan
-     * request dengan dashboard.
-     */
-    const bridgeToken =
-        params.get("token") || "";
+        JKT48_ORIGIN:
+            "https://jkt48.com",
 
-    /*
-     * Origin dashboard.
-     *
-     * Contoh:
-     * https://radar.example.com
-     */
-    const parentOrigin =
-        params.get("parent_origin") || "";
+        // -----------------------------------------------------
+        // Endpoint session
+        // -----------------------------------------------------
 
-    /*
-     * Range tanggal.
-     */
-    const from =
-        params.get("from") ||
-        formatDate(
-            new Date()
-        );
+        SESSION_PATH:
+            "/api/auth/session",
 
-    const to =
-        params.get("to") ||
-        formatDate(
-            new Date(
-                Date.now() +
-                32 * 86400000
-            )
-        );
+        // -----------------------------------------------------
+        // Endpoint My Tickets
+        // -----------------------------------------------------
+
+        MY_TICKETS_PATH:
+            "/api/v1/accounts/my-tickets",
+
+        // -----------------------------------------------------
+        // Bahasa API
+        // -----------------------------------------------------
+
+        LANG:
+            "id",
+
+        // -----------------------------------------------------
+        // Jumlah record per page
+        //
+        // API yang kamu tunjukkan:
+        // limit=10
+        // -----------------------------------------------------
+
+        LIMIT:
+            10,
+
+        // -----------------------------------------------------
+        // Maksimum page yang boleh dibaca
+        // -----------------------------------------------------
+
+        MAX_PAGES:
+            100,
+
+        // -----------------------------------------------------
+        // Range default
+        //
+        // Hari mulai = hari ini
+        // Hari akhir = +32 hari
+        // -----------------------------------------------------
+
+        DATE_RANGE_DAYS:
+            32,
+
+        // -----------------------------------------------------
+        // Timeout request
+        // -----------------------------------------------------
+
+        REQUEST_TIMEOUT:
+            30000,
+
+        // -----------------------------------------------------
+        // Jeda antar halaman
+        // -----------------------------------------------------
+
+        PAGE_DELAY:
+            200,
+
+        // -----------------------------------------------------
+        // Debug console
+        //
+        // true  = tampilkan log detail
+        // false = log minimal
+        // -----------------------------------------------------
+
+        DEBUG:
+            true
+    };
 
     // =========================================================
-    // VALIDATION
+    // CONSTANT
     // =========================================================
 
-    if (
-        !bridgeToken
-    ) {
-        console.error(
-            "[JKT48 Radar] Bridge token tidak ditemukan."
-        );
-        return;
-    }
+    const SOURCE =
+        "jkt48-ticket-radar";
 
-    if (
-        !parentOrigin
-    ) {
-        console.error(
-            "[JKT48 Radar] Parent origin tidak ditemukan."
-        );
-        return;
-    }
+    const VERSION =
+        "5.0.0";
+
+    // Origin dashboard otomatis mengikuti
+    // halaman tempat userscript berjalan.
+    const DASHBOARD_ORIGIN =
+        location.origin;
+
+    const SESSION_URL =
+        CONFIG.JKT48_ORIGIN +
+        CONFIG.SESSION_PATH;
+
+    const MY_TICKETS_URL =
+        CONFIG.JKT48_ORIGIN +
+        CONFIG.MY_TICKETS_PATH;
+
+    // =========================================================
+    // STATE
+    // =========================================================
+
+    let running =
+        false;
 
     // =========================================================
     // LOGGER
     // =========================================================
 
-    function log(
-        ...args
-    ) {
-        console.log(
-            "[JKT48 Radar]",
-            ...args
-        );
+    function log(...args) {
+        if (
+            CONFIG.DEBUG
+        ) {
+            console.log(
+                "[JKT48 Radar]",
+                ...args
+            );
+        }
     }
 
-    function warn(
-        ...args
-    ) {
+    function warn(...args) {
         console.warn(
             "[JKT48 Radar]",
             ...args
         );
     }
 
-    function error(
-        ...args
-    ) {
+    function error(...args) {
         console.error(
             "[JKT48 Radar]",
             ...args
@@ -124,12 +188,10 @@
     }
 
     // =========================================================
-    // HELPERS
+    // HELPER
     // =========================================================
 
-    function sleep(
-        ms
-    ) {
+    function sleep(ms) {
         return new Promise(
             resolve =>
                 setTimeout(
@@ -139,61 +201,10 @@
         );
     }
 
-    function cleanText(
-        value
-    ) {
+    function clean(value) {
         return String(
             value ?? ""
-        )
-            .replace(
-                /\u00a0/g,
-                " "
-            )
-            .replace(
-                /\s+/g,
-                " "
-            )
-            .trim();
-    }
-
-    function normalizeText(
-        value
-    ) {
-        return cleanText(
-            value
-        )
-            .toLowerCase()
-            .replace(
-                /[–—]/g,
-                "-"
-            );
-    }
-
-    function formatDate(
-        date
-    ) {
-        const year =
-            date.getFullYear();
-
-        const month =
-            String(
-                date.getMonth() + 1
-            ).padStart(
-                2,
-                "0"
-            );
-
-        const day =
-            String(
-                date.getDate()
-            ).padStart(
-                2,
-                "0"
-            );
-
-        return (
-            `${year}-${month}-${day}`
-        );
+        ).trim();
     }
 
     function clamp(
@@ -211,2094 +222,1061 @@
     }
 
     // =========================================================
-    // PARENT COMMUNICATION
+    // DATE
     // =========================================================
 
-    function sendParentMessage(
+    function formatDate(
+        date
+    ) {
+        const y =
+            date.getFullYear();
+
+        const m =
+            String(
+                date.getMonth() + 1
+            ).padStart(
+                2,
+                "0"
+            );
+
+        const d =
+            String(
+                date.getDate()
+            ).padStart(
+                2,
+                "0"
+            );
+
+        return (
+            `${y}-${m}-${d}`
+        );
+    }
+
+    function getDefaultFrom() {
+        return formatDate(
+            new Date()
+        );
+    }
+
+    function getDefaultTo() {
+        return formatDate(
+            new Date(
+                Date.now() +
+                CONFIG.DATE_RANGE_DAYS *
+                86400000
+            )
+        );
+    }
+
+    // =========================================================
+    // SAFE JSON
+    // =========================================================
+
+    function parseJSON(
+        text
+    ) {
+        try {
+            return JSON.parse(
+                text || "{}"
+            );
+        } catch (
+            _
+        ) {
+            return null;
+        }
+    }
+
+    // =========================================================
+    // DASHBOARD MESSAGE
+    // =========================================================
+
+    function sendDashboard(
         type,
         payload = {}
     ) {
         try {
-            if (
-                !window.parent ||
-                window.parent === window
-            ) {
-                warn(
-                    "Parent window tidak tersedia."
-                );
 
-                return;
-            }
-
-            window.parent.postMessage(
+            window.postMessage(
                 {
                     source:
-                        "jkt48-ticket-radar",
+                        SOURCE,
+
+                    version:
+                        VERSION,
 
                     type,
-
-                    token:
-                        bridgeToken,
 
                     ...payload
                 },
 
-                parentOrigin
+                DASHBOARD_ORIGIN
             );
 
         } catch (
             e
         ) {
+
             error(
-                "postMessage gagal:",
+                "Gagal mengirim message ke dashboard:",
                 e
             );
+
         }
     }
 
+    function sendReady() {
+
+        sendDashboard(
+            "ready",
+            {
+                message:
+                    "JKT48 Browser Session Bridge aktif.",
+
+                timestamp:
+                    Date.now()
+            }
+        );
+
+    }
+
     function sendStatus(
+        token,
         message,
         progress = null
     ) {
-        log(
-            message
-        );
 
-        sendParentMessage(
+        sendDashboard(
             "status",
             {
+                token,
                 message,
                 progress
             }
         );
+
     }
 
     function sendError(
+        token,
         message
     ) {
-        error(
-            message
-        );
 
-        sendParentMessage(
+        sendDashboard(
             "error",
             {
+                token,
                 error:
                     message
             }
         );
+
     }
 
-    // =========================================================
-    // OPTIONAL LOCAL DEBUG OVERLAY
-    // =========================================================
+    function sendResult(
+        token,
+        payload
+    ) {
 
-    /*
-     * Ketika halaman JKT48 dijalankan sebagai iframe tersembunyi,
-     * overlay juga tersembunyi.
-     *
-     * Kalau userscript dibuka secara manual,
-     * overlay akan membantu debugging.
-     */
-
-    function ensureOverlay() {
-        let overlay =
-            document.getElementById(
-                "jkt48-radar-reader-overlay"
-            );
-
-        if (
-            overlay
-        ) {
-            return overlay;
-        }
-
-        overlay =
-            document.createElement(
-                "div"
-            );
-
-        overlay.id =
-            "jkt48-radar-reader-overlay";
-
-        overlay.innerHTML = `
-            <div
-                id="jkt48-radar-reader-card"
-            >
-                <div
-                    id="jkt48-radar-reader-icon"
-                >
-                    🎟️
-                </div>
-
-                <div
-                    id="jkt48-radar-reader-title"
-                >
-                    JKT48 Ticket Radar
-                </div>
-
-                <div
-                    id="jkt48-radar-reader-status"
-                >
-                    Menyiapkan pembacaan tiket…
-                </div>
-
-                <div
-                    id="jkt48-radar-reader-progress"
-                >
-                    <div></div>
-                </div>
-            </div>
-        `;
-
-        const style =
-            document.createElement(
-                "style"
-            );
-
-        style.textContent = `
-            #jkt48-radar-reader-overlay {
-                position: fixed;
-                inset: 0;
-                z-index: 2147483647;
-
-                display: flex;
-                align-items: center;
-                justify-content: center;
-
-                background:
-                    rgba(0, 0, 0, .18);
-
-                backdrop-filter:
-                    blur(6px);
+        sendDashboard(
+            "result",
+            {
+                token,
+                ...payload
             }
-
-            #jkt48-radar-reader-card {
-                width:
-                    min(
-                        460px,
-                        calc(100vw - 32px)
-                    );
-
-                padding: 28px;
-
-                border-radius: 22px;
-
-                background:
-                    #ffffff;
-
-                box-shadow:
-                    0 25px 80px
-                    rgba(0,0,0,.25);
-
-                text-align:
-                    center;
-
-                font-family:
-                    Inter,
-                    system-ui,
-                    -apple-system,
-                    BlinkMacSystemFont,
-                    "Segoe UI",
-                    sans-serif;
-            }
-
-            #jkt48-radar-reader-icon {
-                font-size: 42px;
-                margin-bottom: 8px;
-            }
-
-            #jkt48-radar-reader-title {
-                font-size: 21px;
-                font-weight: 800;
-
-                color:
-                    #111827;
-
-                margin-bottom: 8px;
-            }
-
-            #jkt48-radar-reader-status {
-                font-size: 14px;
-                line-height: 1.5;
-
-                color:
-                    #6b7280;
-
-                white-space:
-                    pre-line;
-            }
-
-            #jkt48-radar-reader-progress {
-                width: 100%;
-                height: 7px;
-
-                margin-top: 20px;
-
-                overflow:
-                    hidden;
-
-                border-radius:
-                    999px;
-
-                background:
-                    #f1f1f1;
-            }
-
-            #jkt48-radar-reader-progress > div {
-                height: 100%;
-                width: 0%;
-
-                border-radius:
-                    inherit;
-
-                background:
-                    #ef233c;
-
-                transition:
-                    width .2s ease;
-            }
-        `;
-
-        (
-            document.head ||
-            document.documentElement
-        ).appendChild(
-            style
         );
 
-        (
-            document.body ||
-            document.documentElement
-        ).appendChild(
-            overlay
+    }
+
+    // =========================================================
+    // GM XMLHTTP REQUEST
+    // =========================================================
+
+    function request(
+        options
+    ) {
+
+        return new Promise(
+            (
+                resolve,
+                reject
+            ) => {
+
+                GM_xmlhttpRequest({
+
+                    method:
+                        options.method ||
+                        "GET",
+
+                    url:
+                        options.url,
+
+                    /*
+                     * Jangan anonymous=true.
+                     *
+                     * Kita ingin browser mempertahankan
+                     * konteks credential/session untuk
+                     * request JKT48.
+                     */
+                    anonymous:
+                        false,
+
+                    headers:
+                        options.headers ||
+                        {},
+
+                    data:
+                        options.data,
+
+                    timeout:
+                        options.timeout ||
+                        CONFIG.REQUEST_TIMEOUT,
+
+                    responseType:
+                        "text",
+
+                    onload:
+                        response => {
+
+                            resolve(
+                                response
+                            );
+
+                        },
+
+                    onerror:
+                        response => {
+
+                            reject(
+                                new Error(
+                                    "GM_xmlhttpRequest network error"
+                                )
+                            );
+
+                        },
+
+                    ontimeout:
+                        () => {
+
+                            reject(
+                                new Error(
+                                    "Request timeout setelah " +
+                                    (
+                                        options.timeout ||
+                                        CONFIG.REQUEST_TIMEOUT
+                                    ) +
+                                    " ms."
+                                )
+                            );
+
+                        }
+
+                });
+
+            }
         );
 
-        return overlay;
     }
 
-    function setLocalStatus(
-        message,
-        progress = null
+    // =========================================================
+    // GET SESSION JKT48
+    // =========================================================
+
+    async function getJKT48Session(
+        token
     ) {
-        const overlay =
-            ensureOverlay();
 
-        const status =
-            overlay.querySelector(
-                "#jkt48-radar-reader-status"
-            );
+        sendStatus(
+            token,
+            "🔐 Membaca session akun JKT48 dari browser…",
+            5
+        );
 
-        const bar =
-            overlay.querySelector(
-                "#jkt48-radar-reader-progress > div"
-            );
+        const response =
+            await request({
 
-        if (
-            status
-        ) {
-            status.textContent =
-                message;
-        }
+                method:
+                    "GET",
 
-        if (
-            bar &&
-            progress !== null
-        ) {
-            bar.style.width =
-                clamp(
-                    progress,
-                    0,
-                    100
-                ) + "%";
-        }
-    }
+                url:
+                    SESSION_URL,
 
-    function closeOverlay() {
-        const overlay =
-            document.getElementById(
-                "jkt48-radar-reader-overlay"
-            );
+                headers: {
 
-        if (
-            overlay
-        ) {
-            overlay.remove();
-        }
-    }
+                    "Accept":
+                        "application/json",
 
-    // =========================================================
-    // MONTH MAP
-    // =========================================================
+                    "Accept-Language":
+                        "id-ID,id;q=0.9,en;q=0.8",
 
-    const MONTHS = {
-        jan: 0,
-        january: 0,
+                    "Cache-Control":
+                        "no-cache",
 
-        feb: 1,
-        february: 1,
+                    "Pragma":
+                        "no-cache",
 
-        mar: 2,
-        march: 2,
+                    "Referer":
+                        CONFIG.JKT48_ORIGIN +
+                        "/my-page"
+                }
 
-        apr: 3,
-        april: 3,
+            });
 
-        may: 4,
-
-        jun: 5,
-        june: 5,
-
-        jul: 6,
-        july: 6,
-
-        aug: 7,
-        august: 7,
-
-        sep: 8,
-        september: 8,
-
-        oct: 9,
-        october: 9,
-
-        nov: 10,
-        november: 10,
-
-        dec: 11,
-        december: 11
-    };
-
-    // =========================================================
-    // DATE PARSER
-    // =========================================================
-
-    function parseDateFromText(
-        text
-    ) {
-        const value =
-            cleanText(
-                text
-            );
-
-        /*
-         * Contoh:
-         *
-         * SUN, OCT 11, 2026
-         * SAT, OCT 24, 2026
-         */
-
-        let match =
-            value.match(
-                /(?:MON|TUE|WED|THU|FRI|SAT|SUN)[,.\s-]*(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:TEMBER)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)[,\s]+(\d{1,2})[,\s]+(\d{4})/i
-            );
-
-        /*
-         * Fallback:
-         *
-         * OCT 24, 2026
-         */
-        if (
-            !match
-        ) {
-            match =
-                value.match(
-                    /\b(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:TEMBER)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)[,\s]+(\d{1,2})[,\s]+(\d{4})\b/i
-                );
-        }
+        log(
+            "Session HTTP:",
+            response.status
+        );
 
         if (
-            !match
-        ) {
-            return "";
-        }
-
-        const month =
-            MONTHS[
-                match[1]
-                    .toLowerCase()
-            ];
-
-        const day =
             Number(
-                match[2]
+                response.status
+            ) !== 200
+        ) {
+
+            throw new Error(
+                "/api/auth/session gagal. HTTP " +
+                response.status
             );
 
-        const year =
-            Number(
-                match[3]
+        }
+
+        const payload =
+            parseJSON(
+                response.responseText
             );
 
         if (
-            month === undefined ||
-            !day ||
-            !year
+            !payload ||
+            !payload.user
         ) {
-            return "";
+
+            throw new Error(
+                "Sesi akun JKT48 tidak ditemukan. " +
+                "Pastikan kamu sudah login di JKT48."
+            );
+
         }
 
-        const date =
-            new Date(
-                year,
-                month,
-                day
+        const user =
+            payload.user;
+
+        const accessToken =
+            clean(
+                user.access_token
             );
+
+        if (
+            !accessToken
+        ) {
+
+            throw new Error(
+                "access_token tidak ditemukan pada session JKT48."
+            );
+
+        }
 
         /*
-         * Validasi date.
+         * Token hanya disimpan dalam memory:
+         *
+         * const accessToken
+         *
+         * Tidak:
+         * - localStorage
+         * - sessionStorage
+         * - cookie
+         * - backend dashboard
          */
-        if (
-            date.getFullYear() !== year ||
-            date.getMonth() !== month ||
-            date.getDate() !== day
-        ) {
-            return "";
-        }
+        return {
+            user,
+            accessToken
+        };
 
-        return formatDate(
-            date
+    }
+
+    // =========================================================
+    // BUILD MY TICKETS URL
+    // =========================================================
+
+    function buildMyTicketsURL(
+        page,
+        from,
+        to
+    ) {
+
+        const params =
+            new URLSearchParams();
+
+        params.set(
+            "lang",
+            CONFIG.LANG
         );
-    }
 
-    // =========================================================
-    // CATEGORY
-    // =========================================================
-
-    function detectCategory(
-        text
-    ) {
-        const t =
-            normalizeText(
-                text
-            );
-
-        /*
-         * Urutan penting.
-         */
-
-        if (
-            t.includes(
-                "meet & greet"
-            ) ||
-            t.includes(
-                "meet and greet"
-            ) ||
-            t.includes(
-                "meet &greet"
-            ) ||
-            t.includes(
-                "m&g"
+        params.set(
+            "limit",
+            String(
+                CONFIG.LIMIT
             )
-        ) {
-            return "MNG";
-        }
+        );
 
-        if (
-            t.includes(
-                "2shot"
-            ) ||
-            t.includes(
-                "2 shot"
-            )
-        ) {
-            return "2SHOT";
-        }
+        params.set(
+            "page",
+            String(page)
+        );
 
-        if (
-            t.includes(
-                "virtual call"
-            ) ||
-            t.includes(
-                "video call"
-            ) ||
-            t.includes(
-                "virtualcall"
-            ) ||
-            t.includes(
-                "video_call"
-            ) ||
-            /\bvc\b/.test(t)
-        ) {
-            return "VC";
-        }
+        params.set(
+            "from",
+            from
+        );
 
-        if (
-            t.includes(
-                "theater show"
-            ) ||
-            t.includes(
-                "theatre show"
-            ) ||
-            t.includes(
-                "theater"
-            ) ||
-            t.includes(
-                "theatre"
-            ) ||
-            t.includes(
-                "show"
-            ) ||
-            t.includes(
-                "pajama drive"
-            ) ||
-            t.includes(
-                "seishun girls"
-            ) ||
-            t.includes(
-                "aitakatta"
-            )
-        ) {
-            return "SHOW";
-        }
-
-        return "OTHER";
-    }
-
-    function categoryLabel(
-        category
-    ) {
-        switch (
-            category
-        ) {
-            case "MNG":
-                return "Meet & Greet";
-
-            case "2SHOT":
-                return "2 Shoot";
-
-            case "VC":
-                return "Virtual Call";
-
-            case "SHOW":
-                return "Theater Show";
-
-            default:
-                return "Ticket";
-        }
-    }
-
-    // =========================================================
-    // TIME PARSER
-    // =========================================================
-
-    function extractTime(
-        text
-    ) {
-        const value =
-            cleanText(
-                text
-            );
-
-        const match =
-            value.match(
-                /\b(\d{1,2})[:.](\d{2})\s*[–—-]\s*(\d{1,2})[:.](\d{2})\b/
-            );
-
-        if (
-            !match
-        ) {
-            return {
-                start_time: "",
-                end_time: ""
-            };
-        }
-
-        return {
-            start_time:
-                `${match[1].padStart(2, "0")}:${match[2]}`,
-
-            end_time:
-                `${match[3].padStart(2, "0")}:${match[4]}`
-        };
-    }
-
-    // =========================================================
-    // RECEPTION PARSER
-    // =========================================================
-
-    function extractReception(
-        text
-    ) {
-        const value =
-            cleanText(
-                text
-            );
-
-        const match =
-            value.match(
-                /RECEPTION\s+(\d{1,2})[:.](\d{2})(?:\s*[–—-]\s*(\d{1,2})[:.](\d{2}))?/i
-            );
-
-        if (
-            !match
-        ) {
-            return {
-                reception_start_time: "",
-                reception_end_time: ""
-            };
-        }
-
-        return {
-            reception_start_time:
-                `${match[1].padStart(2, "0")}:${match[2]}`,
-
-            reception_end_time:
-                match[3] &&
-                match[4]
-                    ? `${match[3].padStart(2, "0")}:${match[4]}`
-                    : ""
-        };
-    }
-
-    // =========================================================
-    // SESSION PARSER
-    // =========================================================
-
-    function extractSession(
-        text
-    ) {
-        const value =
-            cleanText(
-                text
-            );
-
-        const match =
-            value.match(
-                /\bSesi\s+(\d+)\b/i
-            );
-
-        if (
-            !match
-        ) {
-            return "";
-        }
+        params.set(
+            "to",
+            to
+        );
 
         return (
-            "Sesi " +
-            match[1]
+            MY_TICKETS_URL +
+            "?" +
+            params.toString()
         );
+
     }
 
     // =========================================================
-    // LANE PARSER
+    // FETCH ONE PAGE
     // =========================================================
 
-    function extractLane(
-        text
+    async function fetchMyTicketsPage(
+        token,
+        page,
+        from,
+        to,
+        accessToken
     ) {
-        const value =
-            cleanText(
-                text
+
+        const url =
+            buildMyTicketsURL(
+                page,
+                from,
+                to
             );
 
-        const match =
-            value.match(
-                /\bLane\s+(\d+)\b/i
+        const progress =
+            clamp(
+                10 +
+                (
+                    page *
+                    70 /
+                    10
+                ),
+                10,
+                80
             );
 
-        if (
-            !match
-        ) {
-            return "";
-        }
-
-        return match[1];
-    }
-
-    // =========================================================
-    // TICKET COUNT
-    // =========================================================
-
-    function extractTicketCount(
-        text
-    ) {
-        const value =
-            cleanText(
-                text
-            );
-
-        /*
-         * 2 TICKETS
-         */
-        let match =
-            value.match(
-                /\b(\d+)\s+TICKETS?\b/i
-            );
-
-        if (
-            match
-        ) {
-            return Number(
-                match[1]
-            );
-        }
-
-        /*
-         * 1 ENTRY
-         * 2 ENTRIES
-         */
-        match =
-            value.match(
-                /\b(\d+)\s+ENTR(?:Y|IES)\b/i
-            );
-
-        if (
-            match
-        ) {
-            return Number(
-                match[1]
-            );
-        }
-
-        /*
-         * Indonesian
-         */
-        match =
-            value.match(
-                /\b(\d+)\s+tiket\b/i
-            );
-
-        if (
-            match
-        ) {
-            return Number(
-                match[1]
-            );
-        }
-
-        return 1;
-    }
-
-    // =========================================================
-    // NAME VALIDATION
-    // =========================================================
-
-    function looksLikeMemberName(
-        value
-    ) {
-        const text =
-            cleanText(
-                value
-            );
-
-        if (
-            text.length < 3 ||
-            text.length > 80
-        ) {
-            return false;
-        }
-
-        const upper =
-            text.toUpperCase();
-
-        const blacklist = [
-            "SESI",
-            "LANE",
-            "ADD TO CALENDAR",
-            "JKT48 POINTS",
-            "JKT48 POINT",
-            "THEATER SHOW",
-            "THEATRE SHOW",
-            "MEET & GREET",
-            "MEET AND GREET",
-            "2SHOT",
-            "2 SHOT",
-            "VIRTUAL CALL",
-            "VIDEO CALL",
-            "RECEPTION",
-            "TICKETS",
-            "TICKET",
-            "ENTRY",
-            "ENTRIES",
-            "OFC / GENERAL",
-            "PENDING",
-            "MIXED",
-            "SHOW"
-        ];
-
-        if (
-            blacklist.some(
-                item =>
-                    upper === item
-            )
-        ) {
-            return false;
-        }
-
-        if (
-            blacklist.some(
-                item =>
-                    upper.includes(
-                        item
-                    )
-            )
-        ) {
-            return false;
-        }
-
-        if (
-            /^\d/.test(
-                text
-            )
-        ) {
-            return false;
-        }
-
-        if (
-            /\d{1,2}:\d{2}/.test(
-                text
-            )
-        ) {
-            return false;
-        }
-
-        if (
-            parseDateFromText(
-                text
-            )
-        ) {
-            return false;
-        }
-
-        /*
-         * Nama:
-         * huruf
-         * spasi
-         * titik
-         * apostrof
-         * minus
-         */
-        if (
-            !/^[A-Za-zÀ-ÿ.'’\- ]+$/.test(
-                text
-            )
-        ) {
-            return false;
-        }
-
-        return true;
-    }
-
-    // =========================================================
-    // MEMBER NAME
-    // =========================================================
-
-    function guessMemberName(
-        container,
-        category
-    ) {
-        if (
-            !container
-        ) {
-            return "";
-        }
-
-        if (
-            category !== "MNG" &&
-            category !== "2SHOT" &&
-            category !== "VC"
-        ) {
-            return "";
-        }
-
-        const selectors = [
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "h5",
-            "h6",
-            "strong",
-            "b"
-        ];
-
-        const candidates = [];
-
-        for (
-            const selector
-            of selectors
-        ) {
-            const nodes =
-                Array.from(
-                    container.querySelectorAll(
-                        selector
-                    )
-                );
-
-            for (
-                const node
-                of nodes
-            ) {
-                const text =
-                    cleanText(
-                        node.innerText
-                    );
-
-                if (
-                    looksLikeMemberName(
-                        text
-                    )
-                ) {
-                    candidates.push(
-                        text
-                    );
-                }
-            }
-        }
-
-        if (
-            candidates.length
-        ) {
-            return candidates[0];
-        }
-
-        /*
-         * Fallback:
-         * cari berdasarkan baris.
-         */
-        const lines =
-            String(
-                container.innerText ||
-                ""
-            )
-                .split(/\n+/)
-                .map(
-                    cleanText
-                )
-                .filter(Boolean);
-
-        for (
-            const line
-            of lines
-        ) {
-            if (
-                looksLikeMemberName(
-                    line
-                )
-            ) {
-                return line;
-            }
-        }
-
-        return "";
-    }
-
-    // =========================================================
-    // EVENT TITLE
-    // =========================================================
-
-    function guessEventTitle(
-        container,
-        category
-    ) {
-        const text =
-            cleanText(
-                container?.innerText ||
-                ""
-            );
-
-        if (
-            !text
-        ) {
-            return "";
-        }
-
-        const lines =
-            text
-                .split(/\n+/)
-                .map(
-                    cleanText
-                )
-                .filter(Boolean);
-
-        /*
-         * M&G / 2SHOT / VC.
-         */
-        if (
-            category === "MNG" ||
-            category === "2SHOT" ||
-            category === "VC"
-        ) {
-            for (
-                const line
-                of lines
-            ) {
-                if (
-                    /festival/i.test(
-                        line
-                    )
-                ) {
-                    return line;
-                }
-
-                if (
-                    /personal meet/i.test(
-                        line
-                    )
-                ) {
-                    return line;
-                }
-
-                if (
-                    /photocard/i.test(
-                        line
-                    )
-                ) {
-                    return line;
-                }
-            }
-        }
-
-        /*
-         * SHOW.
-         */
-        const headings =
-            Array.from(
-                container.querySelectorAll(
-                    "h1,h2,h3,h4,h5,h6"
-                )
-            )
-                .map(
-                    node =>
-                        cleanText(
-                            node.innerText
-                        )
-                )
-                .filter(Boolean);
-
-        for (
-            const heading
-            of headings
-        ) {
-            if (
-                !/sesi|lane|meet & greet|meet and greet|2shot|reception|pending|mixed/i.test(
-                    heading
-                )
-            ) {
-                return heading;
-            }
-        }
-
-        return "";
-    }
-
-    // =========================================================
-    // TICKET SIGNAL
-    // =========================================================
-
-    function hasTicketSignals(
-        text
-    ) {
-        const t =
-            cleanText(
-                text
-            );
-
-        const signals = [
-            /\b\d+\s+TICKETS?\b/i,
-            /\b\d+\s+ENTR(?:Y|IES)\b/i,
-            /\b\d+\s+tiket\b/i,
-            /\bSesi\s+\d+\b/i,
-            /\bLane\s+\d+\b/i,
-            /meet\s*&\s*greet/i,
-            /meet and greet/i,
-            /\b2\s*shot\b/i,
-            /virtual call/i,
-            /video call/i,
-            /theater show/i,
-            /theatre show/i,
-            /pajama drive/i
-        ];
-
-        return signals.some(
-            regex =>
-                regex.test(
-                    t
-                )
+        sendStatus(
+            token,
+            "🎟️ Membaca My Tickets…\n" +
+            `Halaman ${page}`,
+            progress
         );
-    }
 
-    // =========================================================
-    // FIND CARD ROOT
-    // =========================================================
+        log(
+            "GET:",
+            url
+        );
 
-    function findBestCardRoot(
-        element
-    ) {
-        let current =
-            element;
+        const response =
+            await request({
 
-        let best =
-            element;
+                method:
+                    "GET",
 
-        /*
-         * Naik beberapa level.
-         */
-        for (
-            let i = 0;
-            i < 10 &&
-            current;
-            i++
+                url,
+
+                headers: {
+
+                    "Accept":
+                        "application/json, text/plain, */*",
+
+                    "Accept-Language":
+                        "id-ID,id;q=0.9,en;q=0.8",
+
+                    "Cache-Control":
+                        "no-cache",
+
+                    "Pragma":
+                        "no-cache",
+
+                    "Referer":
+                        CONFIG.JKT48_ORIGIN +
+                        "/my-page",
+
+                    /*
+                     * API session kamu menunjukkan
+                     * access_token.
+                     *
+                     * Token hanya dipakai untuk
+                     * request ke JKT48.
+                     */
+                    "Authorization":
+                        "Bearer " +
+                        accessToken
+                }
+
+            });
+
+        const status =
+            Number(
+                response.status
+            );
+
+        log(
+            "My Tickets HTTP:",
+            status,
+            "page:",
+            page
+        );
+
+        if (
+            status !== 200
         ) {
-            const text =
-                cleanText(
-                    current.innerText ||
-                    ""
-                );
+
+            let detail =
+                `HTTP ${status}`;
 
             /*
-             * Card yang masuk akal:
-             * tidak terlalu kecil
-             * tidak terlalu besar
+             * 403 khusus Cloudflare.
              */
             if (
-                text.length >= 60 &&
-                text.length <= 6000 &&
-                parseDateFromText(
-                    text
-                ) &&
-                hasTicketSignals(
-                    text
-                )
+                status === 403
             ) {
-                best =
-                    current;
+
+                detail +=
+                    " — Cloudflare/JKT48 menolak request browser.";
+
             }
 
-            current =
-                current.parentElement;
-        }
-
-        return best;
-    }
-
-    // =========================================================
-    // FIND CARDS
-    // =========================================================
-
-    function findTicketCards() {
-        const elements =
-            Array.from(
-                document.querySelectorAll(
-                    "article,section,li,div"
-                )
+            throw new Error(
+                "My Tickets gagal: " +
+                detail
             );
 
-        const roots =
-            new Set();
+        }
 
-        for (
-            const element
-            of elements
+        const payload =
+            parseJSON(
+                response.responseText
+            );
+
+        if (
+            !payload
         ) {
-            const text =
-                cleanText(
-                    element.innerText ||
-                    ""
-                );
 
-            if (
-                !text
-            ) {
-                continue;
-            }
+            throw new Error(
+                "Response My Tickets bukan JSON valid."
+            );
 
-            if (
-                !parseDateFromText(
-                    text
-                )
-            ) {
-                continue;
-            }
-
-            if (
-                !hasTicketSignals(
-                    text
-                )
-            ) {
-                continue;
-            }
-
-            const root =
-                findBestCardRoot(
-                    element
-                );
-
-            if (
-                root
-            ) {
-                roots.add(
-                    root
-                );
-            }
         }
 
-        const candidates =
-            Array.from(
-                roots
+        if (
+            payload.status === false
+        ) {
+
+            throw new Error(
+                String(
+                    payload.message ||
+                    "API My Tickets mengembalikan status=false."
+                )
             );
 
-        /*
-         * Buang parent yang hanya
-         * mengandung card lain.
-         */
-        const cards =
-            candidates.filter(
-                card =>
-                    !candidates.some(
-                        other =>
-                            other !== card &&
-                            other.contains(
-                                card
-                            )
-                    )
-            );
+        }
 
-        /*
-         * Safety dedupe berdasarkan DOM.
-         */
-        return Array.from(
-            new Set(
-                cards
-            )
-        );
+        return payload;
+
     }
 
     // =========================================================
-    // PARSE ONE CARD
+    // FETCH ALL PAGES
     // =========================================================
 
-    function parseCard(
-        card
+    async function fetchAllTickets(
+        token,
+        from,
+        to,
+        accessToken
     ) {
-        if (
-            !card
+
+        const all =
+            [];
+
+        let page =
+            1;
+
+        let totalPages =
+            1;
+
+        while (
+            page <= totalPages &&
+            page <= CONFIG.MAX_PAGES
         ) {
-            return null;
-        }
 
-        const rawText =
-            card.innerText ||
-            "";
+            const payload =
+                await fetchMyTicketsPage(
+                    token,
+                    page,
+                    from,
+                    to,
+                    accessToken
+                );
 
-        const text =
-            cleanText(
-                rawText
+            const rows =
+                Array.isArray(
+                    payload.data
+                )
+                    ? payload.data
+                    : [];
+
+            all.push(
+                ...rows.filter(
+                    row =>
+                        row &&
+                        typeof row ===
+                        "object"
+                )
             );
 
-        if (
-            !text
-        ) {
-            return null;
-        }
+            /*
+             * Baca metadata API:
+             *
+             * _meta.total_page
+             */
+            const meta =
+                payload._meta ||
+                {};
 
-        const date =
-            parseDateFromText(
-                text
+            const parsedTotal =
+                Number(
+                    meta.total_page
+                );
+
+            if (
+                Number.isFinite(
+                    parsedTotal
+                ) &&
+                parsedTotal > 0
+            ) {
+
+                totalPages =
+                    Math.min(
+                        CONFIG.MAX_PAGES,
+                        Math.floor(
+                            parsedTotal
+                        )
+                    );
+
+            } else {
+
+                /*
+                 * Fallback kalau _meta tidak ada.
+                 */
+                if (
+                    rows.length <
+                    CONFIG.LIMIT
+                ) {
+                    break;
+                }
+
+                totalPages =
+                    page + 1;
+
+            }
+
+            log(
+                `Page ${page}/${totalPages}:`,
+                rows.length,
+                "record"
             );
 
-        if (
-            !date
-        ) {
-            return null;
-        }
+            page++;
 
-        const category =
-            detectCategory(
-                text
-            );
+            if (
+                page <= totalPages
+            ) {
 
-        const time =
-            extractTime(
-                text
-            );
+                await sleep(
+                    CONFIG.PAGE_DELAY
+                );
 
-        const reception =
-            extractReception(
-                text
-            );
+            }
 
-        const session =
-            extractSession(
-                text
-            );
-
-        const lane =
-            extractLane(
-                text
-            );
-
-        const boughtCount =
-            extractTicketCount(
-                text
-            );
-
-        const memberName =
-            guessMemberName(
-                card,
-                category
-            );
-
-        const eventTitle =
-            guessEventTitle(
-                card,
-                category
-            );
-
-        /*
-         * Jangan ambil sesuatu yang terlalu samar.
-         */
-        const hasStrongSignal =
-            category !== "OTHER" ||
-            Boolean(
-                session
-            ) ||
-            Boolean(
-                lane
-            );
-
-        if (
-            !hasStrongSignal
-        ) {
-            return null;
         }
 
         return {
-            category,
+            tickets:
+                all,
 
-            ticket_label:
-                categoryLabel(
-                    category
-                ),
-
-            event_title:
-                eventTitle,
-
-            date,
-
-            member_name:
-                memberName,
-
-            session_label:
-                session,
-
-            lane_label:
-                lane
-                    ? "Lane " + lane
-                    : "",
-
-            lane,
-
-            start_time:
-                time.start_time,
-
-            end_time:
-                time.end_time,
-
-            reception_start_time:
-                reception.reception_start_time,
-
-            reception_end_time:
-                reception.reception_end_time,
-
-            bought_count:
-                boughtCount,
-
-            used_count:
-                0,
-
-            remaining_count:
+            pages_fetched:
                 Math.max(
-                    0,
-                    boughtCount
+                    1,
+                    page - 1
                 ),
 
-            source:
-                "browser_dom",
-
-            source_text:
-                text.slice(
-                    0,
-                    5000
-                )
+            total_pages:
+                totalPages
         };
+
     }
 
     // =========================================================
-    // DEDUPE TICKETS
+    // START FETCH
     // =========================================================
 
-    function dedupeTickets(
-        tickets
+    async function startFetch(
+        message
     ) {
-        const map =
-            new Map();
 
-        for (
-            const ticket
-            of tickets
+        if (
+            running
         ) {
-            const key = [
-                ticket.category,
-                ticket.date,
-                ticket.event_title,
-                ticket.member_name,
-                ticket.session_label,
-                ticket.lane,
-                ticket.start_time,
-                ticket.end_time,
-                ticket.bought_count
-            ].join("|");
+
+            warn(
+                "Fetch sedang berjalan."
+            );
+
+            return;
+
+        }
+
+        const token =
+            clean(
+                message?.token
+            );
+
+        if (
+            !token
+        ) {
+
+            warn(
+                "Fetch command tanpa token."
+            );
+
+            return;
+
+        }
+
+        const from =
+            clean(
+                message?.from
+            ) ||
+            getDefaultFrom();
+
+        const to =
+            clean(
+                message?.to
+            ) ||
+            getDefaultTo();
+
+        running =
+            true;
+
+        try {
+
+            // -------------------------------------------------
+            // VALIDATE DATE
+            // -------------------------------------------------
 
             if (
-                !map.has(
-                    key
+                !/^\d{4}-\d{2}-\d{2}$/.test(
+                    from
+                ) ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(
+                    to
                 )
             ) {
-                map.set(
-                    key,
-                    ticket
+
+                throw new Error(
+                    "Format tanggal harus YYYY-MM-DD."
                 );
+
             }
-        }
 
-        return Array.from(
-            map.values()
-        );
-    }
+            if (
+                to < from
+            ) {
 
-    // =========================================================
-    // WAIT DOM
-    // =========================================================
+                throw new Error(
+                    "Tanggal akhir tidak boleh sebelum tanggal awal."
+                );
 
-    async function waitForDomReady() {
-        if (
-            document.readyState ===
-            "loading"
-        ) {
-            await new Promise(
-                resolve => {
-                    document.addEventListener(
-                        "DOMContentLoaded",
-                        resolve,
-                        {
-                            once: true
-                        }
-                    );
-                }
-            );
-        }
+            }
 
-        /*
-         * Tunggu framework JKT48 selesai render.
-         */
-        await sleep(
-            1200
-        );
-    }
+            // -------------------------------------------------
+            // SESSION
+            // -------------------------------------------------
 
-    // =========================================================
-    // WAIT TICKET CONTENT
-    // =========================================================
-
-    async function waitForTicketContent() {
-        for (
-            let i = 0;
-            i < 40;
-            i++
-        ) {
-            const bodyText =
-                cleanText(
-                    document.body?.innerText ||
-                    ""
+            const session =
+                await getJKT48Session(
+                    token
                 );
 
             /*
-             * Minimal harus ada tanggal
-             * dan salah satu ticket signal.
+             * Ambil access token hanya
+             * dalam memory.
              */
-            const hasDate =
-                Boolean(
-                    parseDateFromText(
-                        bodyText
-                    )
-                );
+            const accessToken =
+                session.accessToken;
 
-            const hasSignal =
-                hasTicketSignals(
-                    bodyText
-                );
+            // -------------------------------------------------
+            // USER INFO
+            // -------------------------------------------------
 
-            if (
-                hasDate &&
-                hasSignal
-            ) {
-                return true;
-            }
+            const profile =
+                session.user?.profile ||
+                {};
 
-            await sleep(
-                500
+            sendStatus(
+                token,
+                "✅ Akun JKT48 terdeteksi.\n" +
+                `Halo ${profile.nickname || profile.full_name || "User"}\n` +
+                "Membaca My Tickets…",
+                8
             );
-        }
 
-        return false;
-    }
+            // -------------------------------------------------
+            // MY TICKETS
+            // -------------------------------------------------
 
-    // =========================================================
-    // SCROLL
-    // =========================================================
-
-    async function scrollAll() {
-        let lastHeight =
-            0;
-
-        let stableRounds =
-            0;
-
-        const maxRounds =
-            35;
-
-        for (
-            let round = 0;
-            round < maxRounds;
-            round++
-        ) {
-            const height =
-                document.documentElement
-                    .scrollHeight;
-
-            const progress =
-                Math.min(
-                    70,
-                    15 +
-                    round * 2
+            const result =
+                await fetchAllTickets(
+                    token,
+                    from,
+                    to,
+                    accessToken
                 );
 
-            const message =
-                "Membaca seluruh daftar tiket…\n" +
-                `Memuat bagian ${round + 1}/${maxRounds}`;
+            /*
+             * Buang duplikat persis.
+             */
+            const seen =
+                new Set();
 
-            setLocalStatus(
-                message,
-                progress
+            const tickets =
+                result.tickets.filter(
+                    ticket => {
+
+                        let key;
+
+                        try {
+
+                            key =
+                                JSON.stringify(
+                                    ticket
+                                );
+
+                        } catch (
+                            _
+                        ) {
+
+                            key =
+                                String(
+                                    Math.random()
+                                );
+
+                        }
+
+                        if (
+                            seen.has(
+                                key
+                            )
+                        ) {
+
+                            return false;
+
+                        }
+
+                        seen.add(
+                            key
+                        );
+
+                        return true;
+
+                    }
+                );
+
+            // -------------------------------------------------
+            // SUCCESS
+            // -------------------------------------------------
+
+            sendStatus(
+                token,
+                `✅ ${tickets.length} record berhasil dibaca.\n` +
+                "Mengirim hasil ke Dashboard…",
+                92
+            );
+
+            /*
+             * HANYA data tiket dikirim.
+             *
+             * Tidak dikirim:
+             * - access_token
+             * - refresh_token
+             * - cookie
+             * - cf_clearance
+             */
+            sendResult(
+                token,
+                {
+
+                    from,
+
+                    to,
+
+                    pages_fetched:
+                        result.pages_fetched,
+
+                    total_pages:
+                        result.total_pages,
+
+                    fetched_at:
+                        Math.floor(
+                            Date.now() /
+                            1000
+                        ),
+
+                    source:
+                        "jkt48_browser_session",
+
+                    profile: {
+
+                        nickname:
+                            profile.nickname ||
+                            "",
+
+                        full_name:
+                            profile.full_name ||
+                            ""
+                    },
+
+                    tickets
+
+                }
             );
 
             sendStatus(
-                message,
-                progress
+                token,
+                `✅ Fetch Akun selesai.\n${tickets.length} record diterima Dashboard.`,
+                100
             );
 
-            window.scrollTo(
-                0,
-                height
-            );
+            log(
+                "Fetch selesai:",
+                {
+                    records:
+                        tickets.length,
 
-            await sleep(
-                700
-            );
-
-            const newHeight =
-                document.documentElement
-                    .scrollHeight;
-
-            if (
-                newHeight === lastHeight
-            ) {
-                stableRounds++;
-            } else {
-                stableRounds = 0;
-            }
-
-            lastHeight =
-                newHeight;
-
-            /*
-             * Tiga kali sama berarti
-             * kemungkinan sudah sampai bawah.
-             */
-            if (
-                stableRounds >= 3
-            ) {
-                break;
-            }
-        }
-
-        window.scrollTo(
-            0,
-            0
-        );
-
-        await sleep(
-            500
-        );
-    }
-
-    // =========================================================
-    // TRY LOAD MORE
-    // =========================================================
-
-    async function tryLoadMore() {
-        const elements =
-            Array.from(
-                document.querySelectorAll(
-                    "button,a"
-                )
-            );
-
-        const candidates =
-            elements.filter(
-                element => {
-                    const text =
-                        cleanText(
-                            element.innerText
-                        );
-
-                    return (
-                        /load more/i.test(
-                            text
-                        ) ||
-                        /lihat lebih/i.test(
-                            text
-                        ) ||
-                        /selanjutnya/i.test(
-                            text
-                        ) ||
-                        /berikutnya/i.test(
-                            text
-                        ) ||
-                        /\bnext\b/i.test(
-                            text
-                        )
-                    );
+                    pages:
+                        result.pages_fetched
                 }
             );
-
-        const button =
-            candidates[0];
-
-        if (
-            !button
-        ) {
-            return false;
-        }
-
-        if (
-            button.disabled
-        ) {
-            return false;
-        }
-
-        /*
-         * Jangan klik kalau element memang
-         * tidak terlihat.
-         */
-        const rect =
-            button.getBoundingClientRect();
-
-        if (
-            rect.width === 0 ||
-            rect.height === 0
-        ) {
-            return false;
-        }
-
-        try {
-            button.click();
-
-            await sleep(
-                1300
-            );
-
-            return true;
 
         } catch (
             e
         ) {
-            warn(
-                "Load more gagal:",
+
+            const message =
+                e?.message ||
+                String(
+                    e
+                );
+
+            error(
+                "Fetch JKT48 gagal:",
                 e
             );
 
-            return false;
+            sendError(
+                token,
+                message
+            );
+
+        } finally {
+
+            running =
+                false;
+
         }
+
     }
 
     // =========================================================
-    // READ PAGE
+    // MESSAGE LISTENER
     // =========================================================
 
-    async function readTickets() {
-        setLocalStatus(
-            "Menunggu halaman My Page selesai dimuat…",
-            5
-        );
+    window.addEventListener(
+        "message",
+        event => {
 
-        sendStatus(
-            "Menunggu halaman My Page selesai dimuat…",
-            5
-        );
-
-        await waitForDomReady();
-
-        setLocalStatus(
-            "Mencari data tiket di halaman JKT48…",
-            10
-        );
-
-        sendStatus(
-            "Mencari data tiket di halaman JKT48…",
-            10
-        );
-
-        const found =
-            await waitForTicketContent();
-
-        if (
-            !found
-        ) {
             /*
-             * Tidak langsung gagal.
-             *
-             * Beri kesempatan page melakukan
-             * client-side rendering.
+             * Hanya message dari window
+             * dashboard itu sendiri.
              */
-            await sleep(
-                2000
-            );
-        }
+            if (
+                event.source !==
+                window
+            ) {
+                return;
+            }
 
-        // -----------------------------------------------------
-        // LOAD CONTENT
-        // -----------------------------------------------------
+            /*
+             * Pastikan origin sama
+             * dengan dashboard.
+             */
+            if (
+                event.origin !==
+                DASHBOARD_ORIGIN
+            ) {
+                return;
+            }
 
-        await scrollAll();
-
-        // -----------------------------------------------------
-        // TRY PAGINATION / LOAD MORE
-        // -----------------------------------------------------
-
-        for (
-            let i = 0;
-            i < 5;
-            i++
-        ) {
-            const loaded =
-                await tryLoadMore();
+            const data =
+                event.data;
 
             if (
-                !loaded
+                !data ||
+                data.source !==
+                SOURCE
             ) {
-                break;
+                return;
             }
 
-            await sleep(
-                500
-            );
-
-            await scrollAll();
-        }
-
-        // -----------------------------------------------------
-        // PARSE
-        // -----------------------------------------------------
-
-        setLocalStatus(
-            "Menganalisis card tiket…",
-            75
-        );
-
-        sendStatus(
-            "Menganalisis card tiket…",
-            75
-        );
-
-        await sleep(
-            500
-        );
-
-        const cards =
-            findTicketCards();
-
-        log(
-            "Candidate cards:",
-            cards.length
-        );
-
-        const parsed =
-            [];
-
-        for (
-            let i = 0;
-            i < cards.length;
-            i++
-        ) {
-            try {
-                const result =
-                    parseCard(
-                        cards[i]
-                    );
-
-                if (
-                    result
-                ) {
-                    parsed.push(
-                        result
-                    );
-                }
-
-            } catch (
-                e
+            if (
+                data.type !==
+                "fetch"
             ) {
-                warn(
-                    "Card parse error:",
-                    e
-                );
+                return;
             }
-        }
 
-        const tickets =
-            dedupeTickets(
-                parsed
+            log(
+                "Fetch command diterima."
             );
 
-        /*
-         * Urutan:
-         * date
-         * start_time
-         * category
-         * member
-         */
-        tickets.sort(
-            (
-                a,
-                b
-            ) => {
-                const left =
-                    [
-                        a.date,
-                        a.start_time ||
-                            "00:00",
-                        a.category,
-                        a.member_name ||
-                            ""
-                    ].join(
-                        " "
-                    );
-
-                const right =
-                    [
-                        b.date,
-                        b.start_time ||
-                            "00:00",
-                        b.category,
-                        b.member_name ||
-                            ""
-                    ].join(
-                        " "
-                    );
-
-                return left.localeCompare(
-                    right
-                );
-            }
-        );
-
-        return tickets;
-    }
-
-    // =========================================================
-    // MAIN
-    // =========================================================
-
-    async function main() {
-        ensureOverlay();
-
-        setLocalStatus(
-            "🎟️ Menyiapkan browser reader…",
-            2
-        );
-
-        sendStatus(
-            "🎟️ Menyiapkan browser reader…",
-            2
-        );
-
-        /*
-         * Pastikan document siap.
-         */
-        if (
-            !document.body
-        ) {
-            await waitForDomReady();
-        }
-
-        // -----------------------------------------------------
-        // SESSION
-        // -----------------------------------------------------
-
-        setLocalStatus(
-            "🔐 Menggunakan sesi browser JKT48…",
-            5
-        );
-
-        sendStatus(
-            "🔐 Menggunakan sesi browser JKT48…",
-            5
-        );
-
-        /*
-         * TIDAK:
-         * - mengambil access_token
-         * - mengambil refresh_token
-         * - membaca document.cookie
-         * - membaca cf_clearance
-         *
-         * Browser sendiri yang membawa session saat
-         * halaman JKT48 dimuat.
-         */
-
-        await sleep(
-            800
-        );
-
-        // -----------------------------------------------------
-        // READ
-        // -----------------------------------------------------
-
-        const tickets =
-            await readTickets();
-
-        log(
-            "Final ticket count:",
-            tickets.length
-        );
-
-        log(
-            "Tickets:",
-            tickets
-        );
-
-        // -----------------------------------------------------
-        // EMPTY
-        // -----------------------------------------------------
-
-        if (
-            !tickets.length
-        ) {
-            throw new Error(
-                "Tidak menemukan tiket pada halaman My Page JKT48. " +
-                "Pastikan jadwal tiket sudah tampil dan halaman tidak sedang loading."
+            startFetch(
+                data
             );
+
         }
-
-        // -----------------------------------------------------
-        // SEND
-        // -----------------------------------------------------
-
-        const message =
-            `✅ ${tickets.length} tiket berhasil dibaca.\n` +
-            "Mengirim hasil ke Dashboard Radar…";
-
-        setLocalStatus(
-            message,
-            90
-        );
-
-        sendStatus(
-            message,
-            90
-        );
-
-        /*
-         * HANYA DATA TIKET.
-         *
-         * Tidak ada credential akun.
-         */
-        sendParentMessage(
-            "result",
-            {
-                from,
-
-                to,
-
-                fetched_at:
-                    Math.floor(
-                        Date.now() /
-                        1000
-                    ),
-
-                source:
-                    "jkt48_browser_dom",
-
-                tickets
-            }
-        );
-
-        // -----------------------------------------------------
-        // FINISH
-        // -----------------------------------------------------
-
-        setLocalStatus(
-            `✅ ${tickets.length} tiket berhasil dibaca.\n` +
-            "Data sudah dikirim ke Dashboard.",
-            100
-        );
-
-        sendStatus(
-            `✅ ${tickets.length} tiket berhasil dibaca.`,
-            100
-        );
-
-        await sleep(
-            1000
-        );
-
-        /*
-         * Jangan:
-         *
-         * window.close()
-         *
-         * window.open()
-         *
-         * location.href = ...
-         *
-         * Karena iframe harus tetap menjadi
-         * bagian dari dashboard.
-         */
-        closeOverlay();
-
-        log(
-            "Browser Ticket Reader selesai."
-        );
-    }
+    );
 
     // =========================================================
-    // ERROR HANDLER
+    // READY
     // =========================================================
 
-    main()
-        .catch(
-            e => {
-                const message =
-                    e?.message ||
-                    String(e);
+    /*
+     * Beritahu Dashboard bahwa
+     * Tampermonkey sudah aktif.
+     */
+    sendReady();
 
-                error(
-                    "Fetch gagal:",
-                    e
-                );
-
-                ensureOverlay();
-
-                setLocalStatus(
-                    "❌ Fetch Akun Gagal\n\n" +
-                    message,
-                    0
-                );
-
-                sendError(
-                    message
-                );
-            }
-        );
+    log(
+        `Browser Session Bridge ${VERSION} aktif.`
+    );
 
 })();
