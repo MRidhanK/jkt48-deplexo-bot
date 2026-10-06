@@ -2213,6 +2213,39 @@ my_tickets_fetching = False
 MY_TICKETS_BRIDGE_TTL = int(os.environ.get("MY_TICKETS_BRIDGE_TTL", "120"))
 my_tickets_bridge_lock = threading.Lock()
 my_tickets_bridge = {}
+# Mobile Browser Sync: HP yang sedang login di jkt48.com menjadi pembaca session.
+MOBILE_SYNC_TTL = int(os.environ.get("MOBILE_SYNC_TTL", "600"))
+MOBILE_SYNC_MAX_PAYLOAD = int(os.environ.get("MOBILE_SYNC_MAX_PAYLOAD", "900000"))
+MOBILE_SYNC_ORIGINS = {"https://jkt48.com", "https://www.jkt48.com"}
+MOBILE_SYNC_FILE = Path(os.environ.get("MOBILE_SYNC_FILE", str(Path(__file__).with_name("mobile-sync.html"))))
+mobile_sync_lock = threading.Lock()
+mobile_sync_codes = {}
+
+def create_mobile_sync_code():
+    now = time.time()
+    code = f"{secrets.randbelow(100_000_000):08d}"
+    with mobile_sync_lock:
+        for k in [k for k,v in mobile_sync_codes.items() if now >= float(v.get("expires_at") or 0)]:
+            mobile_sync_codes.pop(k, None)
+        mobile_sync_codes[code] = {"created_at": now, "expires_at": now + max(60, MOBILE_SYNC_TTL), "hits": 0}
+    return code, now + max(60, MOBILE_SYNC_TTL)
+
+def validate_mobile_sync_code(code):
+    code = str(code or "").strip()
+    if len(code) != 8 or not code.isdigit():
+        return False
+    now = time.time()
+    with mobile_sync_lock:
+        item = mobile_sync_codes.get(code)
+        if not item or now >= float(item.get("expires_at") or 0):
+            mobile_sync_codes.pop(code, None)
+            return False
+        item["hits"] = int(item.get("hits") or 0) + 1
+        return True
+
+def mobile_sync_origin_allowed(origin):
+    return str(origin or "").rstrip("/") in MOBILE_SYNC_ORIGINS
+
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 # Proxy opsional untuk polling langsung (mis. proxy residensial Indonesia).
 # Format: http://user:pass@host:port  atau  socks5://user:pass@host:port
@@ -3566,6 +3599,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
+        origin = self.headers.get("Origin", "")
+        if self.path.startswith("/api/jkt48/mobile-sync") and mobile_sync_origin_allowed(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -3676,63 +3713,22 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
 
     def _handle_my_tickets_fetch(self, url):
-        """Fetch My Tickets using the already imported bearer session.
-
-        Supports both GET and POST callers so old/new dashboard builds are
-        compatible. The actual upstream request is performed server-side.
-        """
-        global my_tickets_cache, my_tickets_fetching
-
+        """Return latest cache imported by the mobile browser bridge."""
         if not self._dash_ok(url):
             return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-
-        with my_tickets_fetch_lock:
-            if my_tickets_fetching:
-                return self.send_json(409, {
-                    "ok": False,
-                    "fetching": True,
-                    "error": "Fetch My Tickets sedang berjalan."
-                })
-            my_tickets_fetching = True
-
-        try:
-            qs = parse_qs(url.query)
-            date_from = (qs.get("from") or [""])[0].strip()
-            date_to = (qs.get("to") or [""])[0].strip()
-            now_dt = datetime.now(LOCAL_TZ)
-            if not date_from:
-                date_from = now_dt.strftime("%Y-%m-%d")
-            if not date_to:
-                date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
-            try:
-                datetime.strptime(date_from, "%Y-%m-%d")
-                datetime.strptime(date_to, "%Y-%m-%d")
-                if date_to < date_from:
-                    raise ValueError
-            except ValueError:
-                return self.send_json(400, {"ok": False, "error": "Rentang tanggal tidak valid."})
-
-            result = fetch_my_tickets(date_from, date_to)
-            if result.get("ok"):
-                with my_tickets_cache_lock:
-                    my_tickets_cache = dict(result)
-            else:
-                with jkt48_account_lock:
-                    jkt48_account_last_error = str(result.get("error") or "Fetch gagal")
-
-            return self.send_json(200 if result.get("ok") else 502, result)
-        except Exception as error:
-            traceback.print_exc()
-            with jkt48_account_lock:
-                jkt48_account_last_error = f"Fetch My Tickets gagal: {type(error).__name__}: {str(error)[:300]}"
-            return self.send_json(500, {
-                "ok": False,
-                "authenticated": bool(jkt48_account_status().get("authenticated")),
-                "error": f"Fetch My Tickets gagal: {type(error).__name__}: {str(error)[:300]}",
+        with my_tickets_cache_lock:
+            cached = dict(my_tickets_cache) if isinstance(my_tickets_cache, dict) else None
+            fetching = bool(my_tickets_fetching)
+        if cached is None:
+            return self.send_json(200, {
+                "ok": True, "fetched": False, "fetching": fetching,
+                "authenticated": False, "source": "mobile-browser",
+                "message": "Belum ada sinkronisasi dari HP. Jalankan Radar Sync di halaman JKT48 yang sedang login.",
+                "tickets": [], "counts": {},
             })
-        finally:
-            with my_tickets_fetch_lock:
-                my_tickets_fetching = False
+        cached["fetching"] = fetching
+        cached["fetched"] = True
+        return self.send_json(200, cached)
 
     def do_GET(self):
         url = urlparse(self.path)
@@ -3764,6 +3760,12 @@ class Handler(BaseHTTPRequestHandler):
         if icon_size:
             return self.send_bytes("image/png", icon_png(icon_size), "public, max-age=86400")
 
+        if url.path == "/mobile-sync":
+            try:
+                return self.send_html(200, MOBILE_SYNC_FILE.read_bytes())
+            except FileNotFoundError:
+                return self.send_json(500, {"ok": False, "error": "mobile-sync.html tidak ditemukan di server."})
+
         if url.path.startswith("/members/"):
             found = member_photos.read_photo(unquote(url.path[len("/members/"):]))
             if not found:
@@ -3779,6 +3781,12 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             return
+
+        if url.path == "/api/mobile-sync/code":
+            if not self._dash_ok(url):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+            code, expires_at = create_mobile_sync_code()
+            return self.send_json(200, {"ok": True, "code": code, "expires_at": expires_at, "ttl_seconds": max(60, MOBILE_SYNC_TTL)})
 
         if DASHBOARD_KEY:
             given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
@@ -3806,7 +3814,7 @@ class Handler(BaseHTTPRequestHandler):
                     "fetching": fetching,
                     "authenticated": status["authenticated"],
                     "profile": status.get("profile") or {},
-                    "source": "server-session",
+                    "source": "mobile-browser",
                     "message": (
                         "Akun JKT48 sudah terhubung. Tekan Fetch Akun untuk membaca tiket."
                         if status["authenticated"]
@@ -3901,9 +3909,66 @@ class Handler(BaseHTTPRequestHandler):
         set_war(minutes)
         return self.send_json(200, {"ok": True, **war_info()})
 
+    def do_OPTIONS(self):
+        url = urlparse(self.path)
+        origin = self.headers.get("Origin", "")
+        if url.path == "/api/jkt48/mobile-sync" and mobile_sync_origin_allowed(origin):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+            return
+        self.send_response(204)
+        self.end_headers()
+
     def do_POST(self):
         global my_tickets_cache, my_tickets_fetching
         url0 = urlparse(self.path)
+        if url0.path == "/api/jkt48/mobile-sync":
+            origin = self.headers.get("Origin", "")
+            if not mobile_sync_origin_allowed(origin):
+                return self.send_json(403, {"ok": False, "error": "Origin mobile tidak diizinkan."})
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except (TypeError, ValueError):
+                length = 0
+            if length <= 0 or length > MOBILE_SYNC_MAX_PAYLOAD:
+                return self.send_json(413, {"ok": False, "error": "Payload mobile sync terlalu besar atau kosong."})
+            try:
+                raw = self.rfile.read(length).decode("utf-8")
+                form = parse_qs(raw, keep_blank_values=True)
+                code = str((form.get("code") or [""])[0]).strip()
+                payload = json.loads(str((form.get("payload") or [""])[0]))
+                if not isinstance(payload, dict):
+                    raise ValueError("payload")
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                return self.send_json(400, {"ok": False, "error": "Payload mobile sync tidak valid."})
+            if not validate_mobile_sync_code(code):
+                return self.send_json(410, {"ok": False, "error": "Kode pairing kedaluwarsa atau tidak valid."})
+            rows = payload.get("tickets")
+            if not isinstance(rows, list) or len(rows) > 500:
+                return self.send_json(400, {"ok": False, "error": "Daftar ticket tidak valid."})
+            date_from = str(payload.get("from") or "").strip()
+            date_to = str(payload.get("to") or "").strip()
+            try:
+                datetime.strptime(date_from, "%Y-%m-%d")
+                datetime.strptime(date_to, "%Y-%m-%d")
+            except ValueError:
+                return self.send_json(400, {"ok": False, "error": "Rentang tanggal harus YYYY-MM-DD."})
+            try:
+                pages = max(1, int(payload.get("pages_fetched") or 1))
+            except (TypeError, ValueError):
+                pages = 1
+            result = _prepare_browser_my_tickets(rows, date_from, date_to, pages)
+            result.update({"bridge": True, "source": "mobile-browser", "sync_device": "mobile", "browser_fetched_at": payload.get("fetched_at")})
+            with my_tickets_cache_lock:
+                my_tickets_cache = dict(result)
+                my_tickets_fetching = False
+            print(f"[MY TICKETS] Mobile sync imported: records={len(result['tickets'])} pages={result['pages_fetched']}")
+            return self.send_json(200, result)
+
         if url0.path.startswith("/api/push/"):
             return self.handle_push_post(url0)
 
@@ -4003,7 +4068,6 @@ class Handler(BaseHTTPRequestHandler):
                 result["browser_fetched_at"] = payload.get("fetched_at")
                 result["bridge"] = True
 
-                global my_tickets_cache, my_tickets_fetching
                 with my_tickets_cache_lock:
                     my_tickets_cache = dict(result)
                     my_tickets_fetching = False

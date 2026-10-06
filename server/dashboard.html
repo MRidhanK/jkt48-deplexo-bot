@@ -1070,6 +1070,7 @@ table.hm{border-spacing:4px}
 .ticket-transactions{font-size:11px;opacity:.55;word-break:break-word;border-top:1px solid rgba(148,163,184,.12);padding-top:10px}
 .my-ticket-countdown{margin-top:12px;border-radius:11px;padding:10px 12px;background:rgba(96,165,250,.10);font-weight:700;font-size:13px}
 .my-ticket-toolbar .btn{white-space:nowrap}
+.my-ticket-actions{display:flex;gap:8px;flex-wrap:wrap}.my-ticket-actions .btn{min-width:118px}@media(max-width:760px){.my-ticket-actions{width:100%}.my-ticket-actions .btn{flex:1}}
 .my-ticket-fetch-btn{font-weight:800;min-width:140px}
 .my-ticket-fetch-card{font-weight:800;text-align:center;padding:24px}
 .my-ticket-empty{text-align:center;padding:34px 22px}
@@ -1851,185 +1852,16 @@ async function loadExtra() {
   render();
 }
 
-/* JKT48_BROWSER_SESSION: baca My Tickets langsung dari browser yang sedang login.
-   Tidak membaca / menyalin cookie atau access_token ke JavaScript/server.
-   Catatan: browser hanya mengizinkan ini bila JKT48 mengizinkan CORS untuk origin Radar,
-   atau dashboard memang dijalankan pada origin jkt48.com. */
-async function jkt48BrowserRequest(path) {
-  const r = await fetch(path, {
-    method: "GET",
-    credentials: "include",
-    mode: "cors",
-    cache: "no-store",
-    headers: { "Accept": "application/json" }
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    throw new Error(j?.message || j?.error || `JKT48 HTTP ${r.status}`);
-  }
-  return j;
-}
-
-function inferTicketCategory(t) {
-  const raw = `${t?.ticket_label || ""} ${t?.name || ""}`.toUpperCase();
-  if (/SHOW|THEATER|PAJAMA DRIVE|ATTAIN.*YOU|SEISHUN/.test(raw)) return "SHOW";
-  if (/2\s*SHOT|2SHOT|2 SHOT/.test(raw)) return "2SHOT";
-  if (/M\s*&\s*G|MNG|MEET\s*&\s*GREET/.test(raw)) return "MNG";
-  if (/\bVC\b|VIRTUAL CALL|VIDEO CALL/.test(raw)) return "VC";
-  return "OTHER";
-}
-
-function normalizeBrowserTicket(t) {
-  const category = inferTicketCategory(t);
-  return {
-    category,
-    reference_code: String(t?.reference_code || ""),
-    ticket_label: String(t?.ticket_label || t?.name || "JKT48 Ticket"),
-    name: String(t?.name || ""),
-    member_name: String(t?.member_name || t?.name || "").trim(),
-    date: String(t?.date || "").slice(0, 10),
-    start_time: String(t?.start_time || ""),
-    end_time: String(t?.end_time || ""),
-    reception_start_time: String(t?.reception_start_time || ""),
-    reception_end_time: String(t?.reception_end_time || ""),
-    session_label: String(t?.session_label || "").trim(),
-    lane_label: String(t?.lane_label || "").trim(),
-    used_count: Number(t?.used_count || 0) || 0,
-    bought_count: Number(t?.bought_count || 0) || 0,
-    transaction_numbers: Array.isArray(t?.transaction_numbers) ? t.transaction_numbers.map(String) : [],
-    raffle_status: t?.raffle_status ?? null,
-    expired_date: t?.expired_date || null
-  };
-}
-
-function groupMyTickets(tickets) {
-  const map = new Map();
-  for (const t of tickets) {
-    const member = t.member_name || t.name || t.ticket_label || "JKT48 Ticket";
-    const session = t.session_label || "-";
-    const key = [t.date || "", t.category || "OTHER", member, session, t.start_time || "", t.end_time || ""].join("|");
-    let g = map.get(key);
-    if (!g) {
-      g = {
-        ...t,
-        _grouped: true,
-        _records: 0,
-        _lanes: new Map(),
-        transaction_numbers: [],
-        bought_count: 0,
-        used_count: 0
-      };
-      map.set(key, g);
-    }
-    g._records += 1;
-    g.bought_count += Number(t.bought_count || 0) || 0;
-    g.used_count += Number(t.used_count || 0) || 0;
-    const lane = t.lane_label || "Tanpa jalur";
-    const oldLane = g._lanes.get(lane) || { lane_label: lane, bought_count: 0, used_count: 0, tickets: [] };
-    oldLane.bought_count += Number(t.bought_count || 0) || 0;
-    oldLane.used_count += Number(t.used_count || 0) || 0;
-    oldLane.tickets.push(t);
-    g._lanes.set(lane, oldLane);
-    for (const no of (t.transaction_numbers || [])) {
-      if (!g.transaction_numbers.includes(no)) g.transaction_numbers.push(no);
-    }
-  }
-
-  return [...map.values()].map(g => {
-    g.lanes = [...g._lanes.values()].map(x => ({
-      lane_label: x.lane_label,
-      bought_count: x.bought_count,
-      used_count: x.used_count
-    }));
-    delete g._lanes;
-    return g;
-  });
-}
-
-async function fetchMyTickets(autoAfterLogin = false) {
-  if (myTicketsLoading && !autoAfterLogin) return;
-
-  myTicketsLoading = true;
-  myTicketsError = "";
-  myTicketsBridgeStatus = "🌐 Membaca My Tickets dari session browser…";
-  myTicketsBridgeProgress = 10;
-  if (view === "tickets") render();
-
-  try {
-    const now = new Date();
-    const from = now.toISOString().slice(0, 10);
-    const to = new Date(now.getTime() + 32 * 86400000).toISOString().slice(0, 10);
-    const base = "https://jkt48.com/api/v1/accounts/my-tickets";
-    const all = [];
-    let page = 1;
-    let totalPage = 1;
-
-    while (page <= totalPage && page <= 20) {
-      myTicketsBridgeStatus = `🌐 Membaca session browser · halaman ${page}/${Math.max(totalPage, 1)}…`;
-      myTicketsBridgeProgress = Math.min(90, 10 + page * 15);
-      if (view === "tickets") render();
-
-      const j = await jkt48BrowserRequest(`${base}?lang=id&limit=10&page=${page}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
-      if (j?.status === false) throw new Error(j?.message || "JKT48 menolak permintaan My Tickets.");
-      const rows = Array.isArray(j?.data) ? j.data : [];
-      all.push(...rows.map(normalizeBrowserTicket));
-      const meta = j?._meta || {};
-      totalPage = Math.max(1, Number(meta.total_page || 1) || 1);
-      page += 1;
-      if (page <= totalPage) await new Promise(r => setTimeout(r, 180));
-    }
-
-    const dedup = [];
-    const seen = new Set();
-    for (const t of all) {
-      const key = [t.reference_code, t.member_name, t.session_label, t.lane_label, t.date, t.start_time, ...(t.transaction_numbers || [])].join("|");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      dedup.push(t);
-    }
-    dedup.sort((a,b) => `${a.date} ${a.start_time} ${a.member_name}`.localeCompare(`${b.date} ${b.start_time} ${b.member_name}`));
-
-    const counts = { MNG:0, "2SHOT":0, VC:0, SHOW:0, OTHER:0 };
-    for (const t of dedup) counts[t.category] = (counts[t.category] || 0) + 1;
-
-    // Simpan hanya data tiket yang sudah dibaca; tidak ada cookie/token/session JSON.
-    myTickets = {
-      ok: true,
-      fetched: true,
-      authenticated: true,
-      browser_session: true,
-      from,
-      to,
-      pages_fetched: totalPage,
-      total: dedup.length,
-      counts,
-      tickets: dedup,
-      updated_at: Date.now() / 1000
-    };
-    myTicketsAuthenticated = true;
-    myTicketsBridgeStatus = `✅ ${dedup.length} ticket record terbaca dari session browser.`;
-    myTicketsBridgeProgress = 100;
-    myTicketsLoading = false;
-    myTicketsError = "";
-    try { localStorage.setItem("radar_my_tickets_cache_v2", JSON.stringify(myTickets)); } catch (_) {}
-    if (view === "tickets") render();
-    return myTickets;
-  } catch (e) {
-    const msg = String(e?.message || e || "Gagal membaca Jadwal Saya.");
-    myTicketsError = /Failed to fetch|NetworkError|CORS|Load failed/i.test(msg)
-      ? "Browser tidak mengizinkan Dashboard membaca API JKT48 secara langsung (CORS/origin). Tanpa extension/userscript atau dashboard yang berjalan di domain jkt48.com, browser memang tidak bisa memberikan cookie session situs lain ke Radar."
-      : msg;
-    myTicketsLoading = false;
-    myTicketsBridgeStatus = "";
-    myTicketsBridgeProgress = null;
-    if (view === "tickets") render();
-    return null;
-  }
-}
+/* MOBILE_MY_TICKETS: HP melakukan same-origin fetch di jkt48.com; Dashboard membaca cache Radar. */
+function dashQuery(extra={}){const q=new URLSearchParams();if(KEY)q.set("key",KEY);for(const[k,v]of Object.entries(extra||{}))if(v!=null&&v!=="")q.set(k,v);const s=q.toString();return s?"?"+s:"";}
+async function refreshMyTicketsCache(silent=false){if(!silent){myTicketsLoading=true;myTicketsError="";myTicketsBridgeStatus="🔄 Membaca cache Jadwal Saya…";myTicketsBridgeProgress=35;if(view==="tickets")render();}try{const r=await fetch("/api/my-tickets"+dashQuery(),{cache:"no-store"});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j?.error||j?.message||`HTTP ${r.status}`);if(j?.fetched&&Array.isArray(j.tickets)){myTickets=j;myTicketsAuthenticated=true;try{localStorage.setItem("radar_my_tickets_cache_v3",JSON.stringify(j))}catch(_){}myTicketsError="";myTicketsBridgeStatus=`✅ ${j.tickets.length} record · sync ${j.updated_at?new Date(j.updated_at*1000).toLocaleTimeString("id-ID"):"-"}`;myTicketsBridgeProgress=100}else if(!myTickets?.fetched){myTickets=j;myTicketsAuthenticated=false;myTicketsBridgeStatus="📱 Belum ada sync dari HP.";myTicketsBridgeProgress=0}if(!silent){myTicketsLoading=false;if(view==="tickets")render()}return myTickets}catch(e){if(!silent){myTicketsLoading=false;myTicketsBridgeStatus="";myTicketsBridgeProgress=null}myTicketsError=String(e?.message||e||"Gagal membaca Jadwal Saya.");if(view==="tickets")render();return null;}}
+async function openMobileSyncSetup(){try{const r=await fetch("/api/mobile-sync/code"+dashQuery(),{cache:"no-store"});const j=await r.json().catch(()=>({}));if(!r.ok||!j?.ok)throw Error(j?.error||`HTTP ${r.status}`);const url=location.origin+"/mobile-sync?code="+encodeURIComponent(j.code);try{await navigator.clipboard.writeText(url)}catch(_){}const w=window.open(url,"_blank","noopener,noreferrer");if(!w)location.href=url}catch(e){myTicketsError="Gagal membuat kode Sync HP: "+String(e?.message||e);render();}}
+async function fetchMyTickets(){return refreshMyTicketsCache(false)}
+setInterval(()=>{if(view==="tickets"&&!myTicketsLoading)refreshMyTicketsCache(true)},10000);
 
 function loadMyTicketsFromLocalCache() {
   try {
-    const raw = localStorage.getItem("radar_my_tickets_cache_v2");
+    const raw = localStorage.getItem("radar_my_tickets_cache_v3") || localStorage.getItem("radar_my_tickets_cache_v2");
     if (!raw) return;
     const j = JSON.parse(raw);
     if (j?.fetched && Array.isArray(j.tickets)) {
@@ -2189,31 +2021,31 @@ function renderMyTickets(){
   if(myTickets?.updated_at){
     statusLine.textContent = `Terakhir fetch: ${new Date(myTickets.updated_at*1000).toLocaleTimeString("id-ID")}`;
   } else {
-    statusLine.textContent = "Belum membaca akun · tekan Fetch Akun untuk mengambil tiket.";
+    statusLine.textContent = "Belum ada sinkronisasi dari HP · tekan Sync HP untuk setup.";
   }
   title.append(statusLine);
 
-  if (myTickets?.browser_session) {
+  if (myTickets?.bridge || myTickets?.source === "mobile-browser") {
     const accountLine = el("div","note my-ticket-account-line");
-    accountLine.textContent = "📱 Session browser JKT48 dipakai langsung · token tidak disalin";
+    accountLine.textContent = "📱 Data terakhir dikirim dari browser HP · token/cookie tidak disalin";
     title.append(accountLine);
   }
 
-  const fetchBtn=el("button","btn my-ticket-fetch-btn","🔄 Fetch Akun");
-  fetchBtn.type="button";
-  fetchBtn.onclick = fetchMyTickets;
-  toolbar.append(title,fetchBtn);
+  const actions=el("div","my-ticket-actions");
+  const syncBtn=el("button","btn buyp","📱 Sync HP");syncBtn.type="button";syncBtn.onclick=openMobileSyncSetup;
+  const fetchBtn=el("button","btn my-ticket-fetch-btn","🔄 Refresh");fetchBtn.type="button";fetchBtn.onclick=fetchMyTickets;
+  actions.append(syncBtn,fetchBtn);toolbar.append(title,actions);
   wrap.append(toolbar);
 
   if(myTicketsError){
     const c=el("div","card");
     c.append(
-      el("h2","","⚠️ Gagal Membaca Session Browser"),
+      el("h2","","⚠️ Jadwal Saya belum tersinkron"),
       el("div","note",myTicketsError),
-      el("div","note","Radar tidak meminta access token. Fetch mencoba memakai cookie/session yang sudah aktif di browser secara langsung."),
-      el("button","btn buyp","🔄 Coba Lagi")
+      el("div","note","Jalankan Radar Sync dari halaman JKT48 yang sedang login di HP. Setelah itu Refresh membaca cache terbaru."),
+      el("button","btn buyp","📱 Setup Sync HP")
     );
-    c.lastChild.onclick = fetchMyTickets;
+    c.lastChild.onclick = openMobileSyncSetup;
     wrap.append(c);
   }
 
@@ -2221,11 +2053,11 @@ function renderMyTickets(){
     const c=el("div","card my-ticket-empty");
     c.append(
       el("div","my-ticket-empty-icon","🎟️"),
-      el("h2","","Baca Jadwal dari Session Browser"),
-      el("div","note","Tekan Fetch Akun. Radar akan mencoba membaca My Tickets menggunakan session/cookie yang sedang aktif di browser, tanpa meminta token atau JSON session."),
-      el("button","btn buyp","🔄 Fetch Akun Sekarang")
+      el("h2","","📱 Hubungkan Jadwal dari HP"),
+      el("div","note","Buka JKT48 di HP dalam keadaan login, jalankan Radar Sync sekali, lalu biarkan tab JKT48 tetap terbuka. Radar akan mengirim seluruh detail My Tickets dan menggabungkan member + sesi + waktu yang sama menjadi satu card."),
+      el("button","btn buyp","📱 Setup Sync HP")
     );
-    c.lastChild.onclick = fetchMyTickets;
+    c.lastChild.onclick = openMobileSyncSetup;
     wrap.append(c);
     return wrap;
   }
@@ -2247,7 +2079,7 @@ function renderMyTickets(){
   wrap.append(summary);
 
   const meta=el("div","note my-ticket-meta");
-  meta.textContent=`${groupedTickets.length} event card · ${tickets.length} record tiket · ${myTickets.pages_fetched || 1} halaman · ${myTickets.from} → ${myTickets.to}`;
+  meta.textContent=`${groupedTickets.length} event card · ${tickets.length} record tiket · ${myTickets.pages_fetched || 1} halaman · ${myTickets.from} → ${myTickets.to} · 📱 mobile sync`;
   wrap.append(meta);
 
   const filter=el("div","tabs my-ticket-filter");
