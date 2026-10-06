@@ -3675,6 +3675,65 @@ class Handler(BaseHTTPRequestHandler):
 
         return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
 
+    def _handle_my_tickets_fetch(self, url):
+        """Fetch My Tickets using the already imported bearer session.
+
+        Supports both GET and POST callers so old/new dashboard builds are
+        compatible. The actual upstream request is performed server-side.
+        """
+        global my_tickets_cache, my_tickets_fetching
+
+        if not self._dash_ok(url):
+            return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+
+        with my_tickets_fetch_lock:
+            if my_tickets_fetching:
+                return self.send_json(409, {
+                    "ok": False,
+                    "fetching": True,
+                    "error": "Fetch My Tickets sedang berjalan."
+                })
+            my_tickets_fetching = True
+
+        try:
+            qs = parse_qs(url.query)
+            date_from = (qs.get("from") or [""])[0].strip()
+            date_to = (qs.get("to") or [""])[0].strip()
+            now_dt = datetime.now(LOCAL_TZ)
+            if not date_from:
+                date_from = now_dt.strftime("%Y-%m-%d")
+            if not date_to:
+                date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
+            try:
+                datetime.strptime(date_from, "%Y-%m-%d")
+                datetime.strptime(date_to, "%Y-%m-%d")
+                if date_to < date_from:
+                    raise ValueError
+            except ValueError:
+                return self.send_json(400, {"ok": False, "error": "Rentang tanggal tidak valid."})
+
+            result = fetch_my_tickets(date_from, date_to)
+            if result.get("ok"):
+                with my_tickets_cache_lock:
+                    my_tickets_cache = dict(result)
+            else:
+                with jkt48_account_lock:
+                    jkt48_account_last_error = str(result.get("error") or "Fetch gagal")
+
+            return self.send_json(200 if result.get("ok") else 502, result)
+        except Exception as error:
+            traceback.print_exc()
+            with jkt48_account_lock:
+                jkt48_account_last_error = f"Fetch My Tickets gagal: {type(error).__name__}: {str(error)[:300]}"
+            return self.send_json(500, {
+                "ok": False,
+                "authenticated": bool(jkt48_account_status().get("authenticated")),
+                "error": f"Fetch My Tickets gagal: {type(error).__name__}: {str(error)[:300]}",
+            })
+        finally:
+            with my_tickets_fetch_lock:
+                my_tickets_fetching = False
+
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/health":
@@ -3764,53 +3823,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, cached)
 
         if url.path == "/api/my-tickets/fetch":
-            if not self._dash_ok(url):
-                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-
-            with my_tickets_fetch_lock:
-                if my_tickets_fetching:
-                    return self.send_json(409, {
-                        "ok": False,
-                        "fetching": True,
-                        "error": "Fetch My Tickets sedang berjalan."
-                    })
-                my_tickets_fetching = True
-
-            try:
-                qs = parse_qs(url.query)
-                date_from = (qs.get("from") or [""])[0].strip()
-                date_to = (qs.get("to") or [""])[0].strip()
-                now_dt = datetime.now(timezone.utc)
-                if not date_from:
-                    date_from = now_dt.strftime("%Y-%m-%d")
-                if not date_to:
-                    date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
-                try:
-                    datetime.strptime(date_from, "%Y-%m-%d")
-                    datetime.strptime(date_to, "%Y-%m-%d")
-                    if date_to < date_from:
-                        raise ValueError
-                except ValueError:
-                    my_tickets_fetching = False
-                    return self.send_json(400, {"ok": False, "error": "Rentang tanggal tidak valid."})
-
-                result = fetch_my_tickets(date_from, date_to)
-                if result.get("ok"):
-                    with my_tickets_cache_lock:
-                        my_tickets_cache = dict(result)
-                else:
-                    with jkt48_account_lock:
-                        jkt48_account_last_error = str(result.get("error") or "Fetch gagal")
-                my_tickets_fetching = False
-                return self.send_json(200 if result.get("ok") else 502, result)
-            except Exception as error:
-                my_tickets_fetching = False
-                traceback.print_exc()
-                return self.send_json(500, {
-                    "ok": False,
-                    "authenticated": bool(jkt48_account_status().get("authenticated")),
-                    "error": f"Fetch My Tickets gagal: {type(error).__name__}: {str(error)[:300]}",
-                })
+            return self._handle_my_tickets_fetch(url)
 
         if url.path == "/api/war":
             return self.send_json(200, war_info())
@@ -4007,15 +4020,10 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return self.send_json(500, {"ok": False, "error": f"Import My Tickets gagal: {type(error).__name__}: {str(error)[:300]}"})
 
-        # Compatibility endpoint lama: jangan lagi fetch dari server karena dapat terkena Cloudflare 403.
+        # Fetch My Tickets sekarang aktif untuk POST juga.
+        # Ini dibuat kompatibel dengan dashboard baru maupun dashboard lama.
         if url0.path == "/api/my-tickets/fetch":
-            if not self._dash_ok(url0):
-                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            return self.send_json(409, {
-                "ok": False,
-                "fetched": False,
-                "error": "Fetch server-side dinonaktifkan. Gunakan Browser Session Bridge melalui tombol Fetch Akun.",
-            })
+            return self._handle_my_tickets_fetch(url0)
 
         secret = self.headers.get("X-Notify-Secret", "")
         if not NOTIFY_SECRET or not _same(secret, NOTIFY_SECRET):
