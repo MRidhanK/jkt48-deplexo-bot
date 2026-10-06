@@ -1006,10 +1006,6 @@ table.hm{border-spacing:4px}
 .my-ticket-toolbar .btn{white-space:nowrap}
 .my-ticket-fetch-btn{font-weight:800;min-width:140px}
 .my-ticket-fetch-card{font-weight:800;text-align:center;padding:24px}
-.my-ticket-bridge-card{border-left:4px solid var(--acc)}
-.my-ticket-bridge-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.my-ticket-bridge-actions .btn{flex:1 1 150px;justify-content:center}
-.my-ticket-bridge-token{font:600 11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all;background:var(--soft);border:1px dashed var(--line);border-radius:10px;padding:9px 10px;margin-top:10px;color:var(--mut)}
 .my-ticket-empty{text-align:center;padding:34px 22px}
 .my-ticket-empty-icon{font-size:42px;margin-bottom:8px}
 .my-ticket-empty h2{margin:4px 0 8px}
@@ -1783,7 +1779,7 @@ async function loadExtra() {
   render();
 }
 
-/* JKT48 MOBILE BOOKMARKLET BRIDGE: browser stays on normal web pages; no extension required. */
+/* JKT48_BROWSER_SESSION_BRIDGE: browser userscript runs on this dashboard page. */
 async function myTicketsRequest(path, options = {}) {
   const sep = path.includes("?") ? "&" : "?";
   const url = path + (KEY ? sep + "key=" + encodeURIComponent(KEY) : "");
@@ -1796,13 +1792,7 @@ async function myTicketsRequest(path, options = {}) {
 async function loadMyTicketsCache() {
   try {
     const j = await myTicketsRequest("/api/my-tickets");
-    if (j.fetched) {
-      myTickets = j;
-      const pending = readPendingMyTicketBridge();
-      if (pending && Number(j.updated_at || 0) * 1000 >= Number(pending.created_at || 0) - 3000) {
-        clearPendingMyTicketBridge();
-      }
-    }
+    if (j.fetched) myTickets = j;
     myTicketsError = "";
   } catch (e) {
     myTicketsError = e?.message || "Gagal membaca cache tiket akun JKT48.";
@@ -1810,68 +1800,13 @@ async function loadMyTicketsCache() {
   if (view === "tickets") render();
 }
 
-function readPendingMyTicketBridge() {
-  try {
-    const raw = sessionStorage.getItem("jkt48-radar-my-tickets-bridge-v1");
-    if (!raw) return null;
-    const item = JSON.parse(raw);
-    if (!item || !item.token || !item.url) return null;
-    if (Date.now() - Number(item.created_at || 0) > 15 * 60 * 1000) {
-      sessionStorage.removeItem("jkt48-radar-my-tickets-bridge-v1");
-      return null;
-    }
-    return item;
-  } catch (_) {
-    return null;
-  }
-}
-
-function savePendingMyTicketBridge(item) {
-  try {
-    sessionStorage.setItem(
-      "jkt48-radar-my-tickets-bridge-v1",
-      JSON.stringify(item)
-    );
-  } catch (_) {}
-}
-
-function clearPendingMyTicketBridge() {
-  try {
-    sessionStorage.removeItem("jkt48-radar-my-tickets-bridge-v1");
-  } catch (_) {}
-}
-
-function copyText(text) {
-  if (!text) return Promise.reject(new Error("Teks kosong."));
-  if (navigator.clipboard?.writeText) {
-    return navigator.clipboard.writeText(text);
-  }
-  return new Promise((resolve, reject) => {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    try {
-      document.execCommand("copy");
-      ta.remove();
-      resolve();
-    } catch (e) {
-      ta.remove();
-      reject(e);
-    }
-  });
-}
-
 async function fetchMyTickets() {
   if (myTicketsLoading) return;
 
   myTicketsLoading = true;
   myTicketsError = "";
-  myTicketsBridgeStatus = "Menyiapkan sesi Fetch Akun…";
-  myTicketsBridgeProgress = 0;
+  myTicketsBridgeStatus = "Membuat token Fetch Akun…";
+  myTicketsBridgeProgress = 5;
 
   if (view === "tickets") render();
 
@@ -1882,64 +1817,71 @@ async function fetchMyTickets() {
       .toISOString()
       .slice(0, 10);
 
+    /*
+     * Token bridge bukan credential akun JKT48.
+     * Token hanya berlaku singkat dan dipakai sekali.
+     */
     const bridge = await myTicketsRequest(
       `/api/my-tickets/bridge-token?from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}`
     );
 
     const bridgeToken = String(bridge?.token || "").trim();
-    const expiresIn = Math.max(30, Number(bridge?.expires_in || 600));
+
     if (!bridgeToken) {
       throw new Error("Bridge token tidak diterima dari server.");
     }
 
     /*
-     * Semua navigasi tetap di tab yang sama.
-     * Bookmarklet dijalankan manual di halaman jkt48.com.
-     * Setelah POST sukses, bookmarklet mengembalikan browser ke URL dashboard ini.
+     * Auto-copy token sebagai backup.
+     * Fetch Akun tetap bisa dilanjutkan meskipun clipboard gagal,
+     * karena token juga dibawa melalui URL hash dan bookmarklet
+     * akan membacanya otomatis.
      */
-    const returnUrl = location.href;
-    const jktUrl = new URL("https://jkt48.com/my-page");
-    // Token + return URL disimpan di hash agar tidak ikut terkirim sebagai HTTP Referer.
-    const handoff = new URLSearchParams({
-      radar_fetch: "1",
-      radar_token: bridgeToken,
-      from: dateFrom,
-      to: dateTo,
-      radar_return: returnUrl
-    });
-    jktUrl.hash = handoff.toString();
+    try {
+      await navigator.clipboard.writeText(bridgeToken);
+      myTicketsBridgeStatus = "✅ Token otomatis disalin · membuka JKT48…";
+    } catch (_) {
+      myTicketsBridgeStatus = "✅ Token siap · membuka JKT48…";
+    }
 
-    const pending = {
-      token: bridgeToken,
-      url: jktUrl.toString(),
-      from: dateFrom,
-      to: dateTo,
-      created_at: Date.now(),
-      expires_at: Date.now() + expiresIn * 1000
-    };
-    savePendingMyTicketBridge(pending);
-
-    myTicketsBridgeStatus = "✅ Siap. Lanjutkan dari halaman JKT48.";
     myTicketsBridgeProgress = 20;
-    myTicketsLoading = false;
 
     if (view === "tickets") render();
+
+    /*
+     * Token diletakkan di HASH (#), bukan query string.
+     * Dengan begitu token tidak ikut dikirim sebagai URL request
+     * ke server jkt48.com.
+     */
+    const hash = new URLSearchParams();
+    hash.set("radar_fetch", "1");
+    hash.set("radar_token", bridgeToken);
+    hash.set("from", dateFrom);
+    hash.set("to", dateTo);
+    hash.set("radar_return", location.origin + location.pathname);
+
+    const jktUrl =
+      "https://jkt48.com/my-page#" + hash.toString();
+
+    /*
+     * Tidak bisa membuka Chrome/Safari bookmark menu secara
+     * programatik; browser sengaja memblokir chrome:// / UI internal.
+     * Yang bisa kita lakukan adalah langsung membuka JKT48.
+     * Setelah itu user cukup memilih bookmarklet yang sudah dibuat.
+     * Token sudah otomatis terbawa, jadi TIDAK perlu mengetik/paste token.
+     */
+    location.assign(jktUrl);
+
   } catch (e) {
     myTicketsBridgeStatus = "";
     myTicketsBridgeProgress = null;
+    myTicketsError =
+      e?.message ||
+      "Gagal menyiapkan Fetch Akun JKT48.";
     myTicketsLoading = false;
-    myTicketsError = e?.message || "Gagal menyiapkan Fetch Akun JKT48.";
+
     if (view === "tickets") render();
   }
-}
-
-// Alias lama supaya bagian UI lain tidak rusak jika masih memanggil loadMyTickets().
-const loadMyTickets = fetchMyTickets;
-
-function isUpcomingTicket(t) {
-  if (!t?.date) return false;
-  const d = new Date(`${t.date}T${t.start_time || "00:00:00"}`);
-  return d.getTime() >= Date.now();
 }
 function ticketDate(t) {
   if (!t?.date) return "-";
@@ -2001,7 +1943,7 @@ function renderMyTickets(){
     const loadingCard = el("div","card my-ticket-fetch-card");
     loadingCard.append(
       el("h2","","🎟️ Fetch Akun JKT48"),
-      el("div","note", myTicketsBridgeStatus || "⏳ Menyiapkan Fetch Akun…")
+      el("div","note", myTicketsBridgeStatus || "⏳ Sedang membaca tiket dari akun JKT48…")
     );
     if (myTicketsBridgeProgress != null) {
       const barWrap = el("div", "my-ticket-progress");
@@ -2011,38 +1953,6 @@ function renderMyTickets(){
       loadingCard.append(barWrap);
     }
     wrap.append(loadingCard);
-    return wrap;
-  }
-
-  const pendingBridge = readPendingMyTicketBridge();
-  if (pendingBridge) {
-    const c = el("div", "card my-ticket-bridge-card");
-    c.append(
-      el("h2", "", "📱 Lanjutkan Fetch dari HP"),
-      el("div", "note", "Browser biasa tidak bisa membaca session JKT48 dari dashboard karena beda domain. Alurnya dibuat tanpa extension: buka halaman JKT48 di tab yang sama, lalu jalankan bookmarklet Fetch JKT48."),
-      el("div", "note", `Bridge aktif sampai sekitar ${new Date(Number(pendingBridge.expires_at || (Date.now() + 10 * 60 * 1000))).toLocaleTimeString("id-ID")}.`),
-      el("div", "my-ticket-bridge-token", "Token: " + pendingBridge.token)
-    );
-    const acts = el("div", "my-ticket-bridge-actions");
-    const openBtn = el("button", "btn buyp", "🌐 Buka JKT48");
-    openBtn.type = "button";
-    openBtn.onclick = () => { location.href = pendingBridge.url; };
-    const copyBtn = el("button", "btn", "📋 Salin Token");
-    copyBtn.type = "button";
-    copyBtn.onclick = async () => {
-      try {
-        await copyText(pendingBridge.token);
-        toast("Bridge token disalin.");
-      } catch (_) {
-        toast("Gagal menyalin token. Tekan lama lalu salin manual.");
-      }
-    };
-    const cancelBtn = el("button", "btn", "✕ Batal");
-    cancelBtn.type = "button";
-    cancelBtn.onclick = () => { clearPendingMyTicketBridge(); myTicketsBridgeStatus = ""; render(); };
-    acts.append(openBtn, copyBtn, cancelBtn);
-    c.append(acts);
-    wrap.append(c);
     return wrap;
   }
 
@@ -2069,8 +1979,8 @@ function renderMyTickets(){
     c.append(
       el("h2","","🔐 Fetch Akun Gagal"),
       el("div","note",myTicketsError),
-      el("div","note","Fetch Akun memakai halaman JKT48 yang sedang login. access_token, refresh_token, cookie, dan cf_clearance tidak dikirim ke backend."),
-      el("div","note","Pastikan bookmarklet Fetch JKT48 sudah dipasang sekali di browser HP/desktop, lalu tekan Fetch Akun lagi.")
+      el("div","note","Fetch Akun bekerja dari halaman JKT48 yang sedang login. Access token, refresh token, dan cf_clearance tidak dikirim ke backend."),
+      el("div","note","Tekan Fetch Akun untuk otomatis menyalin token lalu membuka JKT48. Jalankan bookmarklet Fetch JKT48 yang sudah kamu simpan. Token sudah ikut terbawa, jadi tidak perlu paste manual.")
     );
     wrap.append(c);
     return wrap;
@@ -2081,8 +1991,8 @@ function renderMyTickets(){
     c.append(
       el("div","my-ticket-empty-icon","🎟️"),
       el("h2","","Belum ada data akun"),
-      el("div","note","Tanpa extension: tekan Fetch Akun → buka JKT48 → jalankan bookmarklet Fetch JKT48 → data dikirim ke Radar → otomatis kembali ke dashboard."),
-      el("button","btn buyp","🔄 Siapkan Fetch Akun")
+      el("div","note","Tekan Fetch Akun. Dashboard akan otomatis menyalin token lalu membuka halaman JKT48. Jalankan bookmarklet Fetch JKT48 untuk mengambil semua My Tickets."),
+      el("button","btn buyp","🔄 Fetch Akun Sekarang")
     );
     c.lastChild.onclick=fetchMyTickets;
     wrap.append(c);
