@@ -1,469 +1,1159 @@
 // ==UserScript==
-// @name         JKT48 Account Bridge — Ticket Radar
+// @name         JKT48 Ticket Radar - Browser Ticket Reader
 // @namespace    voltvoltre.jkt48.radar
-// @version      1.0.0
-// @description  Membaca My Tickets dari sesi browser JKT48 lalu mengirim hasilnya ke Ticket Radar.
+// @version      2.0.0
+// @description  Membaca tiket dari halaman My Tickets JKT48 seperti tampilan My Page
 // @match        https://jkt48.com/*
 // @grant        GM_xmlhttpRequest
-// @connect      jkt48.com
 // @connect      *
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
-  "use strict";
+    "use strict";
 
-  const qs = new URLSearchParams(location.search);
+    // =========================================================
+    // CONFIG
+    // =========================================================
 
-  // Hanya berjalan ketika dibuka oleh fitur Fetch Akun
-  if (qs.get("radar_fetch") !== "1") return;
+    const params = new URLSearchParams(location.search);
 
-  const from =
-    qs.get("from") ||
-    new Date().toISOString().slice(0, 10);
-
-  const to =
-    qs.get("to") ||
-    new Date(Date.now() + 32 * 86400000)
-      .toISOString()
-      .slice(0, 10);
-
-  const token = qs.get("token") || "";
-  const callback = qs.get("callback") || "";
-
-  // =========================================================
-  // UI OVERLAY
-  // =========================================================
-
-  function overlay(title, message, ok = false) {
-    let box = document.getElementById("radar-account-bridge");
-
-    if (!box) {
-      box = document.createElement("div");
-      box.id = "radar-account-bridge";
-
-      box.style.cssText = [
-        "position:fixed",
-        "inset:16px",
-        "z-index:2147483647",
-        "display:flex",
-        "align-items:center",
-        "justify-content:center",
-        "pointer-events:none"
-      ].join(";");
-
-      document.documentElement.appendChild(box);
+    if (params.get("radar_fetch") !== "1") {
+        return;
     }
 
-    box.innerHTML = "";
+    const bridgeToken = params.get("token") || "";
+    const callbackUrl = params.get("callback") || "";
 
-    const card = document.createElement("div");
+    const from =
+        params.get("from") ||
+        new Date().toISOString().slice(0, 10);
 
-    card.style.cssText = [
-      "pointer-events:auto",
-      "width:min(480px,calc(100vw - 32px))",
-      "padding:20px",
-      "border-radius:16px",
-      "background:#181b25",
-      "color:#fff",
-      "font:14px/1.55 system-ui,sans-serif",
-      "box-shadow:0 20px 60px rgba(0,0,0,.4)",
-      "border:1px solid rgba(255,255,255,.14)"
-    ].join(";");
+    const to =
+        params.get("to") ||
+        new Date(Date.now() + 32 * 86400000)
+            .toISOString()
+            .slice(0, 10);
 
-    const h = document.createElement("div");
+    // =========================================================
+    // UI
+    // =========================================================
 
-    h.textContent = title;
+    function ensureOverlay() {
+        let overlay = document.getElementById(
+            "jkt48-radar-reader-overlay"
+        );
 
-    h.style.cssText =
-      "font-size:18px;font-weight:700;margin-bottom:8px";
+        if (overlay) {
+            return overlay;
+        }
 
-    const p = document.createElement("div");
+        overlay = document.createElement("div");
 
-    p.textContent = message;
+        overlay.id =
+            "jkt48-radar-reader-overlay";
 
-    p.style.cssText = "opacity:.8;white-space:pre-line";
+        overlay.innerHTML = `
+            <div id="jkt48-radar-reader-card">
+                <div id="jkt48-radar-reader-icon">
+                    🎟️
+                </div>
 
-    card.append(h, p);
-    box.appendChild(card);
-  }
+                <div id="jkt48-radar-reader-title">
+                    JKT48 Ticket Radar
+                </div>
 
-  // =========================================================
-  // HELPER
-  // =========================================================
+                <div id="jkt48-radar-reader-status">
+                    Menyiapkan pembacaan tiket…
+                </div>
 
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
+                <div id="jkt48-radar-reader-progress">
+                    <div></div>
+                </div>
+            </div>
+        `;
 
-  // =========================================================
-  // BACA SESSION AKUN JKT48
-  // =========================================================
+        const style =
+            document.createElement("style");
 
-  async function getSession() {
-    const r = await fetch("/api/auth/session", {
-      method: "GET",
-      credentials: "include",
-      cache: "no-store",
-      headers: {
-        "Accept": "application/json"
-      }
-    });
+        style.textContent = `
+            #jkt48-radar-reader-overlay {
+                position: fixed;
+                inset: 0;
+                z-index: 2147483647;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: rgba(0,0,0,.18);
+                backdrop-filter: blur(5px);
+            }
 
-    if (!r.ok) {
-      throw new Error(
-        "/api/auth/session HTTP " + r.status
-      );
+            #jkt48-radar-reader-card {
+                width: min(460px, calc(100vw - 32px));
+                padding: 28px;
+                border-radius: 22px;
+                background: #fff;
+                box-shadow:
+                    0 25px 80px rgba(0,0,0,.25);
+                text-align: center;
+                font-family:
+                    Inter,
+                    system-ui,
+                    -apple-system,
+                    BlinkMacSystemFont,
+                    "Segoe UI",
+                    sans-serif;
+            }
+
+            #jkt48-radar-reader-icon {
+                font-size: 42px;
+                margin-bottom: 8px;
+            }
+
+            #jkt48-radar-reader-title {
+                font-size: 21px;
+                font-weight: 800;
+                color: #111827;
+                margin-bottom: 8px;
+            }
+
+            #jkt48-radar-reader-status {
+                font-size: 14px;
+                line-height: 1.5;
+                color: #6b7280;
+                white-space: pre-line;
+            }
+
+            #jkt48-radar-reader-progress {
+                width: 100%;
+                height: 7px;
+                margin-top: 20px;
+                overflow: hidden;
+                border-radius: 99px;
+                background: #f1f1f1;
+            }
+
+            #jkt48-radar-reader-progress > div {
+                height: 100%;
+                width: 0%;
+                border-radius: inherit;
+                background: #ef233c;
+                transition: width .2s ease;
+            }
+        `;
+
+        document.head.appendChild(style);
+        document.body.appendChild(overlay);
+
+        return overlay;
     }
 
-    const j = await r.json();
+    function setStatus(
+        message,
+        progress = null
+    ) {
+        const overlay =
+            ensureOverlay();
 
-    if (!j?.user) {
-      throw new Error(
-        "Sesi JKT48 tidak ditemukan. Login dulu di jkt48.com."
-      );
+        const status =
+            overlay.querySelector(
+                "#jkt48-radar-reader-status"
+            );
+
+        const bar =
+            overlay.querySelector(
+                "#jkt48-radar-reader-progress > div"
+            );
+
+        if (status) {
+            status.textContent =
+                message;
+        }
+
+        if (
+            bar &&
+            progress !== null
+        ) {
+            bar.style.width =
+                Math.max(
+                    0,
+                    Math.min(100, progress)
+                ) + "%";
+        }
     }
 
-    return j;
-  }
+    function closeOverlay() {
+        const el =
+            document.getElementById(
+                "jkt48-radar-reader-overlay"
+            );
 
-  // =========================================================
-  // FETCH SATU HALAMAN MY TICKETS
-  // =========================================================
+        if (el) {
+            el.remove();
+        }
+    }
 
-  async function fetchMyTicketsPage(page, accessToken) {
-    const params = new URLSearchParams({
-      lang: "id",
-      limit: "10",
-      page: String(page),
-      from,
-      to
-    });
+    // =========================================================
+    // HELPER
+    // =========================================================
 
-    const headers = {
-      "Accept": "application/json, text/plain, */*",
-      "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache"
+    function sleep(ms) {
+        return new Promise(resolve =>
+            setTimeout(resolve, ms)
+        );
+    }
+
+    function cleanText(value) {
+        return String(value || "")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    function uniqueByJson(items) {
+        const seen = new Set();
+        const result = [];
+
+        for (const item of items) {
+            const key =
+                JSON.stringify(item);
+
+            if (seen.has(key)) {
+                continue;
+            }
+
+            seen.add(key);
+            result.push(item);
+        }
+
+        return result;
+    }
+
+    // =========================================================
+    // DATE PARSER
+    // =========================================================
+
+    const MONTHS = {
+        jan: 0,
+        january: 0,
+        feb: 1,
+        february: 1,
+        mar: 2,
+        march: 2,
+        apr: 3,
+        april: 3,
+        may: 4,
+        jun: 5,
+        june: 5,
+        jul: 6,
+        july: 6,
+        aug: 7,
+        august: 7,
+        sep: 8,
+        september: 8,
+        oct: 9,
+        october: 9,
+        nov: 10,
+        november: 10,
+        dec: 11,
+        december: 11
     };
 
-    // Access token hanya digunakan di browser.
-    // Tidak dikirim ke backend Ticket Radar.
-    if (accessToken) {
-      headers.Authorization = "Bearer " + accessToken;
-    }
+    function parseDateFromText(text) {
+        text = cleanText(text);
 
-    let r = await fetch(
-      "/api/v1/accounts/my-tickets?" +
-        params.toString(),
-      {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers
-      }
-    );
+        // Contoh:
+        // SUN, OCT 11, 2026
+        // SAT, OCT 24, 2026
 
-    // Fallback:
-    // Coba tanpa Authorization apabila API cukup dengan
-    // session/cookie browser.
-    if (r.status === 401) {
-      r = await fetch(
-        "/api/v1/accounts/my-tickets?" +
-          params.toString(),
-        {
-          method: "GET",
-          credentials: "include",
-          cache: "no-store",
-          headers: {
-            "Accept":
-              "application/json, text/plain, */*",
-
-            "Accept-Language":
-              "id-ID,id;q=0.9,en;q=0.8"
-          }
-        }
-      );
-    }
-
-    const text = await r.text();
-
-    let j = null;
-
-    try {
-      j = JSON.parse(text);
-    } catch (_) {
-      // Bukan JSON
-    }
-
-    if (!r.ok) {
-      const cf =
-        r.headers.get("cf-mitigated") || "";
-
-      const server =
-        r.headers.get("server") || "";
-
-      const detail = [
-        "HTTP " + r.status,
-        server && ("server=" + server),
-        cf && ("cf=" + cf)
-      ]
-        .filter(Boolean)
-        .join(" ");
-
-      throw new Error(
-        "My Tickets gagal: " + detail
-      );
-    }
-
-    if (!j || typeof j !== "object") {
-      throw new Error(
-        "My Tickets bukan JSON valid."
-      );
-    }
-
-    if (j.status === false) {
-      throw new Error(
-        String(
-          j.message ||
-          "My Tickets ditolak oleh JKT48."
-        )
-      );
-    }
-
-    return j;
-  }
-
-  // =========================================================
-  // KIRIM HASIL KE BACKEND TICKET RADAR
-  // =========================================================
-
-  function gmPostJSON(url, body) {
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: "POST",
-
-        url,
-
-        // Tidak mengirim cookie browser ke backend.
-        anonymous: true,
-
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-
-        data: JSON.stringify(body),
-
-        timeout: 20000,
-
-        onload(resp) {
-          let j = null;
-
-          try {
-            j = JSON.parse(
-              resp.responseText || "{}"
+        const match =
+            text.match(
+                /(?:MON|TUE|WED|THU|FRI|SAT|SUN)[^A-Z]*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\s+(\d{1,2}),\s+(\d{4})/i
             );
-          } catch (_) {
-            // Backend bukan JSON
-          }
 
-          if (
-            resp.status >= 200 &&
-            resp.status < 300
-          ) {
-            return resolve(j || {});
-          }
-
-          reject(
-            new Error(
-              (j &&
-                (j.error || j.message)) ||
-              ("Backend HTTP " + resp.status)
-            )
-          );
-        },
-
-        ontimeout() {
-          reject(
-            new Error(
-              "Koneksi ke Ticket Radar timeout."
-            )
-          );
-        },
-
-        onerror() {
-          reject(
-            new Error(
-              "Tidak bisa mengirim hasil ke Ticket Radar."
-            )
-          );
+        if (!match) {
+            return "";
         }
-      });
-    });
-  }
 
-  // =========================================================
-  // MAIN
-  // =========================================================
+        const month =
+            MONTHS[
+                match[1].toLowerCase()
+            ];
 
-  async function run() {
-    if (!token || !callback) {
-      throw new Error(
-        "Parameter Browser Bridge tidak lengkap."
-      );
+        const day =
+            Number(match[2]);
+
+        const year =
+            Number(match[3]);
+
+        if (
+            month === undefined ||
+            !year ||
+            !day
+        ) {
+            return "";
+        }
+
+        const d =
+            new Date(
+                year,
+                month,
+                day
+            );
+
+        return [
+            d.getFullYear(),
+            String(
+                d.getMonth() + 1
+            ).padStart(2, "0"),
+            String(
+                d.getDate()
+            ).padStart(2, "0")
+        ].join("-");
     }
 
-    // -------------------------------------------------------
-    // STEP 1 — SESSION
-    // -------------------------------------------------------
+    // =========================================================
+    // CATEGORY
+    // =========================================================
 
-    overlay(
-      "🔐 JKT48 Account Bridge",
-      "Membaca session akun dari browser…"
-    );
+    function detectCategory(text) {
+        const t =
+            cleanText(text)
+                .toLowerCase();
 
-    const session = await getSession();
+        if (
+            t.includes("meet & greet") ||
+            t.includes("meet and greet") ||
+            t.includes("m&g")
+        ) {
+            return "MNG";
+        }
 
-    const accessToken =
-      session?.user?.access_token || "";
+        if (
+            t.includes("2shot") ||
+            t.includes("2 shot")
+        ) {
+            return "2SHOT";
+        }
 
-    if (!accessToken) {
-      throw new Error(
-        "Access token akun JKT48 tidak ditemukan."
-      );
+        if (
+            t.includes("virtual call") ||
+            t.includes("video call") ||
+            t.includes("virtualcall") ||
+            t.includes("video_call") ||
+            /\bvc\b/.test(t)
+        ) {
+            return "VC";
+        }
+
+        if (
+            t.includes("theater") ||
+            t.includes("show") ||
+            t.includes("pajama drive") ||
+            t.includes("seishun girls") ||
+            t.includes("aitakatta")
+        ) {
+            return "SHOW";
+        }
+
+        return "OTHER";
     }
 
-    // -------------------------------------------------------
-    // STEP 2 — MY TICKETS
-    // -------------------------------------------------------
+    // =========================================================
+    // TIME
+    // =========================================================
 
-    overlay(
-      "🎟️ Membaca My Tickets",
-      `${from} → ${to}\nMengambil semua halaman dari akun JKT48…`
-    );
+    function extractTime(text) {
+        const matches =
+            cleanText(text).match(
+                /\b(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})\b/g
+            );
 
-    const all = [];
+        if (!matches || !matches.length) {
+            return {
+                start_time: "",
+                end_time: ""
+            };
+        }
 
-    let page = 1;
-    let totalPage = 1;
-    let guard = 0;
+        const m =
+            matches[0].match(
+                /(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})/
+            );
 
-    // -------------------------------------------------------
-    // PAGINATION
-    // -------------------------------------------------------
+        if (!m) {
+            return {
+                start_time: "",
+                end_time: ""
+            };
+        }
 
-    while (
-      page <= totalPage &&
-      guard < 100
+        return {
+            start_time: m[1],
+            end_time: m[2]
+        };
+    }
+
+    // =========================================================
+    // NUMBER OF TICKETS
+    // =========================================================
+
+    function extractTicketCount(text) {
+        text = cleanText(text);
+
+        let match =
+            text.match(
+                /(\d+)\s+TICKETS?/i
+            );
+
+        if (match) {
+            return Number(match[1]);
+        }
+
+        match =
+            text.match(
+                /(\d+)\s+ENTR(?:Y|IES)/i
+            );
+
+        if (match) {
+            return Number(match[1]);
+        }
+
+        match =
+            text.match(
+                /(\d+)\s+tiket/i
+            );
+
+        if (match) {
+            return Number(match[1]);
+        }
+
+        return 1;
+    }
+
+    // =========================================================
+    // LANE
+    // =========================================================
+
+    function extractLane(text) {
+        const match =
+            cleanText(text).match(
+                /\bLane\s+(\d+)\b/i
+            );
+
+        if (!match) {
+            return "";
+        }
+
+        return match[1];
+    }
+
+    // =========================================================
+    // SESSION
+    // =========================================================
+
+    function extractSession(text) {
+        const match =
+            cleanText(text).match(
+                /\bSesi\s+(\d+)\b/i
+            );
+
+        if (!match) {
+            return "";
+        }
+
+        return "Sesi " + match[1];
+    }
+
+    // =========================================================
+    // MEMBER
+    // =========================================================
+
+    function guessMemberName(
+        container,
+        text,
+        category
     ) {
-      const payload =
-        await fetchMyTicketsPage(
-          page,
-          accessToken
-        );
+        const headings =
+            Array.from(
+                container.querySelectorAll(
+                    "h1,h2,h3,h4,h5,h6,strong,b"
+                )
+            )
+            .map(el =>
+                cleanText(el.innerText)
+            )
+            .filter(Boolean);
 
-      const rows =
-        Array.isArray(payload.data)
-          ? payload.data
-          : [];
+        // Nama member biasanya muncul sebagai heading
+        // di dalam card seperti gambar 2.
+        const blacklist = [
+            "SESI",
+            "OFc / GENERAL",
+            "OFc / GENERAL",
+            "ADD TO CALENDAR",
+            "JKT48 POINTS"
+        ];
 
-      all.push(...rows);
+        for (const h of headings) {
+            const upper =
+                h.toUpperCase();
 
-      const meta =
-        payload._meta || {};
+            if (
+                blacklist.some(
+                    x =>
+                        upper === x ||
+                        upper.includes(x)
+                )
+            ) {
+                continue;
+            }
 
-      totalPage =
-        Math.max(
-          1,
-          Number(
-            meta.total_page || 1
-          )
-        );
+            if (/^\d+/.test(h)) {
+                continue;
+            }
 
-      overlay(
-        "🎟️ Membaca My Tickets",
-        `Halaman ${page}/${totalPage} · ${all.length} record`
-      );
+            if (
+                h.length < 2 ||
+                h.length > 80
+            ) {
+                continue;
+            }
 
-      page += 1;
-      guard += 1;
+            // Jangan ambil judul event
+            if (
+                /pajama drive/i.test(h) ||
+                /festival/i.test(h) ||
+                /jkt48/i.test(h) ||
+                /session/i.test(h)
+            ) {
+                continue;
+            }
 
-      if (page <= totalPage) {
-        await sleep(180);
-      }
-    }
-
-    // -------------------------------------------------------
-    // STEP 3 — KIRIM RESULT KE BACKEND
-    // -------------------------------------------------------
-
-    overlay(
-      "📡 Mengirim Data",
-      `${all.length} record berhasil dibaca.\nMengirim hasil ke Ticket Radar…`
-    );
-
-    const imported =
-      await gmPostJSON(
-        callback,
-        {
-          token,
-
-          from,
-          to,
-
-          pages_fetched:
-            Math.max(
-              1,
-              page - 1
-            ),
-
-          fetched_at:
-            Date.now() / 1000,
-
-          tickets: all
+            if (
+                category === "MNG" ||
+                category === "2SHOT" ||
+                category === "VC"
+            ) {
+                return h;
+            }
         }
-      );
 
-    if (!imported?.ok) {
-      throw new Error(
-        imported?.error ||
-        "Backend menolak hasil My Tickets."
-      );
+        return "";
     }
 
-    // -------------------------------------------------------
-    // SUCCESS
-    // -------------------------------------------------------
+    // =========================================================
+    // CARD DETECTION
+    // =========================================================
 
-    overlay(
-      "✅ Fetch Akun Berhasil",
-      `${all.length} record berhasil dikirim ke Ticket Radar.\nTab ini bisa ditutup.`,
-      true
-    );
+    function findTicketCards() {
+        const candidates =
+            Array.from(
+                document.querySelectorAll(
+                    "article, li, section, div"
+                )
+            );
 
-    setTimeout(() => {
-      try {
-        window.close();
-      } catch (_) {}
-    }, 1400);
-  }
+        const cards = [];
 
-  // =========================================================
-  // ERROR HANDLER
-  // =========================================================
+        for (const el of candidates) {
+            const text =
+                cleanText(
+                    el.innerText || ""
+                );
 
-  run().catch(err => {
-    console.error(
-      "JKT48 Account Bridge:",
-      err
-    );
+            if (!text) {
+                continue;
+            }
 
-    overlay(
-      "❌ Fetch Akun Gagal",
-      err?.message ||
-        String(err)
-    );
-  });
+            const hasDate =
+                parseDateFromText(text);
+
+            const hasCategory =
+                /meet\s*&\s*greet|meet and greet|2shot|2 shot|virtual call|video call|theater show/i
+                    .test(text);
+
+            const hasTicket =
+                /\b\d+\s+(tickets?|entries?)\b/i
+                    .test(text);
+
+            const hasSession =
+                /\bSesi\s+\d+\b/i.test(text);
+
+            const hasLane =
+                /\bLane\s+\d+\b/i.test(text);
+
+            if (
+                !hasDate ||
+                !(
+                    hasCategory ||
+                    hasTicket ||
+                    hasSession ||
+                    hasLane
+                )
+            ) {
+                continue;
+            }
+
+            // Hindari mengambil parent terlalu besar.
+            const childCandidate =
+                candidates.find(
+                    other =>
+                        other !== el &&
+                        el.contains(other) &&
+                        other !== el &&
+                        cleanText(
+                            other.innerText || ""
+                        ).length > 40 &&
+                        cleanText(
+                            other.innerText || ""
+                        ).length <
+                            text.length
+                );
+
+            if (childCandidate) {
+                continue;
+            }
+
+            cards.push(el);
+        }
+
+        return uniqueElements(cards);
+    }
+
+    function uniqueElements(items) {
+        const result = [];
+        const seen = new Set();
+
+        for (const el of items) {
+            let duplicate = false;
+
+            for (const existing of result) {
+                if (
+                    existing === el ||
+                    existing.contains(el) ||
+                    el.contains(existing)
+                ) {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (!duplicate) {
+                result.push(el);
+            }
+        }
+
+        return result;
+    }
+
+    // =========================================================
+    // PARSE CARD
+    // =========================================================
+
+    function parseCard(card) {
+        const text =
+            cleanText(
+                card.innerText || ""
+            );
+
+        const date =
+            parseDateFromText(text);
+
+        if (!date) {
+            return null;
+        }
+
+        const category =
+            detectCategory(text);
+
+        const time =
+            extractTime(text);
+
+        const session =
+            extractSession(text);
+
+        const lane =
+            extractLane(text);
+
+        const boughtCount =
+            extractTicketCount(text);
+
+        const memberName =
+            guessMemberName(
+                card,
+                text,
+                category
+            );
+
+        // Reception
+        let receptionStart = "";
+        let receptionEnd = "";
+
+        const reception =
+            text.match(
+                /RECEPTION\s+(\d{1,2}:\d{2})(?:\s*[–-]\s*(\d{1,2}:\d{2}))?/i
+            );
+
+        if (reception) {
+            receptionStart =
+                reception[1] || "";
+
+            receptionEnd =
+                reception[2] || "";
+        }
+
+        return {
+            category,
+
+            ticket_label:
+                category === "MNG"
+                    ? "Meet & Greet"
+                    : category === "2SHOT"
+                        ? "2 Shoot"
+                        : category === "VC"
+                            ? "Virtual Call"
+                            : category === "SHOW"
+                                ? "Theater Show"
+                                : "Ticket",
+
+            date,
+
+            member_name:
+                memberName,
+
+            session_label:
+                session,
+
+            lane_label:
+                lane
+                    ? "Lane " + lane
+                    : "",
+
+            lane,
+
+            start_time:
+                time.start_time,
+
+            end_time:
+                time.end_time,
+
+            reception_start_time:
+                receptionStart,
+
+            reception_end_time:
+                receptionEnd,
+
+            bought_count:
+                boughtCount,
+
+            used_count: 0,
+
+            source:
+                "browser_dom",
+
+            source_text:
+                text.slice(0, 4000)
+        };
+    }
+
+    // =========================================================
+    // SCROLL PAGE
+    // =========================================================
+
+    async function scrollAll() {
+        let lastHeight =
+            document.documentElement.scrollHeight;
+
+        let stableRounds = 0;
+
+        for (let i = 0; i < 30; i++) {
+            const progress =
+                Math.min(
+                    65,
+                    10 + i * 2
+                );
+
+            setStatus(
+                "Membaca halaman My Tickets…\n" +
+                "Memuat seluruh daftar tiket...",
+                progress
+            );
+
+            window.scrollTo({
+                top:
+                    document.documentElement
+                        .scrollHeight,
+                behavior: "smooth"
+            });
+
+            await sleep(700);
+
+            const newHeight =
+                document.documentElement
+                    .scrollHeight;
+
+            if (
+                newHeight === lastHeight
+            ) {
+                stableRounds += 1;
+            } else {
+                stableRounds = 0;
+            }
+
+            lastHeight = newHeight;
+
+            if (stableRounds >= 3) {
+                break;
+            }
+        }
+
+        window.scrollTo({
+            top: 0,
+            behavior: "smooth"
+        });
+
+        await sleep(500);
+    }
+
+    // =========================================================
+    // FIND BEST PAGE
+    // =========================================================
+
+    async function waitForTicketPage() {
+        for (let i = 0; i < 30; i++) {
+            const bodyText =
+                cleanText(
+                    document.body?.innerText || ""
+                );
+
+            if (
+                /pajama drive/i.test(bodyText) ||
+                /meet\s*&\s*greet/i.test(bodyText) ||
+                /meet and greet/i.test(bodyText) ||
+                /2shot/i.test(bodyText) ||
+                /virtual call/i.test(bodyText)
+            ) {
+                return;
+            }
+
+            await sleep(500);
+        }
+    }
+
+    // =========================================================
+    // FIND / NAVIGATE TO MY TICKETS
+    // =========================================================
+
+    async function openMyTickets() {
+        const current =
+            location.pathname.toLowerCase();
+
+        // Sudah di halaman tickets
+        if (
+            current.includes("ticket") ||
+            current.includes("my-page")
+        ) {
+            return true;
+        }
+
+        // Cari link My Tickets / ticket di halaman
+        const links =
+            Array.from(
+                document.querySelectorAll("a")
+            );
+
+        const ticketLink =
+            links.find(a =>
+                /my tickets|ticket|tiket/i.test(
+                    cleanText(a.innerText)
+                )
+            );
+
+        if (ticketLink) {
+            ticketLink.click();
+
+            await sleep(1500);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    // =========================================================
+    // SEND TO BACKEND
+    // =========================================================
+
+    function sendToBackend(
+        tickets
+    ) {
+        return new Promise(
+            (resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: "POST",
+
+                    url: callbackUrl,
+
+                    anonymous: true,
+
+                    headers: {
+                        "Content-Type":
+                            "application/json",
+
+                        "Accept":
+                            "application/json"
+                    },
+
+                    data: JSON.stringify({
+                        token:
+                            bridgeToken,
+
+                        from,
+
+                        to,
+
+                        fetched_at:
+                            Math.floor(
+                                Date.now() / 1000
+                            ),
+
+                        source:
+                            "jkt48_browser_dom",
+
+                        tickets
+                    }),
+
+                    timeout: 30000,
+
+                    onload(response) {
+                        let result = {};
+
+                        try {
+                            result =
+                                JSON.parse(
+                                    response.responseText ||
+                                    "{}"
+                                );
+                        } catch (_) {}
+
+                        if (
+                            response.status >= 200 &&
+                            response.status < 300
+                        ) {
+                            resolve(result);
+                            return;
+                        }
+
+                        reject(
+                            new Error(
+                                result.error ||
+                                result.message ||
+                                "Backend HTTP " +
+                                response.status
+                            )
+                        );
+                    },
+
+                    onerror() {
+                        reject(
+                            new Error(
+                                "Gagal menghubungi backend Ticket Radar."
+                            )
+                        );
+                    },
+
+                    ontimeout() {
+                        reject(
+                            new Error(
+                                "Request ke backend timeout."
+                            )
+                        );
+                    }
+                });
+            }
+        );
+    }
+
+    // =========================================================
+    // MAIN
+    // =========================================================
+
+    async function main() {
+        if (!bridgeToken) {
+            throw new Error(
+                "Bridge token tidak ditemukan."
+            );
+        }
+
+        if (!callbackUrl) {
+            throw new Error(
+                "Callback backend tidak ditemukan."
+            );
+        }
+
+        ensureOverlay();
+
+        setStatus(
+            "Membuka halaman tiket akun JKT48…",
+            5
+        );
+
+        const opened =
+            await openMyTickets();
+
+        if (!opened) {
+            throw new Error(
+                "Link My Tickets tidak ditemukan di halaman JKT48."
+            );
+        }
+
+        await waitForTicketPage();
+
+        setStatus(
+            "Halaman tiket ditemukan.\n" +
+            "Membaca daftar seperti tampilan My Page…",
+            12
+        );
+
+        await sleep(1000);
+
+        await scrollAll();
+
+        setStatus(
+            "Menganalisis kartu tiket…",
+            72
+        );
+
+        const cards =
+            findTicketCards();
+
+        console.log(
+            "[JKT48 Radar] Ticket cards:",
+            cards.length
+        );
+
+        const tickets = [];
+
+        for (const card of cards) {
+            try {
+                const parsed =
+                    parseCard(card);
+
+                if (!parsed) {
+                    continue;
+                }
+
+                tickets.push(parsed);
+            } catch (error) {
+                console.warn(
+                    "[JKT48 Radar] Card parse error:",
+                    error
+                );
+            }
+        }
+
+        const uniqueTickets =
+            dedupeTickets(tickets);
+
+        console.log(
+            "[JKT48 Radar] Parsed tickets:",
+            uniqueTickets
+        );
+
+        setStatus(
+            `Berhasil membaca ${uniqueTickets.length} tiket.\n` +
+            "Mengirim ke dashboard…",
+            88
+        );
+
+        const response =
+            await sendToBackend(
+                uniqueTickets
+            );
+
+        if (
+            response &&
+            response.ok === false
+        ) {
+            throw new Error(
+                response.error ||
+                response.message ||
+                "Backend menolak data."
+            );
+        }
+
+        setStatus(
+            `✅ ${uniqueTickets.length} tiket berhasil dibaca.\n` +
+            "Data sudah dikirim ke Ticket Radar.",
+            100
+        );
+
+        await sleep(1800);
+
+        closeOverlay();
+
+        // Jangan paksa close apabila Chrome
+        // menolak window.close()
+        try {
+            window.close();
+        } catch (_) {}
+    }
+
+    // =========================================================
+    // DEDUPE
+    // =========================================================
+
+    function dedupeTickets(
+        tickets
+    ) {
+        const map =
+            new Map();
+
+        for (const ticket of tickets) {
+            const key = [
+                ticket.category,
+                ticket.date,
+                ticket.member_name,
+                ticket.session_label,
+                ticket.lane,
+                ticket.start_time,
+                ticket.end_time,
+                ticket.bought_count
+            ].join("|");
+
+            if (!map.has(key)) {
+                map.set(
+                    key,
+                    ticket
+                );
+            }
+        }
+
+        return Array.from(
+            map.values()
+        );
+    }
+
+    // =========================================================
+    // ERROR
+    // =========================================================
+
+    main().catch(error => {
+        console.error(
+            "[JKT48 Radar]",
+            error
+        );
+
+        ensureOverlay();
+
+        setStatus(
+            "❌ Fetch Akun gagal\n\n" +
+            (
+                error?.message ||
+                String(error)
+            ),
+            0
+        );
+    });
 
 })();
