@@ -1785,7 +1785,7 @@ async function loadExtra() {
   render();
 }
 
-/* JKT48_SERVER_SESSION_AUTH: Radar server login + direct My Tickets fetch. */
+/* JKT48_TOKEN_AUTH: connect once with an existing JKT48 API access token. */
 async function myTicketsRequest(path, options = {}) {
   const sep = path.includes("?") ? "&" : "?";
   const url = path + (KEY ? sep + "key=" + encodeURIComponent(KEY) : "");
@@ -1801,8 +1801,9 @@ async function loadMyTicketsCache() {
   try {
     const j = await myTicketsRequest("/api/my-tickets");
     myTickets = j.fetched ? j : null;
-    myTicketsError = "";
+    myTicketsAuthenticated = !!j.authenticated;
     if (j.profile) myTicketsAccount = j.profile;
+    myTicketsError = "";
   } catch (e) {
     myTicketsError = e?.message || "Gagal membaca data Jadwal Saya.";
   }
@@ -1820,43 +1821,55 @@ async function loadJKT48AccountStatus() {
   }
 }
 
-function showJKT48LoginPrompt() {
-  const email = prompt("Email akun JKT48:", "");
-  if (email == null) return;
-  const password = prompt("Password akun JKT48:", "");
-  if (password == null) return;
-  loginJKT48Account(email.trim(), password);
+function showJKT48TokenPrompt() {
+  const token = prompt(
+    "Masukkan access_token JKT48\n\n" +
+    "Token hanya dipakai untuk menghubungkan akun ke server Radar dan tidak disimpan di localStorage.",
+    ""
+  );
+
+  if (token == null) return;
+
+  const value = token.trim();
+  if (!value) {
+    myTicketsError = "Access token kosong.";
+    render();
+    return;
+  }
+
+  connectJKT48Token(value);
 }
 
-async function loginJKT48Account(email, password) {
+async function connectJKT48Token(accessToken) {
   if (myTicketsLoading) return;
+
   myTicketsLoading = true;
   myTicketsError = "";
-  myTicketsBridgeStatus = "🔐 Menghubungkan akun JKT48 ke server Radar…";
-  myTicketsBridgeProgress = 10;
+  myTicketsBridgeStatus = "🔐 Memverifikasi access token JKT48…";
+  myTicketsBridgeProgress = 20;
   if (view === "tickets") render();
 
   try {
-    const result = await myTicketsRequest("/api/jkt48/login", {
+    const result = await myTicketsRequest("/api/jkt48/token", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Accept": "application/json"
       },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ access_token: accessToken })
     });
 
     myTicketsAuthenticated = !!result.authenticated;
     myTicketsAccount = result.profile || {};
-    myTicketsBridgeStatus = "✅ Akun terhubung · mengambil Jadwal Saya…";
-    myTicketsBridgeProgress = 35;
+    myTicketsBridgeStatus = "✅ Token terhubung · mengambil Jadwal Saya…";
+    myTicketsBridgeProgress = 45;
 
     const fetched = await fetchMyTickets(true);
     if (!fetched?.ok) {
-      throw new Error(fetched?.error || "Fetch tiket gagal setelah login.");
+      throw new Error(fetched?.error || "Fetch tiket gagal setelah token terhubung.");
     }
   } catch (e) {
-    myTicketsError = e?.message || "Login JKT48 gagal.";
+    myTicketsError = e?.message || "Gagal menghubungkan access token JKT48.";
     myTicketsLoading = false;
     myTicketsBridgeStatus = "";
     myTicketsBridgeProgress = null;
@@ -1874,6 +1887,7 @@ async function logoutJKT48Account() {
     myTicketsError = e?.message || "Logout gagal.";
     return;
   }
+
   myTickets = null;
   myTicketsAuthenticated = false;
   myTicketsAccount = {};
@@ -1886,7 +1900,7 @@ async function fetchMyTickets(autoAfterLogin = false) {
 
   if (!myTicketsAuthenticated) {
     myTicketsLoading = false;
-    showJKT48LoginPrompt();
+    showJKT48TokenPrompt();
     return;
   }
 
@@ -2043,12 +2057,12 @@ function renderMyTickets(){
   if(myTicketsError){
     const c=el("div","card");
     c.append(
-      el("h2","","🔐 Fetch Akun Gagal"),
+      el("h2","","🔐 Akun JKT48 belum terhubung"),
       el("div","note",myTicketsError),
-      el("div","note","Fetch Akun sekarang memakai session JKT48 yang disimpan sementara di server Radar. Token dan cookie tidak ditampilkan ke browser Radar."),
-      el("button","btn buyp","🔐 Hubungkan Akun JKT48")
+      el("div","note","Hubungkan access_token JKT48 sekali. Setelah berhasil, Fetch Akun berikutnya berjalan langsung dari Dashboard dan jadwal tampil di sini tanpa membuka website JKT48."),
+      el("button","btn buyp","🔐 Hubungkan Token JKT48")
     );
-    c.lastChild.onclick = showJKT48LoginPrompt;
+    c.lastChild.onclick = showJKT48TokenPrompt;
     wrap.append(c);
     return wrap;
   }
@@ -2058,7 +2072,7 @@ function renderMyTickets(){
     c.append(
       el("div","my-ticket-empty-icon","🎟️"),
       el("h2","",myTicketsAuthenticated ? "Siap mengambil jadwal" : "Hubungkan akun JKT48"),
-      el("div","note", myTicketsAuthenticated ? "Akun JKT48 sudah terhubung ke server. Tekan Fetch Akun untuk mengambil jadwal terbaru." : "Hubungkan akun JKT48 sekali. Setelah tersambung, Fetch Akun berikutnya tetap dilakukan langsung dari Dashboard tanpa membuka website JKT48."),
+      el("div","note", myTicketsAuthenticated ? "Akun JKT48 sudah terhubung ke server. Tekan Fetch Akun untuk mengambil jadwal terbaru." : "Hubungkan access_token JKT48 sekali. Setelah terhubung, Fetch Akun berikutnya berjalan langsung dari Dashboard tanpa membuka website JKT48."),
       el("button","btn buyp","🔄 Fetch Akun Sekarang")
     );
     c.lastChild.onclick=fetchMyTickets;

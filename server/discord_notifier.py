@@ -1861,6 +1861,9 @@ jkt48_account_profile = {}
 jkt48_account_connected_at = 0.0
 jkt48_account_last_error = ""
 jkt48_account_email = ""
+# Bearer access token untuk API My Tickets. Hanya disimpan di RAM proses.
+# Bisa diisi saat runtime lewat /api/jkt48/token atau saat startup lewat env.
+jkt48_account_access_token = os.environ.get("JKT48_ACCESS_TOKEN", "").strip()
 
 def _jkt48_account_build_session():
     kwargs = {"impersonate": JKT48_ACCOUNT_IMPERSONATE or "chrome"}
@@ -1897,7 +1900,7 @@ def _jkt48_account_extract_profile(payload):
 
 def jkt48_account_status():
     with jkt48_account_lock:
-        connected = bool(jkt48_account_session)
+        connected = bool(jkt48_account_access_token)
         profile = dict(jkt48_account_profile)
         connected_at = jkt48_account_connected_at
         last_error = jkt48_account_last_error
@@ -1908,7 +1911,92 @@ def jkt48_account_status():
         "connected_at": connected_at or None,
         "email_hint": (email[:2] + "***" if email and "@" not in email[:2] else ""),
         "error": last_error,
+        "auth_mode": "bearer",
     }
+
+
+def jkt48_account_connect_token(access_token):
+    """Connect an existing JKT48 API access token without opening jkt48.com in the dashboard."""
+    global jkt48_account_session, jkt48_account_access_token
+    global jkt48_account_connected_at, jkt48_account_last_error
+
+    token = str(access_token or "").strip()
+    if not token or len(token) < 20:
+        raise ValueError("Access token JKT48 tidak valid atau terlalu pendek.")
+    if len(token) > 20000:
+        raise ValueError("Access token JKT48 terlalu panjang.")
+
+    session = _jkt48_account_build_session()
+
+    # Verifikasi token langsung ke endpoint My Tickets. Tidak memakai /api/auth/csrf.
+    try:
+        response, payload = fetch_my_tickets_page(
+            session, 1,
+            datetime.now(LOCAL_TZ).strftime("%Y-%m-%d"),
+            (datetime.now(LOCAL_TZ) + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d"),
+            token,
+        )
+    except Exception as exc:
+        try:
+            session.close()
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Tidak dapat memverifikasi access token JKT48: {type(exc).__name__}: {str(exc)[:250]}"
+        )
+
+    status = int(response.status_code)
+    if status == 401:
+        try:
+            session.close()
+        except Exception:
+            pass
+        raise RuntimeError("Access token JKT48 ditolak (HTTP 401). Token mungkin sudah kedaluwarsa.")
+    if status == 403:
+        try:
+            session.close()
+        except Exception:
+            pass
+        raise RuntimeError(
+            "JKT48 mengembalikan HTTP 403 dari server Radar saat memverifikasi token. "
+            "Access token valid saja belum cukup untuk melewati proteksi jaringan JKT48/Cloudflare."
+        )
+    if status != 200:
+        try:
+            session.close()
+        except Exception:
+            pass
+        raise RuntimeError(f"Verifikasi My Tickets gagal: HTTP {status}.")
+    if not isinstance(payload, dict):
+        try:
+            session.close()
+        except Exception:
+            pass
+        raise RuntimeError("Response My Tickets saat verifikasi token bukan JSON valid.")
+    if payload.get("status") is False:
+        try:
+            session.close()
+        except Exception:
+            pass
+        raise RuntimeError(str(payload.get("message") or "API My Tickets menolak access token."))
+
+    with jkt48_account_lock:
+        old = jkt48_account_session
+        jkt48_account_session = session
+        jkt48_account_access_token = token
+        jkt48_account_connected_at = time.time()
+        jkt48_account_last_error = ""
+        # Simpan hanya display profile jika suatu saat endpoint session dapat diakses.
+        profile = jkt48_account_profile or {}
+
+    try:
+        if old and old is not session:
+            old.close()
+    except Exception:
+        pass
+
+    return jkt48_account_status()
+
 
 def jkt48_account_login(email, password):
     global jkt48_account_session, jkt48_account_profile
@@ -2004,11 +2092,13 @@ def jkt48_account_login(email, password):
     return jkt48_account_status()
 
 def jkt48_account_logout():
-    global jkt48_account_session, jkt48_account_profile
-    global jkt48_account_connected_at, jkt48_account_last_error, jkt48_account_email
+    global jkt48_account_session, jkt48_account_access_token
+    global jkt48_account_profile, jkt48_account_connected_at
+    global jkt48_account_last_error, jkt48_account_email
     with jkt48_account_lock:
         session = jkt48_account_session
         jkt48_account_session = None
+        jkt48_account_access_token = ""
         jkt48_account_profile = {}
         jkt48_account_connected_at = 0.0
         jkt48_account_last_error = ""
@@ -3222,41 +3312,18 @@ def fetch_my_tickets_page(session, page, date_from, date_to, access_token=""):
 
 
 def fetch_my_tickets(date_from, date_to):
-    """Fetch every page using the authenticated JKT48 session held by the Radar server."""
+    """Fetch every My Tickets page using a bearer token held only in server RAM."""
     global jkt48_account_last_error, jkt48_account_profile
 
-    session = _get_jkt48_account_session()
-    if session is None:
-        return {
-            "ok": False,
-            "authenticated": False,
-            "error": "Akun JKT48 belum terhubung. Login dulu dari Dashboard Radar.",
-            "tickets": [],
-        }
+    with jkt48_account_lock:
+        session = jkt48_account_session
+        access_token = jkt48_account_access_token
 
-    # Refresh/check current NextAuth session first. This may also renew an access token internally.
-    try:
-        session_r, session_payload = _jkt48_account_session_payload(session)
-        if session_r.status_code != 200 or not isinstance(session_payload.get("user"), dict):
-            with jkt48_account_lock:
-                jkt48_account_last_error = "Session JKT48 sudah tidak valid. Silakan login ulang."
-            return {
-                "ok": False,
-                "authenticated": False,
-                "error": "Session JKT48 sudah tidak valid. Silakan login ulang dari Dashboard Radar.",
-                "tickets": [],
-            }
-        with jkt48_account_lock:
-            jkt48_account_profile = _jkt48_account_extract_profile(session_payload)
-        session_user = session_payload.get("user") if isinstance(session_payload, dict) else {}
-        account_access_token = str((session_user or {}).get("access_token") or "").strip()
-    except Exception as exc:
-        with jkt48_account_lock:
-            jkt48_account_last_error = f"Session check gagal: {type(exc).__name__}: {str(exc)[:160]}"
+    if session is None or not access_token:
         return {
             "ok": False,
             "authenticated": False,
-            "error": "Tidak dapat memeriksa session JKT48 dari server.",
+            "error": "Akun JKT48 belum terhubung. Hubungkan access token terlebih dahulu dari Dashboard Radar.",
             "tickets": [],
         }
 
@@ -3266,18 +3333,31 @@ def fetch_my_tickets(date_from, date_to):
     page_count = 0
 
     while page <= total_page and page_count < 100:
-        response, payload = fetch_my_tickets_page(session, page, date_from, date_to, account_access_token)
+        try:
+            response, payload = fetch_my_tickets_page(
+                session, page, date_from, date_to, access_token
+            )
+        except Exception as exc:
+            with jkt48_account_lock:
+                jkt48_account_last_error = f"My Tickets request gagal: {type(exc).__name__}: {str(exc)[:220]}"
+            return {
+                "ok": False,
+                "authenticated": True,
+                "error": "Request ke JKT48 gagal: " + str(exc)[:400],
+                "tickets": [],
+            }
+
         status = int(response.status_code)
 
         if status == 401:
-            # Session mungkin baru saja di-refresh oleh NextAuth. Coba session endpoint sekali lagi.
-            try:
-                session_r, session_payload = _jkt48_account_session_payload(session)
-                if session_r.status_code == 200 and isinstance(session_payload.get("user"), dict):
-                    response, payload = fetch_my_tickets_page(session, page, date_from, date_to, account_access_token)
-                    status = int(response.status_code)
-            except Exception:
-                pass
+            with jkt48_account_lock:
+                jkt48_account_last_error = "Access token JKT48 sudah tidak valid."
+            return {
+                "ok": False,
+                "authenticated": False,
+                "error": "Access token JKT48 sudah tidak valid. Hubungkan token baru.",
+                "tickets": [],
+            }
 
         if status == 403:
             with jkt48_account_lock:
@@ -3285,7 +3365,10 @@ def fetch_my_tickets(date_from, date_to):
             return {
                 "ok": False,
                 "authenticated": True,
-                "error": "JKT48/Cloudflare menolak koneksi server Radar (HTTP 403). Tambahkan JKT48_ACCOUNT_PROXY jika diperlukan.",
+                "error": (
+                    "JKT48 mengembalikan HTTP 403 dari server Radar. "
+                    "Artinya token sudah sampai di server, tetapi koneksi server Radar masih ditolak oleh proteksi JKT48/Cloudflare."
+                ),
                 "tickets": [],
             }
 
@@ -3327,6 +3410,8 @@ def fetch_my_tickets(date_from, date_to):
 
         page += 1
         page_count += 1
+        if page <= total_page:
+            time.sleep(0.25)
 
     normalized = [normalize_my_ticket(x) for x in all_rows]
 
@@ -3351,22 +3436,22 @@ def fetch_my_tickets(date_from, date_to):
     unique.sort(key=lambda x: (
         str(x.get("date") or "9999-99-99"),
         str(x.get("start_time") or "99:99:99"),
-        str(x.get("member_name") or x.get("name") or ""),
+        str(x.get("member_name") or ""),
         str(x.get("session_label") or ""),
         str(x.get("lane_label") or ""),
     ))
 
     counts = {"MNG": 0, "2SHOT": 0, "VC": 0, "SHOW": 0, "OTHER": 0}
     for ticket in unique:
-        cat = ticket.get("category") or "OTHER"
-        counts[cat] = counts.get(cat, 0) + 1
+        category = ticket.get("category") or "OTHER"
+        counts[category] = counts.get(category, 0) + 1
+
+    with jkt48_account_lock:
+        jkt48_account_last_error = ""
 
     return {
         "ok": True,
-        "fetched": True,
-        "fetching": False,
         "authenticated": True,
-        "source": "server-session",
         "profile": dict(jkt48_account_profile),
         "from": date_from,
         "to": date_to,
@@ -3377,8 +3462,6 @@ def fetch_my_tickets(date_from, date_to):
         "tickets": unique,
         "updated_at": time.time(),
     }
-
-
 
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
@@ -3725,34 +3808,34 @@ class Handler(BaseHTTPRequestHandler):
         if url0.path.startswith("/api/push/"):
             return self.handle_push_post(url0)
 
-        if url0.path == "/api/jkt48/login":
+        if url0.path == "/api/jkt48/token":
             if not self._dash_ok(url0):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
             try:
                 length = int(self.headers.get("Content-Length", "0") or 0)
             except (TypeError, ValueError):
                 length = 0
-            if length <= 0 or length > 12000:
-                return self.send_json(413, {"ok": False, "error": "Payload login tidak valid."})
+            if length <= 0 or length > 25000:
+                return self.send_json(413, {"ok": False, "error": "Payload token tidak valid."})
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
             except Exception:
-                return self.send_json(400, {"ok": False, "error": "Payload login harus JSON."})
-            email = str(payload.get("email") or "").strip() if isinstance(payload, dict) else ""
-            password = str(payload.get("password") or "") if isinstance(payload, dict) else ""
+                return self.send_json(400, {"ok": False, "error": "Payload token harus JSON."})
+            token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
             try:
-                status = jkt48_account_login(email, password)
+                status = jkt48_account_connect_token(token)
                 return self.send_json(200, {"ok": True, **status})
             except Exception as error:
                 traceback.print_exc()
                 with jkt48_account_lock:
                     jkt48_account_last_error = f"{type(error).__name__}: {str(error)[:300]}"
-                return self.send_json(502, {"ok": False, "error": str(error)[:500]})
+                return self.send_json(502, {"ok": False, "error": str(error)[:600]})
 
-        if url0.path == "/api/jkt48/logout":
-            if not self._dash_ok(url0):
-                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            return self.send_json(200, {"ok": True, **jkt48_account_logout()})
+        if url0.path == "/api/jkt48/login":
+            return self.send_json(410, {
+                "ok": False,
+                "error": "Login email/password server-side dinonaktifkan karena endpoint CSRF JKT48 ditolak Cloudflare. Gunakan access token API JKT48 melalui /api/jkt48/token.",
+            })
 
         # Browser bridge legacy endpoint kept for backwards compatibility.
         # oleh browser yang sedang login. Token bersifat singkat dan one-time per proses fetch.
