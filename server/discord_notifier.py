@@ -250,62 +250,140 @@ STATE_FILE = Path(os.environ.get("STATE_FILE") or SUBS_FILE.with_name("state.jso
 DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()
 
 
-# ------------------------------------------------------------------ cari dashboard.html di beberapa lokasi
+# ------------------------------------------------------------------
+# Resolve dashboard.html
+# ------------------------------------------------------------------
+
 def _resolve_dashboard_file() -> Path:
-    # 1. Env var eksplisit
+    here = Path(__file__).resolve().parent
+
     env_path = os.environ.get("DASHBOARD_FILE", "").strip()
+
     if env_path:
         p = Path(env_path)
-        if p.is_file():
-            return p
-        print(f"[WARN] DASHBOARD_FILE={env_path} tidak ditemukan, fallback ke pencarian otomatis.")
 
-    here = Path(__file__).resolve().parent
+        # 1. Absolute path
+        if p.is_absolute() and p.is_file():
+            return p
+
+        # 2. Relative terhadap folder project / current working directory
+        relative_candidates = [
+            Path.cwd() / p,
+            here / p,
+            here.parent / p,
+        ]
+
+        for candidate in relative_candidates:
+            if candidate.is_file():
+                return candidate
+
+        print(
+            f"[WARN] DASHBOARD_FILE={env_path} tidak ditemukan. "
+            f"Fallback ke pencarian otomatis."
+        )
+
     candidates = [
-        here / "dashboard.html",                    # sebelah script
-        here / "server" / "dashboard.html",         # script di root, dashboard di server/
-        here.parent / "server" / "dashboard.html",  # script di subfolder, dashboard di ../server/
-        here.parent / "dashboard.html",             # dashboard di parent
-        Path.cwd() / "dashboard.html",              # current working dir
+        here / "dashboard.html",
+        here / "server" / "dashboard.html",
+        here.parent / "server" / "dashboard.html",
+        here.parent / "dashboard.html",
+        Path.cwd() / "dashboard.html",
         Path.cwd() / "server" / "dashboard.html",
     ]
+
     for c in candidates:
         if c.is_file():
             return c
-    return candidates[0]  # default: sebelah script (untuk pesan error)
+
+    return here / "dashboard.html"
 
 
 DASHBOARD_FILE = _resolve_dashboard_file()
-print(f"[INIT] Dashboard file: {DASHBOARD_FILE} (exists={DASHBOARD_FILE.is_file()})")
+
+print(
+    f"[INIT] Dashboard file: "
+    f"{DASHBOARD_FILE} "
+    f"(exists={DASHBOARD_FILE.is_file()})"
+)
 
 
-# ------------------------------------------------------------------ cari mobile-sync.html di beberapa lokasi
+# ------------------------------------------------------------------
+# Resolve mobile-sync.html
+# ------------------------------------------------------------------
+
 def _resolve_mobile_sync_file() -> Path:
-    # 1. Env var eksplisit
+    here = Path(__file__).resolve().parent
+
     env_path = os.environ.get("MOBILE_SYNC_FILE", "").strip()
+
     if env_path:
         p = Path(env_path)
-        if p.is_file():
-            return p
-        print(f"[WARN] MOBILE_SYNC_FILE={env_path} tidak ditemukan, fallback ke pencarian otomatis.")
 
-    here = Path(__file__).resolve().parent
+        # 1. Absolute path
+        if p.is_absolute() and p.is_file():
+            return p
+
+        # 2. Relative terhadap project
+        relative_candidates = [
+            Path.cwd() / p,
+            here / p,
+            here.parent / p,
+        ]
+
+        for candidate in relative_candidates:
+            if candidate.is_file():
+                return candidate
+
+        print(
+            f"[WARN] MOBILE_SYNC_FILE={env_path} tidak ditemukan. "
+            f"Fallback ke pencarian otomatis."
+        )
+
     candidates = [
-        here / "mobile-sync.html",                    # sebelah script
-        here / "server" / "mobile-sync.html",         # script di root, file di server/
-        here.parent / "server" / "mobile-sync.html",  # script di subfolder, file di ../server/
-        here.parent / "mobile-sync.html",             # file di parent
-        Path.cwd() / "mobile-sync.html",              # current working dir
+        here / "mobile-sync.html",
+        here / "server" / "mobile-sync.html",
+        here.parent / "server" / "mobile-sync.html",
+        here.parent / "mobile-sync.html",
+        Path.cwd() / "mobile-sync.html",
         Path.cwd() / "server" / "mobile-sync.html",
     ]
+
     for c in candidates:
         if c.is_file():
             return c
-    return candidates[1]  # default: server/ di sebelah script (untuk pesan error)
+
+    return here / "server" / "mobile-sync.html"
 
 
 MOBILE_SYNC_FILE = _resolve_mobile_sync_file()
-print(f"[INIT] Mobile sync file: {MOBILE_SYNC_FILE} (exists={MOBILE_SYNC_FILE.is_file()})")
+
+print(
+    f"[INIT] Mobile sync file: "
+    f"{MOBILE_SYNC_FILE} "
+    f"(exists={MOBILE_SYNC_FILE.is_file()})"
+)
+
+print("=" * 60)
+print("[FILESYSTEM]")
+print("CWD            :", Path.cwd())
+print("SCRIPT         :", Path(__file__).resolve())
+print("SCRIPT DIR     :", Path(__file__).resolve().parent)
+print("DASHBOARD      :", DASHBOARD_FILE)
+print("DASHBOARD OK   :", DASHBOARD_FILE.is_file())
+print("MOBILE SYNC    :", MOBILE_SYNC_FILE)
+print("MOBILE SYNC OK :", MOBILE_SYNC_FILE.is_file())
+
+server_dir = Path(__file__).resolve().parent / "server"
+
+print("SERVER DIR     :", server_dir)
+print("SERVER EXISTS  :", server_dir.is_dir())
+
+if server_dir.is_dir():
+    print("SERVER CONTENT :", [
+        p.name for p in server_dir.iterdir()
+    ])
+
+print("=" * 60)
 
 COLOR_GREEN = 0x2ECC71
 COLOR_RED = 0xE74C3C
