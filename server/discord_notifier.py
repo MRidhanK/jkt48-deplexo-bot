@@ -2918,6 +2918,9 @@ def create_my_tickets_bridge(date_from, date_to):
             "result": None,
             "error": "",
         }
+        # Flag ini hanya untuk status UI; server tidak melakukan request ke JKT48.
+        global my_tickets_fetching
+        my_tickets_fetching = True
     return token
 
 
@@ -2943,6 +2946,9 @@ def set_my_tickets_bridge_result(token, result=None, error=""):
         item["status"] = "success" if result is not None else "error"
         item["result"] = result
         item["error"] = str(error or "")[:500]
+        if result is None:
+            global my_tickets_fetching
+            my_tickets_fetching = False
         # Beri dashboard sedikit waktu untuk polling hasil setelah import selesai.
         item["expires_at"] = time.time() + 120
         return True
