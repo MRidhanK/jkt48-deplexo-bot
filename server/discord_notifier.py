@@ -1849,7 +1849,7 @@ my_tickets_fetching = False
 # Browser Bridge:
 # Browser yang sudah login ke jkt48.com melakukan request My Tickets secara same-origin.
 # Server hanya menerima hasil JSON dari browser melalui one-time token berumur singkat.
-MY_TICKETS_BRIDGE_TTL = int(os.environ.get("MY_TICKETS_BRIDGE_TTL", "120"))
+MY_TICKETS_BRIDGE_TTL = int(os.environ.get("MY_TICKETS_BRIDGE_TTL", "600"))
 my_tickets_bridge_lock = threading.Lock()
 my_tickets_bridge = {}
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
@@ -2950,7 +2950,7 @@ def set_my_tickets_bridge_result(token, result=None, error=""):
             global my_tickets_fetching
             my_tickets_fetching = False
         # Beri dashboard sedikit waktu untuk polling hasil setelah import selesai.
-        item["expires_at"] = time.time() + 120
+        item["expires_at"] = time.time() + max(30, MY_TICKETS_BRIDGE_TTL)
         return True
 
 
@@ -3148,6 +3148,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
+
+        # Bookmarklet berjalan pada origin jkt48.com dan mengirim hasil
+        # ke endpoint import pada dashboard Railway. Izinkan hanya origin
+        # JKT48 yang sah untuk response CORS endpoint ini.
+        if urlparse(self.path).path == "/api/my-tickets/import":
+            origin = self.headers.get("Origin", "").strip()
+            if origin in ("https://jkt48.com", "https://www.jkt48.com"):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+
         self.end_headers()
         self.wfile.write(raw)
 
@@ -3454,6 +3464,22 @@ class Handler(BaseHTTPRequestHandler):
         set_war(minutes)
         return self.send_json(200, {"ok": True, **war_info()})
 
+    def do_OPTIONS(self):
+        url0 = urlparse(self.path)
+        if url0.path == "/api/my-tickets/import":
+            origin = self.headers.get("Origin", "").strip()
+            if origin in ("https://jkt48.com", "https://www.jkt48.com"):
+                self.send_response(204)
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Max-Age", "600")
+                self.end_headers()
+                return
+        self.send_response(204)
+        self.end_headers()
+
     def do_POST(self):
         url0 = urlparse(self.path)
         if url0.path.startswith("/api/push/"):
@@ -3527,7 +3553,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(409, {
                 "ok": False,
                 "fetched": False,
-                "error": "Fetch server-side dinonaktifkan. Gunakan Browser Session Bridge melalui tombol Fetch Akun.",
+                "error": "Fetch server-side dinonaktifkan. Gunakan tombol Fetch Akun lalu jalankan bookmarklet JKT48 pada halaman jkt48.com.",
             })
 
         secret = self.headers.get("X-Notify-Secret", "")
@@ -3606,7 +3632,7 @@ def main():
     else:
         print("[PUSH] Nonaktif: pasang pywebpush dan set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY.")
     threading.Thread(target=run_http, daemon=True).start()
-    print("[MY TICKETS] Browser Session Bridge aktif: Fetch Akun dibaca dari browser yang login ke jkt48.com.")
+    print("[MY TICKETS] Mobile Bookmarklet Bridge aktif: Fetch Akun dibaca dari halaman jkt48.com yang sedang login.")
     if JKT48_ACCOUNT_COOKIE:
         print("[MY TICKETS] JKT48_ACCOUNT_COOKIE masih tersedia sebagai legacy server-side session, tetapi Fetch Akun tidak menggunakannya.")
 
