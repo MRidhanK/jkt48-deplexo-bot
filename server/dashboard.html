@@ -222,6 +222,8 @@ a.hmv:hover{text-decoration:underline}
 
 /* ====== BROWSER SESSION BRIDGE ====== */
 .my-ticket-fetch-card .note{margin-top:8px}
+.my-ticket-account-line{margin-top:6px;margin-bottom:0}
+.my-ticket-logout-btn{white-space:nowrap}
 
 /* ====== ANALYTICS & STATUS ====== */
 .pg{grid-column:1/-1}
@@ -1390,6 +1392,9 @@ let ana = null, sysd = null, extraErr = "";
 let myTickets = null, myTicketsError = "", myTicketsLoading = false;
 let myTicketsBridgeStatus = "";
 let myTicketsBridgeProgress = null;
+let myTicketsAuthenticated = false;
+let myTicketsAccount = {};
+let myTicketsAccountError = "";
 let myTicketFilter = "all";
 
 
@@ -1765,6 +1770,7 @@ function kcard(val, label) {
 async function loadExtra() {
   const v = view;
   if (v === "tickets") {
+    await loadJKT48AccountStatus();
     await loadMyTicketsCache();
     return;
   }
@@ -1779,109 +1785,155 @@ async function loadExtra() {
   render();
 }
 
-/* JKT48_BROWSER_SESSION_BRIDGE: browser userscript runs on this dashboard page. */
+/* JKT48_SERVER_SESSION_AUTH: Radar server login + direct My Tickets fetch. */
 async function myTicketsRequest(path, options = {}) {
   const sep = path.includes("?") ? "&" : "?";
   const url = path + (KEY ? sep + "key=" + encodeURIComponent(KEY) : "");
   const r = await fetch(url, { cache: "no-store", ...options });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok || !j.ok) throw new Error(j.error || j.message || ("HTTP " + r.status));
+  if (!r.ok || !j.ok) {
+    throw new Error(j.error || j.message || ("HTTP " + r.status));
+  }
   return j;
 }
 
 async function loadMyTicketsCache() {
   try {
     const j = await myTicketsRequest("/api/my-tickets");
-    if (j.fetched) myTickets = j;
+    myTickets = j.fetched ? j : null;
     myTicketsError = "";
+    if (j.profile) myTicketsAccount = j.profile;
   } catch (e) {
-    myTicketsError = e?.message || "Gagal membaca cache tiket akun JKT48.";
+    myTicketsError = e?.message || "Gagal membaca data Jadwal Saya.";
   }
   if (view === "tickets") render();
 }
 
-async function fetchMyTickets() {
+async function loadJKT48AccountStatus() {
+  try {
+    const j = await myTicketsRequest("/api/jkt48/account/status");
+    myTicketsAccount = j.profile || {};
+    myTicketsAuthenticated = !!j.authenticated;
+    myTicketsAccountError = j.error || "";
+  } catch (e) {
+    myTicketsAccountError = e?.message || "Gagal membaca status akun JKT48.";
+  }
+}
+
+function showJKT48LoginPrompt() {
+  const email = prompt("Email akun JKT48:", "");
+  if (email == null) return;
+  const password = prompt("Password akun JKT48:", "");
+  if (password == null) return;
+  loginJKT48Account(email.trim(), password);
+}
+
+async function loginJKT48Account(email, password) {
   if (myTicketsLoading) return;
+  myTicketsLoading = true;
+  myTicketsError = "";
+  myTicketsBridgeStatus = "🔐 Menghubungkan akun JKT48 ke server Radar…";
+  myTicketsBridgeProgress = 10;
+  if (view === "tickets") render();
+
+  try {
+    const result = await myTicketsRequest("/api/jkt48/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({ email, password })
+    });
+
+    myTicketsAuthenticated = !!result.authenticated;
+    myTicketsAccount = result.profile || {};
+    myTicketsBridgeStatus = "✅ Akun terhubung · mengambil Jadwal Saya…";
+    myTicketsBridgeProgress = 35;
+
+    const fetched = await fetchMyTickets(true);
+    if (!fetched?.ok) {
+      throw new Error(fetched?.error || "Fetch tiket gagal setelah login.");
+    }
+  } catch (e) {
+    myTicketsError = e?.message || "Login JKT48 gagal.";
+    myTicketsLoading = false;
+    myTicketsBridgeStatus = "";
+    myTicketsBridgeProgress = null;
+    if (view === "tickets") render();
+  }
+}
+
+async function logoutJKT48Account() {
+  try {
+    await myTicketsRequest("/api/jkt48/logout", {
+      method: "POST",
+      headers: { "Accept": "application/json" }
+    });
+  } catch (e) {
+    myTicketsError = e?.message || "Logout gagal.";
+    return;
+  }
+  myTickets = null;
+  myTicketsAuthenticated = false;
+  myTicketsAccount = {};
+  myTicketsError = "";
+  render();
+}
+
+async function fetchMyTickets(autoAfterLogin = false) {
+  if (myTicketsLoading && !autoAfterLogin) return;
+
+  if (!myTicketsAuthenticated) {
+    myTicketsLoading = false;
+    showJKT48LoginPrompt();
+    return;
+  }
 
   myTicketsLoading = true;
   myTicketsError = "";
-  myTicketsBridgeStatus = "Membuat token Fetch Akun…";
-  myTicketsBridgeProgress = 5;
-
+  myTicketsBridgeStatus = "🎟️ Mengambil My Tickets dari server Radar…";
+  myTicketsBridgeProgress = 20;
   if (view === "tickets") render();
 
   try {
     const now = new Date();
-    const dateFrom = now.toISOString().slice(0, 10);
-    const dateTo = new Date(now.getTime() + 32 * 86400000)
-      .toISOString()
-      .slice(0, 10);
+    const from = now.toISOString().slice(0, 10);
+    const to = new Date(now.getTime() + 32 * 86400000).toISOString().slice(0, 10);
 
-    /*
-     * Token bridge bukan credential akun JKT48.
-     * Token hanya berlaku singkat dan dipakai sekali.
-     */
-    const bridge = await myTicketsRequest(
-      `/api/my-tickets/bridge-token?from=${encodeURIComponent(dateFrom)}&to=${encodeURIComponent(dateTo)}`
+    const result = await myTicketsRequest(
+      `/api/my-tickets/fetch?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      { method: "POST", headers: { "Accept": "application/json" } }
     );
 
-    const bridgeToken = String(bridge?.token || "").trim();
-
-    if (!bridgeToken) {
-      throw new Error("Bridge token tidak diterima dari server.");
+    if (!result.ok) {
+      throw new Error(result.error || "Fetch My Tickets gagal.");
     }
 
-    /*
-     * Auto-copy token sebagai backup.
-     * Fetch Akun tetap bisa dilanjutkan meskipun clipboard gagal,
-     * karena token juga dibawa melalui URL hash dan bookmarklet
-     * akan membacanya otomatis.
-     */
-    try {
-      await navigator.clipboard.writeText(bridgeToken);
-      myTicketsBridgeStatus = "✅ Token otomatis disalin · membuka JKT48…";
-    } catch (_) {
-      myTicketsBridgeStatus = "✅ Token siap · membuka JKT48…";
-    }
-
-    myTicketsBridgeProgress = 20;
-
+    myTickets = result;
+    myTicketsAccount = result.profile || myTicketsAccount || {};
+    myTicketsAuthenticated = true;
+    myTicketsBridgeStatus = `✅ ${result.total || result.tickets?.length || 0} record berhasil diambil.`;
+    myTicketsBridgeProgress = 100;
+    myTicketsLoading = false;
     if (view === "tickets") render();
-
-    /*
-     * Token diletakkan di HASH (#), bukan query string.
-     * Dengan begitu token tidak ikut dikirim sebagai URL request
-     * ke server jkt48.com.
-     */
-    const hash = new URLSearchParams();
-    hash.set("radar_fetch", "1");
-    hash.set("radar_token", bridgeToken);
-    hash.set("from", dateFrom);
-    hash.set("to", dateTo);
-    hash.set("radar_return", location.origin + location.pathname);
-
-    const jktUrl =
-      "https://jkt48.com/my-page#" + hash.toString();
-
-    /*
-     * Tidak bisa membuka Chrome/Safari bookmark menu secara
-     * programatik; browser sengaja memblokir chrome:// / UI internal.
-     * Yang bisa kita lakukan adalah langsung membuka JKT48.
-     * Setelah itu user cukup memilih bookmarklet yang sudah dibuat.
-     * Token sudah otomatis terbawa, jadi TIDAK perlu mengetik/paste token.
-     */
-    location.assign(jktUrl);
-
+    return result;
   } catch (e) {
+    myTicketsError = e?.message || "Gagal membaca Jadwal Saya.";
+    myTicketsLoading = false;
     myTicketsBridgeStatus = "";
     myTicketsBridgeProgress = null;
-    myTicketsError =
-      e?.message ||
-      "Gagal menyiapkan Fetch Akun JKT48.";
-    myTicketsLoading = false;
-
     if (view === "tickets") render();
+    return null;
   }
+}
+
+const loadMyTickets = fetchMyTickets;
+
+function isUpcomingTicket(t) {
+  if (!t?.date) return false;
+  const d = new Date(`${t.date}T${t.start_time || "00:00:00"}`);
+  return d.getTime() >= Date.now();
 }
 function ticketDate(t) {
   if (!t?.date) return "-";
@@ -1968,10 +2020,24 @@ function renderMyTickets(){
   }
   title.append(statusLine);
 
+  if (myTicketsAuthenticated) {
+    const accountLine = el("div","note my-ticket-account-line");
+    const who = myTicketsAccount?.nickname || myTicketsAccount?.full_name || "Akun JKT48";
+    accountLine.textContent = `👤 ${who} · Session server aktif`;
+    title.append(accountLine);
+  }
+
   const fetchBtn=el("button","btn my-ticket-fetch-btn","🔄 Fetch Akun");
   fetchBtn.type="button";
   fetchBtn.onclick=fetchMyTickets;
-  toolbar.append(title,fetchBtn);
+  if (myTicketsAuthenticated) {
+    const logoutBtn = el("button","btn my-ticket-logout-btn","Keluar");
+    logoutBtn.type = "button";
+    logoutBtn.onclick = logoutJKT48Account;
+    toolbar.append(title,fetchBtn,logoutBtn);
+  } else {
+    toolbar.append(title,fetchBtn);
+  }
   wrap.append(toolbar);
 
   if(myTicketsError){
@@ -1979,9 +2045,10 @@ function renderMyTickets(){
     c.append(
       el("h2","","🔐 Fetch Akun Gagal"),
       el("div","note",myTicketsError),
-      el("div","note","Fetch Akun bekerja dari halaman JKT48 yang sedang login. Access token, refresh token, dan cf_clearance tidak dikirim ke backend."),
-      el("div","note","Tekan Fetch Akun untuk otomatis menyalin token lalu membuka JKT48. Jalankan bookmarklet Fetch JKT48 yang sudah kamu simpan. Token sudah ikut terbawa, jadi tidak perlu paste manual.")
+      el("div","note","Fetch Akun sekarang memakai session JKT48 yang disimpan sementara di server Radar. Token dan cookie tidak ditampilkan ke browser Radar."),
+      el("button","btn buyp","🔐 Hubungkan Akun JKT48")
     );
+    c.lastChild.onclick = showJKT48LoginPrompt;
     wrap.append(c);
     return wrap;
   }
@@ -1990,8 +2057,8 @@ function renderMyTickets(){
     const c=el("div","card my-ticket-empty");
     c.append(
       el("div","my-ticket-empty-icon","🎟️"),
-      el("h2","","Belum ada data akun"),
-      el("div","note","Tekan Fetch Akun. Dashboard akan otomatis menyalin token lalu membuka halaman JKT48. Jalankan bookmarklet Fetch JKT48 untuk mengambil semua My Tickets."),
+      el("h2","",myTicketsAuthenticated ? "Siap mengambil jadwal" : "Hubungkan akun JKT48"),
+      el("div","note", myTicketsAuthenticated ? "Akun JKT48 sudah terhubung ke server. Tekan Fetch Akun untuk mengambil jadwal terbaru." : "Hubungkan akun JKT48 sekali. Setelah tersambung, Fetch Akun berikutnya tetap dilakukan langsung dari Dashboard tanpa membuka website JKT48."),
       el("button","btn buyp","🔄 Fetch Akun Sekarang")
     );
     c.lastChild.onclick=fetchMyTickets;

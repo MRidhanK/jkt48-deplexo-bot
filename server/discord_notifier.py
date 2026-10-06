@@ -1839,6 +1839,191 @@ MY_TICKETS_LIMIT = int(os.environ.get("MY_TICKETS_LIMIT", "10"))
 MY_TICKETS_DAYS = int(os.environ.get("MY_TICKETS_DAYS", "32"))
 MY_TICKETS_URL = "https://jkt48.com/api/v1/accounts/my-tickets"
 
+# ------------------------------------------------------------
+# JKT48 ACCOUNT AUTH (server-side)
+# ------------------------------------------------------------
+# Radar dapat menyimpan session JKT48 hanya di RAM proses server.
+# Credential/token JKT48 tidak pernah dikirim kembali ke frontend.
+# Login flow default mengikuti endpoint NextAuth-style yang biasanya
+# dipakai oleh /api/auth/session. Path dapat diubah via ENV jika situs
+# JKT48 berubah.
+JKT48_AUTH_CSRF_PATH = os.environ.get("JKT48_AUTH_CSRF_PATH", "/api/auth/csrf").strip()
+JKT48_AUTH_LOGIN_PATH = os.environ.get("JKT48_AUTH_LOGIN_PATH", "/api/auth/callback/credentials").strip()
+JKT48_AUTH_SESSION_PATH = os.environ.get("JKT48_AUTH_SESSION_PATH", "/api/auth/session").strip()
+JKT48_AUTH_CALLBACK_URL = os.environ.get("JKT48_AUTH_CALLBACK_URL", "/my-page").strip() or "/my-page"
+JKT48_ACCOUNT_IMPERSONATE = os.environ.get("JKT48_ACCOUNT_IMPERSONATE", IMPERSONATE if "IMPERSONATE" in globals() else "chrome")
+JKT48_ACCOUNT_PROXY = os.environ.get("JKT48_ACCOUNT_PROXY", "").strip()
+JKT48_LOGIN_TIMEOUT = int(os.environ.get("JKT48_LOGIN_TIMEOUT", "30"))
+
+jkt48_account_lock = threading.RLock()
+jkt48_account_session = None
+jkt48_account_profile = {}
+jkt48_account_connected_at = 0.0
+jkt48_account_last_error = ""
+jkt48_account_email = ""
+
+def _jkt48_account_build_session():
+    kwargs = {"impersonate": JKT48_ACCOUNT_IMPERSONATE or "chrome"}
+    if JKT48_ACCOUNT_PROXY:
+        kwargs["proxies"] = {"http": JKT48_ACCOUNT_PROXY, "https": JKT48_ACCOUNT_PROXY}
+    return cffi_requests.Session(**kwargs)
+
+def _jkt48_account_session_payload(session):
+    response = session.get(
+        "https://jkt48.com" + JKT48_AUTH_SESSION_PATH,
+        headers={
+            "Accept": "application/json",
+            "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://jkt48.com/my-page",
+        },
+        timeout=JKT48_LOGIN_TIMEOUT,
+        allow_redirects=True,
+    )
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    return response, payload
+
+def _jkt48_account_extract_profile(payload):
+    user = payload.get("user") if isinstance(payload, dict) else {}
+    profile = user.get("profile") if isinstance(user, dict) else {}
+    return {
+        "nickname": str((profile or {}).get("nickname") or "").strip(),
+        "full_name": str((profile or {}).get("full_name") or "").strip(),
+    }
+
+def jkt48_account_status():
+    with jkt48_account_lock:
+        connected = bool(jkt48_account_session)
+        profile = dict(jkt48_account_profile)
+        connected_at = jkt48_account_connected_at
+        last_error = jkt48_account_last_error
+        email = jkt48_account_email
+    return {
+        "authenticated": connected,
+        "profile": profile,
+        "connected_at": connected_at or None,
+        "email_hint": (email[:2] + "***" if email and "@" not in email[:2] else ""),
+        "error": last_error,
+    }
+
+def jkt48_account_login(email, password):
+    global jkt48_account_session, jkt48_account_profile
+    global jkt48_account_connected_at, jkt48_account_last_error, jkt48_account_email
+
+    email = str(email or "").strip()
+    password = str(password or "")
+    if not email or "@" not in email:
+        raise ValueError("Email JKT48 tidak valid.")
+    if not password:
+        raise ValueError("Password JKT48 wajib diisi.")
+
+    session = _jkt48_account_build_session()
+
+    # 1) Ambil CSRF cookie + token.
+    csrf_r = session.get(
+        "https://jkt48.com" + JKT48_AUTH_CSRF_PATH,
+        headers={
+            "Accept": "application/json",
+            "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+            "Referer": "https://jkt48.com/auth/login",
+            "Cache-Control": "no-cache",
+        },
+        timeout=JKT48_LOGIN_TIMEOUT,
+        allow_redirects=True,
+    )
+    try:
+        csrf = csrf_r.json()
+    except Exception:
+        csrf = {}
+    csrf_token = str((csrf or {}).get("csrfToken") or "").strip()
+
+    if csrf_r.status_code >= 400 or not csrf_token:
+        raise RuntimeError(
+            f"Gagal mendapatkan CSRF JKT48 (HTTP {csrf_r.status_code}). "
+            "Server Radar mungkin sedang ditolak Cloudflare."
+        )
+
+    # 2) Login Credentials provider.
+    login_url = "https://jkt48.com" + JKT48_AUTH_LOGIN_PATH
+    form = {
+        "csrfToken": csrf_token,
+        "email": email,
+        "password": password,
+        "callbackUrl": JKT48_AUTH_CALLBACK_URL,
+        "json": "true",
+    }
+
+    login_r = session.post(
+        login_url,
+        data=form,
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://jkt48.com",
+            "Referer": "https://jkt48.com/auth/login",
+            "X-Auth-Return-Redirect": "1",
+        },
+        timeout=JKT48_LOGIN_TIMEOUT,
+        allow_redirects=True,
+    )
+
+    if login_r.status_code >= 400:
+        raise RuntimeError(
+            f"Login JKT48 gagal: HTTP {login_r.status_code}. "
+            "Periksa email/password atau Cloudflare."
+        )
+
+    # 3) Verifikasi session hasil login.
+    session_r, session_payload = _jkt48_account_session_payload(session)
+    profile = _jkt48_account_extract_profile(session_payload)
+    user = session_payload.get("user") if isinstance(session_payload, dict) else None
+    if session_r.status_code != 200 or not isinstance(user, dict):
+        # Beberapa flow mengembalikan redirect/session hanya setelah callback selesai.
+        raise RuntimeError(
+            f"Login tampak selesai tetapi session JKT48 tidak terbentuk (HTTP {session_r.status_code})."
+        )
+
+    # Simpan session object, bukan credential mentah, hanya di RAM.
+    with jkt48_account_lock:
+        jkt48_account_session = session
+        jkt48_account_profile = profile
+        jkt48_account_connected_at = time.time()
+        jkt48_account_last_error = ""
+        jkt48_account_email = email
+
+    print(
+        "[MY TICKETS] JKT48 account connected: "
+        + (profile.get("nickname") or profile.get("full_name") or "user")
+    )
+
+    return jkt48_account_status()
+
+def jkt48_account_logout():
+    global jkt48_account_session, jkt48_account_profile
+    global jkt48_account_connected_at, jkt48_account_last_error, jkt48_account_email
+    with jkt48_account_lock:
+        session = jkt48_account_session
+        jkt48_account_session = None
+        jkt48_account_profile = {}
+        jkt48_account_connected_at = 0.0
+        jkt48_account_last_error = ""
+        jkt48_account_email = ""
+    try:
+        if session:
+            session.close()
+    except Exception:
+        pass
+    return jkt48_account_status()
+
+def _get_jkt48_account_session():
+    with jkt48_account_lock:
+        return jkt48_account_session
+
 # My Tickets sekarang manual-fetch: GET hanya membaca cache, POST /api/my-tickets/fetch
 # yang benar-benar menghubungi akun JKT48. Cookie akun tidak pernah dikirim ke frontend.
 my_tickets_cache_lock = threading.Lock()
@@ -1849,7 +2034,7 @@ my_tickets_fetching = False
 # Browser Bridge:
 # Browser yang sudah login ke jkt48.com melakukan request My Tickets secara same-origin.
 # Server hanya menerima hasil JSON dari browser melalui one-time token berumur singkat.
-MY_TICKETS_BRIDGE_TTL = int(os.environ.get("MY_TICKETS_BRIDGE_TTL", "600"))
+MY_TICKETS_BRIDGE_TTL = int(os.environ.get("MY_TICKETS_BRIDGE_TTL", "120"))
 my_tickets_bridge_lock = threading.Lock()
 my_tickets_bridge = {}
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
@@ -2950,7 +3135,7 @@ def set_my_tickets_bridge_result(token, result=None, error=""):
             global my_tickets_fetching
             my_tickets_fetching = False
         # Beri dashboard sedikit waktu untuk polling hasil setelah import selesai.
-        item["expires_at"] = time.time() + max(30, MY_TICKETS_BRIDGE_TTL)
+        item["expires_at"] = time.time() + 120
         return True
 
 
@@ -3004,7 +3189,7 @@ def _prepare_browser_my_tickets(raw_tickets, date_from, date_to, pages_fetched=1
         "message": "My Tickets berhasil dibaca dari browser yang sedang login ke JKT48.",
     }
 
-def fetch_my_tickets_page(session, page, date_from, date_to):
+def fetch_my_tickets_page(session, page, date_from, date_to, access_token=""):
     params = {
         "lang": "id",
         "limit": MY_TICKETS_LIMIT,
@@ -3018,56 +3203,118 @@ def fetch_my_tickets_page(session, page, date_from, date_to):
         "Referer": "https://jkt48.com/my-page",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/154.0.0.0 Safari/537.36"
-        ),
     }
-    if JKT48_ACCOUNT_COOKIE:
-        headers["Cookie"] = JKT48_ACCOUNT_COOKIE
+    if access_token:
+        headers["Authorization"] = "Bearer " + access_token
 
-    r = session.get(MY_TICKETS_URL, params=params, headers=headers, timeout=20)
-    if r.status_code != 200:
-        cf = r.headers.get("cf-mitigated", "")
-        server = r.headers.get("server", "")
-        extra = f" HTTP {r.status_code}"
-        if server:
-            extra += f" server={server}"
-        if cf:
-            extra += f" cf={cf}"
-        raise RuntimeError("My Tickets request failed:" + extra)
-
+    response = session.get(
+        MY_TICKETS_URL,
+        params=params,
+        headers=headers,
+        timeout=JKT48_LOGIN_TIMEOUT,
+        allow_redirects=True,
+    )
     try:
-        payload = r.json()
-    except ValueError:
-        raise RuntimeError("My Tickets mengembalikan response bukan JSON.")
-
-    if not isinstance(payload, dict):
-        raise RuntimeError("Format My Tickets tidak valid.")
-    if payload.get("status") is False:
-        raise RuntimeError(str(payload.get("message") or "Akun JKT48 tidak terautentikasi."))
-    return payload
+        payload = response.json()
+    except Exception:
+        payload = None
+    return response, payload
 
 
 def fetch_my_tickets(date_from, date_to):
-    """Fetch every page from /accounts/my-tickets, not only page 1."""
-    if not JKT48_ACCOUNT_COOKIE:
+    """Fetch every page using the authenticated JKT48 session held by the Radar server."""
+    global jkt48_account_last_error, jkt48_account_profile
+
+    session = _get_jkt48_account_session()
+    if session is None:
         return {
             "ok": False,
             "authenticated": False,
-            "error": "JKT48_ACCOUNT_COOKIE belum diset di environment server.",
+            "error": "Akun JKT48 belum terhubung. Login dulu dari Dashboard Radar.",
             "tickets": [],
         }
 
-    session = build_session(IMPERSONATE)
+    # Refresh/check current NextAuth session first. This may also renew an access token internally.
+    try:
+        session_r, session_payload = _jkt48_account_session_payload(session)
+        if session_r.status_code != 200 or not isinstance(session_payload.get("user"), dict):
+            with jkt48_account_lock:
+                jkt48_account_last_error = "Session JKT48 sudah tidak valid. Silakan login ulang."
+            return {
+                "ok": False,
+                "authenticated": False,
+                "error": "Session JKT48 sudah tidak valid. Silakan login ulang dari Dashboard Radar.",
+                "tickets": [],
+            }
+        with jkt48_account_lock:
+            jkt48_account_profile = _jkt48_account_extract_profile(session_payload)
+        session_user = session_payload.get("user") if isinstance(session_payload, dict) else {}
+        account_access_token = str((session_user or {}).get("access_token") or "").strip()
+    except Exception as exc:
+        with jkt48_account_lock:
+            jkt48_account_last_error = f"Session check gagal: {type(exc).__name__}: {str(exc)[:160]}"
+        return {
+            "ok": False,
+            "authenticated": False,
+            "error": "Tidak dapat memeriksa session JKT48 dari server.",
+            "tickets": [],
+        }
+
     all_rows = []
     page = 1
     total_page = 1
     page_count = 0
 
     while page <= total_page and page_count < 100:
-        payload = fetch_my_tickets_page(session, page, date_from, date_to)
+        response, payload = fetch_my_tickets_page(session, page, date_from, date_to, account_access_token)
+        status = int(response.status_code)
+
+        if status == 401:
+            # Session mungkin baru saja di-refresh oleh NextAuth. Coba session endpoint sekali lagi.
+            try:
+                session_r, session_payload = _jkt48_account_session_payload(session)
+                if session_r.status_code == 200 and isinstance(session_payload.get("user"), dict):
+                    response, payload = fetch_my_tickets_page(session, page, date_from, date_to, account_access_token)
+                    status = int(response.status_code)
+            except Exception:
+                pass
+
+        if status == 403:
+            with jkt48_account_lock:
+                jkt48_account_last_error = "JKT48/Cloudflare mengembalikan HTTP 403 dari server Radar."
+            return {
+                "ok": False,
+                "authenticated": True,
+                "error": "JKT48/Cloudflare menolak koneksi server Radar (HTTP 403). Tambahkan JKT48_ACCOUNT_PROXY jika diperlukan.",
+                "tickets": [],
+            }
+
+        if status != 200:
+            with jkt48_account_lock:
+                jkt48_account_last_error = f"My Tickets HTTP {status}"
+            return {
+                "ok": False,
+                "authenticated": True,
+                "error": f"My Tickets gagal: HTTP {status}.",
+                "tickets": [],
+            }
+
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "authenticated": True,
+                "error": "Response My Tickets bukan JSON valid.",
+                "tickets": [],
+            }
+
+        if payload.get("status") is False:
+            return {
+                "ok": False,
+                "authenticated": True,
+                "error": str(payload.get("message") or "API My Tickets mengembalikan status=false."),
+                "tickets": [],
+            }
+
         rows = payload.get("data") or []
         if isinstance(rows, list):
             all_rows.extend(x for x in rows if isinstance(x, dict))
@@ -3083,7 +3330,6 @@ def fetch_my_tickets(date_from, date_to):
 
     normalized = [normalize_my_ticket(x) for x in all_rows]
 
-    # Stable de-duplication. Different transaction numbers remain separate records.
     unique = []
     seen = set()
     for ticket in normalized:
@@ -3102,24 +3348,26 @@ def fetch_my_tickets(date_from, date_to):
         seen.add(key)
         unique.append(ticket)
 
-    def sort_key(x):
-        return (
-            str(x.get("date") or "9999-99-99"),
-            str(x.get("start_time") or "99:99:99"),
-            str(x.get("member_name") or ""),
-            str(x.get("session_label") or ""),
-            str(x.get("lane_label") or ""),
-        )
+    unique.sort(key=lambda x: (
+        str(x.get("date") or "9999-99-99"),
+        str(x.get("start_time") or "99:99:99"),
+        str(x.get("member_name") or x.get("name") or ""),
+        str(x.get("session_label") or ""),
+        str(x.get("lane_label") or ""),
+    ))
 
-    unique.sort(key=sort_key)
-
-    counts = {}
-    for x in unique:
-        counts[x["category"]] = counts.get(x["category"], 0) + 1
+    counts = {"MNG": 0, "2SHOT": 0, "VC": 0, "SHOW": 0, "OTHER": 0}
+    for ticket in unique:
+        cat = ticket.get("category") or "OTHER"
+        counts[cat] = counts.get(cat, 0) + 1
 
     return {
         "ok": True,
+        "fetched": True,
+        "fetching": False,
         "authenticated": True,
+        "source": "server-session",
+        "profile": dict(jkt48_account_profile),
         "from": date_from,
         "to": date_to,
         "page_size": MY_TICKETS_LIMIT,
@@ -3129,6 +3377,7 @@ def fetch_my_tickets(date_from, date_to):
         "tickets": unique,
         "updated_at": time.time(),
     }
+
 
 
 # ------------------------------------------------------------------ HTTP
@@ -3148,16 +3397,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
-
-        # Bookmarklet berjalan pada origin jkt48.com dan mengirim hasil
-        # ke endpoint import pada dashboard Railway. Izinkan hanya origin
-        # JKT48 yang sah untuk response CORS endpoint ini.
-        if urlparse(self.path).path == "/api/my-tickets/import":
-            origin = self.headers.get("Origin", "").strip()
-            if origin in ("https://jkt48.com", "https://www.jkt48.com"):
-                self.send_header("Access-Control-Allow-Origin", origin)
-                self.send_header("Vary", "Origin")
-
         self.end_headers()
         self.wfile.write(raw)
 
@@ -3318,11 +3557,16 @@ class Handler(BaseHTTPRequestHandler):
             if not _same(given, DASHBOARD_KEY):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
+        if url.path == "/api/jkt48/account/status":
+            if not self._dash_ok(url):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+            return self.send_json(200, {"ok": True, **jkt48_account_status()})
+
         if url.path == "/api/my-tickets":
             if not self._dash_ok(url):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
-            # GET hanya membaca cache hasil browser bridge. Tidak pernah menghubungi jkt48.com.
+            status = jkt48_account_status()
             with my_tickets_cache_lock:
                 cached = dict(my_tickets_cache) if isinstance(my_tickets_cache, dict) else None
                 fetching = bool(my_tickets_fetching)
@@ -3332,61 +3576,72 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "fetched": False,
                     "fetching": fetching,
-                    "authenticated": False,
-                    "source": "browser-session",
-                    "message": "Belum ada data. Tekan Fetch Akun untuk membaca tiket dari browser yang sudah login ke JKT48.",
+                    "authenticated": status["authenticated"],
+                    "profile": status.get("profile") or {},
+                    "source": "server-session",
+                    "message": (
+                        "Akun JKT48 sudah terhubung. Tekan Fetch Akun untuk membaca tiket."
+                        if status["authenticated"]
+                        else "Hubungkan akun JKT48 dulu dari Dashboard Radar."
+                    ),
                     "tickets": [],
                     "counts": {},
                 })
 
             cached["fetching"] = fetching
+            cached["authenticated"] = status["authenticated"]
+            cached["profile"] = status.get("profile") or cached.get("profile") or {}
             cached["fetched"] = True
             return self.send_json(200, cached)
 
-        if url.path == "/api/my-tickets/bridge-token":
+        if url.path == "/api/my-tickets/fetch":
             if not self._dash_ok(url):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            qs = parse_qs(url.query)
-            date_from = (qs.get("from") or [""])[0].strip()
-            date_to = (qs.get("to") or [""])[0].strip()
-            now_dt = datetime.now(timezone.utc)
-            if not date_from:
-                date_from = now_dt.strftime("%Y-%m-%d")
-            if not date_to:
-                date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
+
+            with my_tickets_fetch_lock:
+                if my_tickets_fetching:
+                    return self.send_json(409, {
+                        "ok": False,
+                        "fetching": True,
+                        "error": "Fetch My Tickets sedang berjalan."
+                    })
+                my_tickets_fetching = True
+
             try:
-                datetime.strptime(date_from, "%Y-%m-%d")
-                datetime.strptime(date_to, "%Y-%m-%d")
-                if date_to < date_from:
-                    raise ValueError
-            except ValueError:
-                return self.send_json(400, {"ok": False, "error": "Rentang tanggal tidak valid."})
+                qs = parse_qs(url.query)
+                date_from = (qs.get("from") or [""])[0].strip()
+                date_to = (qs.get("to") or [""])[0].strip()
+                now_dt = datetime.now(timezone.utc)
+                if not date_from:
+                    date_from = now_dt.strftime("%Y-%m-%d")
+                if not date_to:
+                    date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
+                try:
+                    datetime.strptime(date_from, "%Y-%m-%d")
+                    datetime.strptime(date_to, "%Y-%m-%d")
+                    if date_to < date_from:
+                        raise ValueError
+                except ValueError:
+                    my_tickets_fetching = False
+                    return self.send_json(400, {"ok": False, "error": "Rentang tanggal tidak valid."})
 
-            token = create_my_tickets_bridge(date_from, date_to)
-            return self.send_json(200, {
-                "ok": True,
-                "token": token,
-                "from": date_from,
-                "to": date_to,
-                "expires_in": max(30, MY_TICKETS_BRIDGE_TTL),
-            })
-
-        if url.path == "/api/my-tickets/bridge-status":
-            if not self._dash_ok(url):
-                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            token = (parse_qs(url.query).get("token") or [""])[0]
-            item = get_my_tickets_bridge(token)
-            if item is None:
-                return self.send_json(404, {"ok": False, "status": "missing", "error": "Bridge token tidak ditemukan atau sudah kedaluwarsa."})
-            body = {
-                "ok": True,
-                "status": item.get("status", "pending"),
-                "expires_at": item.get("expires_at"),
-                "error": item.get("error", ""),
-            }
-            if item.get("status") == "success" and isinstance(item.get("result"), dict):
-                body.update(item["result"])
-            return self.send_json(200, body)
+                result = fetch_my_tickets(date_from, date_to)
+                if result.get("ok"):
+                    with my_tickets_cache_lock:
+                        my_tickets_cache = dict(result)
+                else:
+                    with jkt48_account_lock:
+                        jkt48_account_last_error = str(result.get("error") or "Fetch gagal")
+                my_tickets_fetching = False
+                return self.send_json(200 if result.get("ok") else 502, result)
+            except Exception as error:
+                my_tickets_fetching = False
+                traceback.print_exc()
+                return self.send_json(500, {
+                    "ok": False,
+                    "authenticated": bool(jkt48_account_status().get("authenticated")),
+                    "error": f"Fetch My Tickets gagal: {type(error).__name__}: {str(error)[:300]}",
+                })
 
         if url.path == "/api/war":
             return self.send_json(200, war_info())
@@ -3464,28 +3719,42 @@ class Handler(BaseHTTPRequestHandler):
         set_war(minutes)
         return self.send_json(200, {"ok": True, **war_info()})
 
-    def do_OPTIONS(self):
-        url0 = urlparse(self.path)
-        if url0.path == "/api/my-tickets/import":
-            origin = self.headers.get("Origin", "").strip()
-            if origin in ("https://jkt48.com", "https://www.jkt48.com"):
-                self.send_response(204)
-                self.send_header("Access-Control-Allow-Origin", origin)
-                self.send_header("Vary", "Origin")
-                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type")
-                self.send_header("Access-Control-Max-Age", "600")
-                self.end_headers()
-                return
-        self.send_response(204)
-        self.end_headers()
-
     def do_POST(self):
+        global my_tickets_cache, my_tickets_fetching
         url0 = urlparse(self.path)
         if url0.path.startswith("/api/push/"):
             return self.handle_push_post(url0)
 
-        # Browser bridge menerima hasil My Tickets yang sudah di-fetch dari jkt48.com
+        if url0.path == "/api/jkt48/login":
+            if not self._dash_ok(url0):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except (TypeError, ValueError):
+                length = 0
+            if length <= 0 or length > 12000:
+                return self.send_json(413, {"ok": False, "error": "Payload login tidak valid."})
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except Exception:
+                return self.send_json(400, {"ok": False, "error": "Payload login harus JSON."})
+            email = str(payload.get("email") or "").strip() if isinstance(payload, dict) else ""
+            password = str(payload.get("password") or "") if isinstance(payload, dict) else ""
+            try:
+                status = jkt48_account_login(email, password)
+                return self.send_json(200, {"ok": True, **status})
+            except Exception as error:
+                traceback.print_exc()
+                with jkt48_account_lock:
+                    jkt48_account_last_error = f"{type(error).__name__}: {str(error)[:300]}"
+                return self.send_json(502, {"ok": False, "error": str(error)[:500]})
+
+        if url0.path == "/api/jkt48/logout":
+            if not self._dash_ok(url0):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+            return self.send_json(200, {"ok": True, **jkt48_account_logout()})
+
+        # Browser bridge legacy endpoint kept for backwards compatibility.
         # oleh browser yang sedang login. Token bersifat singkat dan one-time per proses fetch.
         if url0.path == "/api/my-tickets/import":
             try:
@@ -3553,7 +3822,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(409, {
                 "ok": False,
                 "fetched": False,
-                "error": "Fetch server-side dinonaktifkan. Gunakan tombol Fetch Akun lalu jalankan bookmarklet JKT48 pada halaman jkt48.com.",
+                "error": "Fetch server-side dinonaktifkan. Gunakan Browser Session Bridge melalui tombol Fetch Akun.",
             })
 
         secret = self.headers.get("X-Notify-Secret", "")
@@ -3632,9 +3901,9 @@ def main():
     else:
         print("[PUSH] Nonaktif: pasang pywebpush dan set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY.")
     threading.Thread(target=run_http, daemon=True).start()
-    print("[MY TICKETS] Mobile Bookmarklet Bridge aktif: Fetch Akun dibaca dari halaman jkt48.com yang sedang login.")
+    print("[MY TICKETS] Server Session Auth aktif: Dashboard login -> server JKT48 -> My Tickets.")
     if JKT48_ACCOUNT_COOKIE:
-        print("[MY TICKETS] JKT48_ACCOUNT_COOKIE masih tersedia sebagai legacy server-side session, tetapi Fetch Akun tidak menggunakannya.")
+        print("[MY TICKETS] JKT48_ACCOUNT_COOKIE masih tersedia sebagai legacy fallback; login Dashboard memakai session RAM server.")
 
     if POLL_ENABLED:
         threading.Thread(target=poll_loop, daemon=True).start()
