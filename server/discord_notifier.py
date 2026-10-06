@@ -2217,7 +2217,7 @@ my_tickets_bridge = {}
 MOBILE_SYNC_TTL = int(os.environ.get("MOBILE_SYNC_TTL", "600"))
 MOBILE_SYNC_MAX_PAYLOAD = int(os.environ.get("MOBILE_SYNC_MAX_PAYLOAD", "900000"))
 MOBILE_SYNC_ORIGINS = {"https://jkt48.com", "https://www.jkt48.com"}
-MOBILE_SYNC_FILE = Path(os.environ.get("MOBILE_SYNC_FILE", str(Path(__file__).with_name("mobile_sync.html"))))
+MOBILE_SYNC_FILE = Path(os.environ.get("MOBILE_SYNC_FILE", str(Path(__file__).with_name("mobile-sync.html"))))
 mobile_sync_lock = threading.Lock()
 mobile_sync_codes = {}
 
