@@ -989,6 +989,70 @@ table.hm{border-spacing:4px}
 .psv-empty{padding:18px 4px;opacity:.55;font-size:12px}.psv-foot{padding:0 14px 14px;font-size:10px;opacity:.45}
 @media(max-width:700px){.psv-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.psv-row{grid-template-columns:58px 1fr auto}.psv-drop{font-size:12px}.psv-note{max-width:230px}}
 
+
+/* ===== JALUR FOCUS — very prominent personal ticket lanes ===== */
+.my-ticket-lane-focus{
+  margin:4px 0 10px;
+  border:1px solid rgba(96,165,250,.28);
+  border-radius:16px;
+  padding:12px;
+  background:
+    radial-gradient(circle at 8% 0%,rgba(96,165,250,.16),transparent 42%),
+    linear-gradient(145deg,rgba(59,130,246,.10),rgba(255,255,255,.018));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 10px 28px rgba(0,0,0,.10);
+}
+.my-ticket-lane-focus-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  margin-bottom:9px;
+}
+.my-ticket-lane-focus-title{
+  display:flex;align-items:center;gap:8px;
+  font-size:11px;font-weight:900;letter-spacing:.09em;text-transform:uppercase;
+  color:#93c5fd;
+}
+.my-ticket-lane-focus-count{
+  font-size:10px;font-weight:800;color:var(--mut);
+  padding:4px 7px;border-radius:999px;
+  border:1px solid rgba(148,163,184,.16);background:rgba(15,23,42,.28);
+}
+.my-ticket-lane-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}
+.my-ticket-lane-item{
+  position:relative;overflow:hidden;
+  border:1px solid rgba(96,165,250,.24);border-radius:13px;
+  padding:10px 11px;
+  background:linear-gradient(135deg,rgba(37,99,235,.16),rgba(15,23,42,.24));
+}
+.my-ticket-lane-item:before{
+  content:"";position:absolute;left:0;top:0;bottom:0;width:4px;
+  background:linear-gradient(180deg,#60a5fa,#2563eb);
+}
+.my-ticket-lane-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.my-ticket-lane-label{
+  font-size:20px;line-height:1;font-weight:950;letter-spacing:.01em;color:#fff;
+  text-shadow:0 2px 14px rgba(96,165,250,.28);
+}
+.my-ticket-lane-badge{
+  font-size:10px;font-weight:900;color:#dbeafe;
+  padding:5px 7px;border-radius:999px;
+  background:rgba(96,165,250,.15);border:1px solid rgba(96,165,250,.24);
+  white-space:nowrap;
+}
+.my-ticket-lane-meta{
+  display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+  margin-top:7px;font-size:10px;color:var(--mut);
+}
+.my-ticket-lane-meta strong{color:#dbeafe;font-size:12px}
+.my-ticket-lane-total{
+  margin-top:8px;padding-top:8px;border-top:1px solid rgba(148,163,184,.11);
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  font-size:10px;color:var(--mut);
+}
+.my-ticket-lane-total b{font-size:12px;color:var(--text)}
+@media(max-width:600px){
+  .my-ticket-lane-list{grid-template-columns:1fr}
+  .my-ticket-lane-label{font-size:18px}
+}
+
 /* ===== My Tickets / Personal Schedule ===== */
 .my-tickets-page{display:grid;gap:14px}
 .my-ticket-toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px}
@@ -2013,6 +2077,56 @@ function ticketLaneSummary(t){
   return lanes.map(x => `${x.lane_label || "-"}${Number(x.bought_count || 0) > 0 ? ` · ${Number(x.bought_count)} tiket` : ""}`).join(" · ");
 }
 
+function ticketLaneFocus(t){
+  const wrap = el("section", "my-ticket-lane-focus");
+  const head = el("div", "my-ticket-lane-focus-head");
+  const title = el("div", "my-ticket-lane-focus-title", "🛣️ Jalur Tiket");
+  const lanes = Array.isArray(t?.lanes) && t.lanes.length
+    ? t.lanes.map(x => ({
+        lane_label: String(x?.lane_label || "Tanpa jalur"),
+        bought_count: Number(x?.bought_count || 0) || 0,
+        used_count: Number(x?.used_count || 0) || 0
+      }))
+    : [{
+        lane_label: String(t?.lane_label || "Tanpa jalur"),
+        bought_count: Number(t?.bought_count || 0) || 0,
+        used_count: Number(t?.used_count || 0) || 0
+      }];
+
+  lanes.sort((a,b) => {
+    const na = Number((a.lane_label.match(/\d+/) || [999999])[0]);
+    const nb = Number((b.lane_label.match(/\d+/) || [999999])[0]);
+    return na - nb || a.lane_label.localeCompare(b.lane_label);
+  });
+
+  head.append(title, el("span", "my-ticket-lane-focus-count", `${lanes.length} jalur`));
+  wrap.append(head);
+
+  const list = el("div", "my-ticket-lane-list");
+  for (const lane of lanes) {
+    const item = el("div", "my-ticket-lane-item");
+    const top = el("div", "my-ticket-lane-top");
+    top.append(
+      el("div", "my-ticket-lane-label", lane.lane_label),
+      el("span", "my-ticket-lane-badge", `${lane.bought_count} tiket`)
+    );
+    const meta = el("div", "my-ticket-lane-meta");
+    meta.append(
+      el("span", "", "🎟️ Total "),
+      el("strong", "", `${lane.bought_count} tiket`),
+      el("span", "", "·"),
+      el("span", "", `✅ ${lane.used_count} terpakai`)
+    );
+    const remain = Math.max(0, lane.bought_count - lane.used_count);
+    const total = el("div", "my-ticket-lane-total");
+    total.append(el("span", "", "Sisa tiket"), el("b", "", `${remain} tiket`));
+    item.append(top, meta, total);
+    list.append(item);
+  }
+  wrap.append(list);
+  return wrap;
+}
+
 function renderMyTicketCard(t){
   const card=el("article","card my-ticket-card");
   const head=el("div","my-ticket-head");
@@ -2023,9 +2137,16 @@ function renderMyTicketCard(t){
   else if(t.name) card.append(el("div","my-ticket-event",t.name));
 
   const grid=el("div","my-ticket-grid");
-  grid.append(ticketInfo("📅","Tanggal",ticketDate(t)),ticketInfo("🕐","Waktu",ticketTime(t)),ticketInfo("🎫","Sesi",t.session_label || "-"),ticketInfo("🛣️","Jalur",ticketLaneSummary(t)),ticketInfo("🎟️","Jumlah",`${t.bought_count || 0} tiket`),ticketInfo("✅","Terpakai",`${t.used_count || 0}`));
+  grid.append(
+    ticketInfo("📅","Tanggal",ticketDate(t)),
+    ticketInfo("🕐","Waktu",ticketTime(t)),
+    ticketInfo("🎫","Sesi",t.session_label || "-"),
+    ticketInfo("🎟️","Jumlah",`${t.bought_count || 0} tiket`),
+    ticketInfo("✅","Terpakai",`${t.used_count || 0}`)
+  );
   if(t.category === "VC") grid.append(ticketInfo("📹","Jenis","Virtual Call"));
   card.append(grid);
+  card.append(ticketLaneFocus(t));
 
   if(t.reception_start_time) card.append(el("div","note",`🚪 Check-in mulai ${String(t.reception_start_time).slice(0,5)}${t.reception_end_time ? ` · sampai ${String(t.reception_end_time).slice(0,5)}` : ""}`));
   if(t.transaction_numbers?.length) card.append(el("div","ticket-transactions","Transaksi: " + t.transaction_numbers.join(", ")));
