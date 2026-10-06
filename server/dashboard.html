@@ -1041,6 +1041,17 @@ table.hm{border-spacing:4px}
   .r12-feature-controls{padding-top:2px}
 }
 </style>
+
+<style id="jkt48-session-import-ui">
+.jkt48-session-modal{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.55);display:none;align-items:flex-end;justify-content:center;padding:12px}
+.jkt48-session-modal.on{display:flex}
+.jkt48-session-dialog{width:min(720px,100%);max-height:92vh;overflow:auto;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:0 18px 60px rgba(0,0,0,.3)}
+.jkt48-session-dialog h3{margin:0 0 6px;font-size:18px}.jkt48-session-dialog p{margin:0 0 10px;color:var(--mut);font-size:13px}
+.jkt48-session-text{width:100%;min-height:220px;resize:vertical;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:10px;padding:10px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.jkt48-session-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:10px}.jkt48-session-actions .btn{min-height:40px}
+.jkt48-session-status{margin-top:10px}.jkt48-session-status[hidden]{display:none}
+@media(max-width:600px){.jkt48-session-modal{padding:0}.jkt48-session-dialog{border-radius:18px 18px 0 0;max-height:94vh;padding:14px}.jkt48-session-text{min-height:260px}}
+</style>
 </head>
 <body>
 <header>
@@ -1821,23 +1832,123 @@ async function loadJKT48AccountStatus() {
   }
 }
 
-function showJKT48TokenPrompt() {
-  const token = prompt(
-    "Masukkan access_token JKT48\n\n" +
-    "Token hanya dipakai untuk menghubungkan akun ke server Radar dan tidak disimpan di localStorage.",
-    ""
-  );
+let jkt48SessionModal = null;
 
-  if (token == null) return;
-
-  const value = token.trim();
-  if (!value) {
-    myTicketsError = "Access token kosong.";
-    render();
-    return;
+function closeJKT48SessionModal() {
+  if (jkt48SessionModal) {
+    jkt48SessionModal.classList.remove("on");
+    setTimeout(() => jkt48SessionModal?.remove(), 0);
+    jkt48SessionModal = null;
   }
+}
 
-  connectJKT48Token(value);
+function showJKT48TokenPrompt() {
+  closeJKT48SessionModal();
+
+  const overlay = document.createElement("div");
+  overlay.className = "jkt48-session-modal on";
+  overlay.innerHTML = `
+    <div class="jkt48-session-dialog" role="dialog" aria-modal="true" aria-label="Hubungkan akun JKT48">
+      <h3>🔐 Hubungkan Akun JKT48</h3>
+      <p>Tempel <b>seluruh JSON</b> dari <code>/api/auth/session</code>. Radar akan otomatis mengambil <code>user.access_token</code>. Tidak perlu mencari token manual di Inspect.</p>
+      <textarea class="jkt48-session-text" id="jkt48SessionInput" spellcheck="false" autocomplete="off" placeholder='Contoh: {"user":{"access_token":"...","profile":{"nickname":"..."}}}'></textarea>
+      <div class="jkt48-session-status note" id="jkt48SessionStatus" hidden></div>
+      <div class="jkt48-session-actions">
+        <button type="button" class="btn" id="jkt48SessionCancel">Batal</button>
+        <button type="button" class="btn buyp" id="jkt48SessionPaste">📋 Tempel</button>
+        <button type="button" class="btn buyp" id="jkt48SessionSubmit">🔐 Hubungkan & Fetch</button>
+      </div>
+    </div>
+  `;
+
+  document.body.append(overlay);
+  jkt48SessionModal = overlay;
+
+  const input = overlay.querySelector("#jkt48SessionInput");
+  const status = overlay.querySelector("#jkt48SessionStatus");
+  const submit = overlay.querySelector("#jkt48SessionSubmit");
+
+  overlay.querySelector("#jkt48SessionCancel").onclick = closeJKT48SessionModal;
+  overlay.onclick = (ev) => {
+    if (ev.target === overlay) closeJKT48SessionModal();
+  };
+
+  overlay.querySelector("#jkt48SessionPaste").onclick = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) throw new Error("Clipboard kosong.");
+      input.value = text;
+      status.hidden = false;
+      status.textContent = "✅ Session JSON ditempel. Tekan Hubungkan & Fetch.";
+    } catch (e) {
+      status.hidden = false;
+      status.textContent = "📋 Browser tidak memberi akses clipboard. Tempel JSON secara manual di kotak di atas.";
+    }
+  };
+
+  submit.onclick = async () => {
+    const value = input.value.trim();
+    if (!value) {
+      status.hidden = false;
+      status.textContent = "❌ Session JSON masih kosong.";
+      return;
+    }
+
+    submit.disabled = true;
+    status.hidden = false;
+    status.textContent = "⏳ Menghubungkan session ke server Radar…";
+
+    try {
+      const parsed = JSON.parse(value);
+      await connectJKT48Session(parsed);
+    } catch (e) {
+      status.textContent = e?.message || "Session JSON tidak valid.";
+      submit.disabled = false;
+    }
+  };
+
+  setTimeout(() => input.focus(), 50);
+}
+
+async function connectJKT48Session(sessionPayload) {
+  myTicketsLoading = true;
+  myTicketsError = "";
+  myTicketsBridgeStatus = "🔐 Menghubungkan session JKT48…";
+  myTicketsBridgeProgress = 15;
+  render();
+
+  try {
+    const result = await myTicketsRequest("/api/jkt48/session-import", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify(sessionPayload)
+    });
+
+    if (!result?.ok) {
+      throw new Error(result?.error || "Session JKT48 gagal diimpor.");
+    }
+
+    myTicketsAuthenticated = !!result.authenticated;
+    myTicketsAccount = result.profile || {};
+    myTicketsBridgeStatus = "✅ Session terhubung. Mengambil Jadwal Saya…";
+    myTicketsBridgeProgress = 35;
+    closeJKT48SessionModal();
+
+    const fetched = await fetchMyTickets(true);
+    if (!fetched?.ok) {
+      throw new Error(fetched?.error || "Fetch Jadwal Saya gagal setelah session terhubung.");
+    }
+  } catch (e) {
+    myTicketsError = e?.message || "Gagal menghubungkan session JKT48.";
+    myTicketsLoading = false;
+    myTicketsBridgeStatus = "";
+    myTicketsBridgeProgress = null;
+    if (view === "tickets") render();
+    throw e;
+  }
 }
 
 async function connectJKT48Token(accessToken) {
@@ -2043,7 +2154,7 @@ function renderMyTickets(){
 
   const fetchBtn=el("button","btn my-ticket-fetch-btn","🔄 Fetch Akun");
   fetchBtn.type="button";
-  fetchBtn.onclick=fetchMyTickets;
+  fetchBtn.onclick = myTicketsAuthenticated ? fetchMyTickets : showJKT48TokenPrompt;
   if (myTicketsAuthenticated) {
     const logoutBtn = el("button","btn my-ticket-logout-btn","Keluar");
     logoutBtn.type = "button";
@@ -2059,7 +2170,7 @@ function renderMyTickets(){
     c.append(
       el("h2","","🔐 Akun JKT48 belum terhubung"),
       el("div","note",myTicketsError),
-      el("div","note","Hubungkan access_token JKT48 sekali. Setelah berhasil, Fetch Akun berikutnya berjalan langsung dari Dashboard dan jadwal tampil di sini tanpa membuka website JKT48."),
+      el("div","note","Tempel seluruh JSON /api/auth/session satu kali. Radar otomatis mengambil user.access_token lalu Fetch Akun berikutnya berjalan langsung dari Dashboard tanpa membuka website JKT48."),
       el("button","btn buyp","🔐 Hubungkan Token JKT48")
     );
     c.lastChild.onclick = showJKT48TokenPrompt;
@@ -2072,10 +2183,10 @@ function renderMyTickets(){
     c.append(
       el("div","my-ticket-empty-icon","🎟️"),
       el("h2","",myTicketsAuthenticated ? "Siap mengambil jadwal" : "Hubungkan akun JKT48"),
-      el("div","note", myTicketsAuthenticated ? "Akun JKT48 sudah terhubung ke server. Tekan Fetch Akun untuk mengambil jadwal terbaru." : "Hubungkan access_token JKT48 sekali. Setelah terhubung, Fetch Akun berikutnya berjalan langsung dari Dashboard tanpa membuka website JKT48."),
+      el("div","note", myTicketsAuthenticated ? "Akun JKT48 sudah terhubung ke server. Tekan Fetch Akun untuk mengambil jadwal terbaru." : "Tempel JSON /api/auth/session sekali. Setelah terhubung, Fetch Akun berikutnya berjalan langsung dari Dashboard tanpa membuka website JKT48."),
       el("button","btn buyp","🔄 Fetch Akun Sekarang")
     );
-    c.lastChild.onclick=fetchMyTickets;
+    c.lastChild.onclick = myTicketsAuthenticated ? fetchMyTickets : showJKT48TokenPrompt;
     wrap.append(c);
     return wrap;
   }

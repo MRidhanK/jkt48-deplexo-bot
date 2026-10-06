@@ -1915,6 +1915,92 @@ def jkt48_account_status():
     }
 
 
+def jkt48_account_store_token(access_token, profile=None, email_hint=""):
+    """Store an existing JKT48 API access token in RAM without calling JKT48.
+
+    The dashboard can import the JSON returned by /api/auth/session and extract
+    user.access_token locally. The token is never written to disk or returned
+    to the frontend. Verification happens on the first /api/my-tickets/fetch.
+    """
+    global jkt48_account_session, jkt48_account_access_token
+    global jkt48_account_profile, jkt48_account_connected_at
+    global jkt48_account_last_error, jkt48_account_email
+
+    token = str(access_token or "").strip()
+    if not token or len(token) < 20:
+        raise ValueError("Access token JKT48 tidak valid atau terlalu pendek.")
+    if len(token) > 20000:
+        raise ValueError("Access token JKT48 terlalu panjang.")
+
+    with jkt48_account_lock:
+        old = jkt48_account_session
+        jkt48_account_session = _jkt48_account_build_session()
+        jkt48_account_access_token = token
+        jkt48_account_profile = dict(profile or {})
+        jkt48_account_connected_at = time.time()
+        jkt48_account_last_error = ""
+        if email_hint:
+            jkt48_account_email = str(email_hint).strip()
+
+    try:
+        if old and old is not jkt48_account_session:
+            old.close()
+    except Exception:
+        pass
+
+    return jkt48_account_status()
+
+
+def _extract_session_import(payload):
+    """Accept either full /api/auth/session JSON or a direct access_token."""
+    if isinstance(payload, str):
+        raw = payload.strip()
+        if not raw:
+            raise ValueError("Session JSON kosong.")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            # Convenience: allow pasting the token itself.
+            if len(raw) >= 20:
+                return raw, {}, ""
+            raise ValueError("Isi bukan JSON session JKT48 yang valid.")
+
+    if not isinstance(payload, dict):
+        raise ValueError("Session JKT48 harus berupa JSON object.")
+
+    # Support wrapper forms: {session:{...}}, {data:{...}}, or direct object.
+    root = payload
+    if isinstance(payload.get("session"), dict):
+        root = payload["session"]
+    elif isinstance(payload.get("data"), dict) and isinstance(payload["data"].get("user"), dict):
+        root = payload["data"]
+
+    user = root.get("user") if isinstance(root.get("user"), dict) else {}
+    token = str(user.get("access_token") or root.get("access_token") or payload.get("access_token") or "").strip()
+    if not token:
+        raise ValueError("Field user.access_token tidak ditemukan pada session JKT48.")
+
+    profile = user.get("profile") if isinstance(user.get("profile"), dict) else {}
+    safe_profile = {
+        "nickname": str(profile.get("nickname") or "").strip(),
+        "full_name": str(profile.get("full_name") or "").strip(),
+    }
+    email = str(profile.get("email") or user.get("email") or "").strip()
+    return token, safe_profile, email
+
+
+def jkt48_account_import_session(payload):
+    """Import /api/auth/session JSON into the RAM-only account state."""
+    token, profile, email = _extract_session_import(payload)
+    status = jkt48_account_store_token(token, profile, email)
+    # Do not echo token or raw session back to the browser.
+    return {
+        "ok": True,
+        **status,
+        "session_imported": True,
+    }
+
+
 def jkt48_account_connect_token(access_token):
     """Connect an existing JKT48 API access token without opening jkt48.com in the dashboard."""
     global jkt48_account_session, jkt48_account_access_token
@@ -3807,6 +3893,29 @@ class Handler(BaseHTTPRequestHandler):
         url0 = urlparse(self.path)
         if url0.path.startswith("/api/push/"):
             return self.handle_push_post(url0)
+
+        if url0.path == "/api/jkt48/session-import":
+            if not self._dash_ok(url0):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except (TypeError, ValueError):
+                length = 0
+            if length <= 0 or length > 150000:
+                return self.send_json(413, {"ok": False, "error": "Session JSON terlalu besar atau kosong."})
+            try:
+                raw = self.rfile.read(length).decode("utf-8")
+                payload = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return self.send_json(400, {"ok": False, "error": "Body harus JSON valid."})
+
+            try:
+                imported = jkt48_account_import_session(payload)
+                return self.send_json(200, imported)
+            except Exception as error:
+                with jkt48_account_lock:
+                    jkt48_account_last_error = f"{type(error).__name__}: {str(error)[:300]}"
+                return self.send_json(400, {"ok": False, "error": str(error)[:500]})
 
         if url0.path == "/api/jkt48/token":
             if not self._dash_ok(url0):
