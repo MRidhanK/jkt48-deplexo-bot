@@ -11,6 +11,7 @@ RUN playwright install --with-deps chromium
 COPY server/discord_notifier.py \
      server/check_block.py \
      server/dashboard.html \
+     server/mobile-sync.html \
      server/subscriptions.json \
      server/entrypoint.sh \
      server/member_photos.py \
@@ -24,6 +25,7 @@ RUN sed -i 's/\r$//' entrypoint.sh \
 
 ENV PYTHONUNBUFFERED=1 \
     DASHBOARD_FILE=/app/dashboard.html \
+    MOBILE_SYNC_FILE=/app/mobile-sync.html \
     SUBS_FILE=/data/subscriptions.json \
     STATE_FILE=/data/state.json
 
