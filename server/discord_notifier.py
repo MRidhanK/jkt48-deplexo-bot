@@ -1831,6 +1831,12 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 POLL_BACKOFF_MIN = int(os.environ.get("POLL_BACKOFF_MIN", "15"))
 POLL_BACKOFF_MAX = int(os.environ.get("POLL_BACKOFF_MAX", "90"))
 JKT48_COOKIE = os.environ.get("JKT48_COOKIE", "").strip()
+# Session cookie khusus My Page / My Tickets. Jika tidak diisi, fallback ke JKT48_COOKIE.
+# Jangan pernah expose cookie ini ke frontend.
+JKT48_ACCOUNT_COOKIE = os.environ.get("JKT48_ACCOUNT_COOKIE", "").strip() or JKT48_COOKIE
+MY_TICKETS_LIMIT = int(os.environ.get("MY_TICKETS_LIMIT", "10"))
+MY_TICKETS_DAYS = int(os.environ.get("MY_TICKETS_DAYS", "32"))
+MY_TICKETS_URL = "https://jkt48.com/api/v1/accounts/my-tickets"
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 # Proxy opsional untuk polling langsung (mis. proxy residensial Indonesia).
 # Format: http://user:pass@host:port  atau  socks5://user:pass@host:port
@@ -2814,6 +2820,194 @@ def heartbeat_loop():
             except Exception as e:
                 print(f"[HEARTBEAT] gagal: {type(e).__name__}")
 
+# ------------------------------------------------------------------ MY TICKETS / MY SCHEDULE
+
+def _ticket_category(ticket):
+    """Classify account tickets into SHOW / MNG / 2SHOT / VC / OTHER."""
+    name = str(ticket.get("name") or "").lower()
+    label = str(ticket.get("ticket_label") or "").lower()
+    text = f"{name} {label}"
+
+    # Keep VC before generic exclusive classification.
+    if any(x in text for x in (
+        "virtual call", "video call", "virtualcall", "video_call", "vc @", " vc ", " vc-"
+    )) or text.startswith("vc"):
+        return "VC"
+    if "2shot" in text or "2 shot" in text:
+        return "2SHOT"
+    if "meet and greet" in text or "m&g" in text or "m & g" in text:
+        return "MNG"
+    if str(ticket.get("ticket_type") or "").upper() == "SHOW":
+        return "SHOW"
+    return "OTHER"
+
+
+def _ticket_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_my_ticket(ticket):
+    bought = _ticket_int(ticket.get("bought_count"))
+    used = _ticket_int(ticket.get("used_count"))
+    transactions = ticket.get("transaction_numbers") or []
+    if not isinstance(transactions, list):
+        transactions = [transactions]
+
+    return {
+        "category": _ticket_category(ticket),
+        "ticket_type": ticket.get("ticket_type"),
+        "reference_code": ticket.get("reference_code"),
+        "ticket_label": ticket.get("ticket_label"),
+        "name": ticket.get("name"),
+        "expired_date": ticket.get("expired_date"),
+        "date": ticket.get("date"),
+        "start_time": ticket.get("start_time"),
+        "end_time": ticket.get("end_time"),
+        "reception_start_time": ticket.get("reception_start_time"),
+        "reception_end_time": ticket.get("reception_end_time"),
+        "background_image": ticket.get("background_image"),
+        "jkt48_member_type": ticket.get("jkt48_member_type"),
+        "member_name": ticket.get("member_name"),
+        "lane_label": ticket.get("lane_label"),
+        "session_label": ticket.get("session_label"),
+        "used_count": used,
+        "transaction_numbers": [str(x) for x in transactions if x is not None],
+        "raffle_status": ticket.get("raffle_status"),
+        "bought_count": bought,
+        "remaining_count": max(0, bought - used),
+    }
+
+
+def fetch_my_tickets_page(session, page, date_from, date_to):
+    params = {
+        "lang": "id",
+        "limit": MY_TICKETS_LIMIT,
+        "page": page,
+        "from": date_from,
+        "to": date_to,
+    }
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+        "Referer": "https://jkt48.com/my-page",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/154.0.0.0 Safari/537.36"
+        ),
+    }
+    if JKT48_ACCOUNT_COOKIE:
+        headers["Cookie"] = JKT48_ACCOUNT_COOKIE
+
+    r = session.get(MY_TICKETS_URL, params=params, headers=headers, timeout=20)
+    if r.status_code != 200:
+        cf = r.headers.get("cf-mitigated", "")
+        server = r.headers.get("server", "")
+        extra = f" HTTP {r.status_code}"
+        if server:
+            extra += f" server={server}"
+        if cf:
+            extra += f" cf={cf}"
+        raise RuntimeError("My Tickets request failed:" + extra)
+
+    try:
+        payload = r.json()
+    except ValueError:
+        raise RuntimeError("My Tickets mengembalikan response bukan JSON.")
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("Format My Tickets tidak valid.")
+    if payload.get("status") is False:
+        raise RuntimeError(str(payload.get("message") or "Akun JKT48 tidak terautentikasi."))
+    return payload
+
+
+def fetch_my_tickets(date_from, date_to):
+    """Fetch every page from /accounts/my-tickets, not only page 1."""
+    if not JKT48_ACCOUNT_COOKIE:
+        return {
+            "ok": False,
+            "authenticated": False,
+            "error": "JKT48_ACCOUNT_COOKIE belum diset di environment server.",
+            "tickets": [],
+        }
+
+    session = build_session(IMPERSONATE)
+    all_rows = []
+    page = 1
+    total_page = 1
+    page_count = 0
+
+    while page <= total_page and page_count < 100:
+        payload = fetch_my_tickets_page(session, page, date_from, date_to)
+        rows = payload.get("data") or []
+        if isinstance(rows, list):
+            all_rows.extend(x for x in rows if isinstance(x, dict))
+
+        meta = payload.get("_meta") or {}
+        try:
+            total_page = max(1, int(meta.get("total_page") or 1))
+        except (TypeError, ValueError):
+            total_page = page
+
+        page += 1
+        page_count += 1
+
+    normalized = [normalize_my_ticket(x) for x in all_rows]
+
+    # Stable de-duplication. Different transaction numbers remain separate records.
+    unique = []
+    seen = set()
+    for ticket in normalized:
+        key = (
+            ticket.get("reference_code"),
+            ticket.get("member_name"),
+            ticket.get("session_label"),
+            ticket.get("lane_label"),
+            ticket.get("date"),
+            ticket.get("start_time"),
+            tuple(ticket.get("transaction_numbers") or []),
+            ticket.get("bought_count"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ticket)
+
+    def sort_key(x):
+        return (
+            str(x.get("date") or "9999-99-99"),
+            str(x.get("start_time") or "99:99:99"),
+            str(x.get("member_name") or ""),
+            str(x.get("session_label") or ""),
+            str(x.get("lane_label") or ""),
+        )
+
+    unique.sort(key=sort_key)
+
+    counts = {}
+    for x in unique:
+        counts[x["category"]] = counts.get(x["category"], 0) + 1
+
+    return {
+        "ok": True,
+        "authenticated": True,
+        "from": date_from,
+        "to": date_to,
+        "page_size": MY_TICKETS_LIMIT,
+        "pages_fetched": page_count,
+        "total": len(unique),
+        "counts": counts,
+        "tickets": unique,
+        "updated_at": time.time(),
+    }
+
+
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     def send_response(self, code, message=None):
@@ -2822,7 +3016,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         if self.path.startswith(("/api/lanes", "/api/history", "/api/analytics",
-                                 "/api/status", "/members/")):
+                                 "/api/status", "/api/my-tickets", "/members/")):
             return
 
     def send_json(self, status, body):
@@ -2991,6 +3185,39 @@ class Handler(BaseHTTPRequestHandler):
             if not _same(given, DASHBOARD_KEY):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
+        if url.path == "/api/my-tickets":
+            if not self._dash_ok(url):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+
+            qs = parse_qs(url.query)
+            date_from = (qs.get("from") or [""])[0].strip()
+            date_to = (qs.get("to") or [""])[0].strip()
+
+            now_dt = datetime.now(timezone.utc)
+            if not date_from:
+                date_from = now_dt.strftime("%Y-%m-%d")
+            if not date_to:
+                date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
+
+            # Basic date validation prevents accidental malformed API requests.
+            try:
+                datetime.strptime(date_from, "%Y-%m-%d")
+                datetime.strptime(date_to, "%Y-%m-%d")
+            except ValueError:
+                return self.send_json(400, {"ok": False, "error": "Format tanggal harus YYYY-MM-DD."})
+
+            try:
+                result = fetch_my_tickets(date_from, date_to)
+                return self.send_json(200 if result.get("ok") else 401, result)
+            except Exception as error:
+                traceback.print_exc()
+                return self.send_json(502, {
+                    "ok": False,
+                    "authenticated": False,
+                    "error": f"Gagal mengambil My Tickets: {type(error).__name__}: {str(error)[:240]}",
+                    "tickets": [],
+                })
+
         if url.path == "/api/war":
             return self.send_json(200, war_info())
 
@@ -3147,6 +3374,11 @@ def main():
     else:
         print("[PUSH] Nonaktif: pasang pywebpush dan set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY.")
     threading.Thread(target=run_http, daemon=True).start()
+    if JKT48_ACCOUNT_COOKIE:
+        print("[MY TICKETS] Account session configured: /api/my-tickets aktif.")
+    else:
+        print("[MY TICKETS] Account session belum diset: set JKT48_ACCOUNT_COOKIE.")
+
     if POLL_ENABLED:
         threading.Thread(target=poll_loop, daemon=True).start()
         print("[JKT48] Polling langsung ke jkt48.com aktif.")
