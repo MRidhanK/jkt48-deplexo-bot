@@ -278,6 +278,35 @@ def _resolve_dashboard_file() -> Path:
 DASHBOARD_FILE = _resolve_dashboard_file()
 print(f"[INIT] Dashboard file: {DASHBOARD_FILE} (exists={DASHBOARD_FILE.is_file()})")
 
+
+# ------------------------------------------------------------------ cari mobile-sync.html di beberapa lokasi
+def _resolve_mobile_sync_file() -> Path:
+    # 1. Env var eksplisit
+    env_path = os.environ.get("MOBILE_SYNC_FILE", "").strip()
+    if env_path:
+        p = Path(env_path)
+        if p.is_file():
+            return p
+        print(f"[WARN] MOBILE_SYNC_FILE={env_path} tidak ditemukan, fallback ke pencarian otomatis.")
+
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here / "mobile-sync.html",                    # sebelah script
+        here / "server" / "mobile-sync.html",         # script di root, file di server/
+        here.parent / "server" / "mobile-sync.html",  # script di subfolder, file di ../server/
+        here.parent / "mobile-sync.html",             # file di parent
+        Path.cwd() / "mobile-sync.html",              # current working dir
+        Path.cwd() / "server" / "mobile-sync.html",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return candidates[1]  # default: server/ di sebelah script (untuk pesan error)
+
+
+MOBILE_SYNC_FILE = _resolve_mobile_sync_file()
+print(f"[INIT] Mobile sync file: {MOBILE_SYNC_FILE} (exists={MOBILE_SYNC_FILE.is_file()})")
+
 COLOR_GREEN = 0x2ECC71
 COLOR_RED = 0xE74C3C
 
@@ -2217,7 +2246,7 @@ my_tickets_bridge = {}
 MOBILE_SYNC_TTL = int(os.environ.get("MOBILE_SYNC_TTL", "600"))
 MOBILE_SYNC_MAX_PAYLOAD = int(os.environ.get("MOBILE_SYNC_MAX_PAYLOAD", "900000"))
 MOBILE_SYNC_ORIGINS = {"https://jkt48.com", "https://www.jkt48.com"}
-MOBILE_SYNC_FILE = Path(os.environ.get("MOBILE_SYNC_FILE", str(Path(__file__).with_name("mobile-sync.html"))))
+# MOBILE_SYNC_FILE sudah ditentukan lebih atas lewat _resolve_mobile_sync_file()
 mobile_sync_lock = threading.Lock()
 mobile_sync_codes = {}
 
@@ -3764,7 +3793,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self.send_html(200, MOBILE_SYNC_FILE.read_bytes())
             except FileNotFoundError:
-                return self.send_json(500, {"ok": False, "error": "mobile-sync.html tidak ditemukan di server."})
+                return self.send_json(500, {
+                    "ok": False,
+                    "error": f"mobile-sync.html tidak ditemukan di server. Lokasi yang dicari: {MOBILE_SYNC_FILE}",
+                })
 
         if url.path.startswith("/members/"):
             found = member_photos.read_photo(unquote(url.path[len("/members/"):]))
