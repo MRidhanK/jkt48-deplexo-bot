@@ -1082,6 +1082,29 @@ table.hm{border-spacing:4px}
 @media(max-width:480px){.my-ticket-grid{grid-template-columns:1fr 1fr}.ticket-info{padding:8px}.my-ticket-card h2{font-size:18px}}
 </style>
 <style>
+/* ===== Inline Mobile Sync setup ===== */
+.mobile-sync-inline{position:relative;overflow:hidden;background:linear-gradient(145deg,rgba(21,27,42,.98),rgba(17,22,36,.98));border-color:rgba(255,23,99,.28);box-shadow:0 18px 45px rgba(0,0,0,.24)}
+.mobile-sync-inline:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(180deg,#ff1763,#ff6b9d)}
+.mobile-sync-inline-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.mobile-sync-kicker{font-size:11px;font-weight:900;letter-spacing:.12em;color:#ff5b91;margin-bottom:3px}
+.mobile-sync-inline h2{margin:0 0 7px;font-size:20px}
+.mobile-sync-close{flex:none;min-width:40px}
+.mobile-sync-loading{padding:18px 14px;border-radius:12px;background:rgba(255,255,255,.035);color:var(--mut);font-weight:700;text-align:center}
+.mobile-sync-code-wrap{margin:8px 0 14px;padding:14px;border:1px dashed rgba(255,23,99,.42);border-radius:14px;background:rgba(255,23,99,.055);text-align:center}
+.mobile-sync-label{font-size:12px;color:var(--mut);font-weight:700;margin-bottom:5px}
+.mobile-sync-code{font-size:30px;line-height:1.15;letter-spacing:.18em;font-weight:950;color:#fff;background:#090d16;border:1px solid #354158;border-radius:12px;padding:12px 10px;margin:4px 0 7px;overflow-wrap:anywhere}
+.mobile-sync-muted{color:var(--mut);font-size:12px;line-height:1.6}
+.mobile-sync-step{display:flex;gap:10px;align-items:flex-start;margin:13px 0}
+.mobile-sync-num{width:28px;height:28px;display:grid;place-items:center;flex:none;border-radius:9px;background:#ff1763;color:#fff;font-weight:900}
+.mobile-sync-bookmarklet{width:100%;min-height:145px;resize:vertical;border:1px solid #354158;border-radius:12px;background:#090d16;color:#dce4f2;padding:11px;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;margin:2px 0 9px}
+.mobile-sync-inline-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.mobile-sync-inline-actions .btn{flex:1 1 180px}
+.mobile-sync-warning{padding:11px 12px;border-radius:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.18);color:#f8cc79;font-size:12px;line-height:1.6;margin-top:8px}
+.mobile-sync-error{color:#ff8897;border:1px solid rgba(255,77,95,.28)}
+@media(max-width:600px){.mobile-sync-inline-head{gap:8px}.mobile-sync-code{font-size:24px}.mobile-sync-inline-actions{flex-direction:column}.mobile-sync-inline-actions .btn{width:100%}}
+
+</style>
+<style>
 /* ===== Feature visibility manager ===== */
 .r12-display{margin:14px 0 10px;background:linear-gradient(145deg,rgba(20,25,39,.96),rgba(14,18,29,.96));border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
 .r12-display-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 15px}
@@ -1457,6 +1480,10 @@ const VIEWS = ["cards", "heat", "analytics", "status", "tickets"];
 let view = store.get("view", "cards"); if (!VIEWS.includes(view)) view = "cards";
 let ana = null, sysd = null, extraErr = "";
 let myTickets = null, myTicketsError = "", myTicketsLoading = false;
+// Setup Sync HP ditampilkan langsung di halaman Jadwal Saya, bukan membuka /mobile-sync.
+let mobileSyncSetup = null; // {code, expires_at, ttl_seconds, url, bookmarklet}
+let mobileSyncSetupLoading = false;
+let mobileSyncSetupError = "";
 loadMyTicketsFromLocalCache();
 let myTicketsBridgeStatus = "";
 let myTicketsBridgeProgress = null;
@@ -1855,7 +1882,84 @@ async function loadExtra() {
 /* MOBILE_MY_TICKETS: HP melakukan same-origin fetch di jkt48.com; Dashboard membaca cache Radar. */
 function dashQuery(extra={}){const q=new URLSearchParams();if(KEY)q.set("key",KEY);for(const[k,v]of Object.entries(extra||{}))if(v!=null&&v!=="")q.set(k,v);const s=q.toString();return s?"?"+s:"";}
 async function refreshMyTicketsCache(silent=false){if(!silent){myTicketsLoading=true;myTicketsError="";myTicketsBridgeStatus="🔄 Membaca cache Jadwal Saya…";myTicketsBridgeProgress=35;if(view==="tickets")render();}try{const r=await fetch("/api/my-tickets"+dashQuery(),{cache:"no-store"});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j?.error||j?.message||`HTTP ${r.status}`);if(j?.fetched&&Array.isArray(j.tickets)){myTickets=j;myTicketsAuthenticated=true;try{localStorage.setItem("radar_my_tickets_cache_v3",JSON.stringify(j))}catch(_){}myTicketsError="";myTicketsBridgeStatus=`✅ ${j.tickets.length} record · sync ${j.updated_at?new Date(j.updated_at*1000).toLocaleTimeString("id-ID"):"-"}`;myTicketsBridgeProgress=100}else if(!myTickets?.fetched){myTickets=j;myTicketsAuthenticated=false;myTicketsBridgeStatus="📱 Belum ada sync dari HP.";myTicketsBridgeProgress=0}if(!silent){myTicketsLoading=false;if(view==="tickets")render()}return myTickets}catch(e){if(!silent){myTicketsLoading=false;myTicketsBridgeStatus="";myTicketsBridgeProgress=null}myTicketsError=String(e?.message||e||"Gagal membaca Jadwal Saya.");if(view==="tickets")render();return null;}}
-async function openMobileSyncSetup(){try{const r=await fetch("/api/mobile-sync/code"+dashQuery(),{cache:"no-store"});const j=await r.json().catch(()=>({}));if(!r.ok||!j?.ok)throw Error(j?.error||`HTTP ${r.status}`);const url=location.origin+"/mobile-sync?code="+encodeURIComponent(j.code);try{await navigator.clipboard.writeText(url)}catch(_){}const w=window.open(url,"_blank","noopener,noreferrer");if(!w)location.href=url}catch(e){myTicketsError="Gagal membuat kode Sync HP: "+String(e?.message||e);render();}}
+function buildMobileSyncBookmarklet(code){
+  const R=location.origin, C=String(code||"");
+  let src=`(()=>{const R='__RADAR__',C='__CODE__';if(window.__JKT48_RADAR_SYNC__){alert('Radar Sync sudah aktif di tab ini.');return}window.__JKT48_RADAR_SYNC__=1;const A=location.origin+'/api/v1/accounts/my-tickets',b=document.createElement('div');b.style='position:fixed;left:10px;right:10px;bottom:10px;z-index:2147483647;background:#111827;color:#fff;border:1px solid #334155;border-radius:16px;padding:12px;font:13px system-ui,-apple-system,Segoe UI,sans-serif;box-shadow:0 16px 55px rgba(0,0,0,.45)';b.innerHTML='<b>🎟️ JKT48 Radar Sync</b><div id="__rs" style="margin-top:6px;opacity:.8">Menyiapkan…</div><button id="__rx" style="margin-top:9px;border:1px solid #475569;background:#1e293b;color:#fff;border-radius:9px;padding:7px 10px;font-weight:700">Stop</button>';document.documentElement.appendChild(b);const s=b.querySelector('#__rs'),x=b.querySelector('#__rx');let timer=0,busy=0;x.onclick=()=>{clearInterval(timer);window.__JKT48_RADAR_SYNC__=0;b.remove()};const wait=m=>new Promise(r=>setTimeout(r,m));async function pull(){if(busy)return;busy=1;try{s.textContent='Membaca seluruh My Tickets…';const now=new Date(),from=new Date(now.getTime()-86400000).toISOString().slice(0,10),to=new Date(now.getTime()+32*86400000).toISOString().slice(0,10);let page=1,total=1,rows=[];while(page<=total&&page<=50){s.textContent='JKT48 · halaman '+page+'/'+Math.max(total,1);const rr=await fetch(A+'?lang=id&limit=10&page='+page+'&from='+from+'&to='+to,{credentials:'include',cache:'no-store'}),jj=await rr.json().catch(()=>({}));if(!rr.ok)throw Error(jj.message||'JKT48 HTTP '+rr.status);if(jj.status===false)throw Error(jj.message||'API JKT48 menolak permintaan');rows=rows.concat(Array.isArray(jj.data)?jj.data:[]);total=Math.max(1,Number((jj._meta||{}).total_page||1)||1);page++;if(page<=total)await wait(150)}s.textContent='Mengirim '+rows.length+' record ke Radar…';const rr=await fetch(R+'/api/jkt48/mobile-sync',{method:'POST',mode:'cors',body:new URLSearchParams({code:C,payload:JSON.stringify({from,to,pages_fetched:total,tickets:rows,fetched_at:Date.now()/1000})})}),jj=await rr.json().catch(()=>({}));if(!rr.ok||!jj.ok)throw Error(jj.error||'Radar HTTP '+rr.status);s.textContent='✅ Sync berhasil · '+(jj.total||rows.length)+' record · '+new Date().toLocaleTimeString('id-ID')}catch(e){s.textContent='⚠️ '+(e&&e.message||e)}finally{busy=0}}pull();timer=setInterval(pull,60000)})()`;
+  src=src.replace('__RADAR__',R).replace('__CODE__',C);
+  return 'javascript:'+src.replace(/\s+/g,' ');
+}
+
+function renderMobileSyncSetup(){
+  const box=el("div","card mobile-sync-inline");
+  const head=el("div","mobile-sync-inline-head");
+  const title=el("div");
+  title.append(el("div","mobile-sync-kicker","📱 MOBILE SYNC"));
+  title.append(el("h2","","JKT48 → Ticket Radar"));
+  title.append(el("div","note","Setup Sync HP sekarang ditampilkan langsung di halaman ini. Tidak perlu membuka halaman /mobile-sync baru."));
+  const close=el("button","btn sq mobile-sync-close","✕");
+  close.type="button"; close.title="Tutup setup"; close.onclick=()=>{mobileSyncSetup=null;mobileSyncSetupError="";render();};
+  head.append(title,close); box.append(head);
+
+  if(mobileSyncSetupLoading){
+    box.append(el("div","mobile-sync-loading","⏳ Membuat kode pairing…"));
+    return box;
+  }
+  if(mobileSyncSetupError){
+    box.append(el("div","note mobile-sync-error","⚠️ "+mobileSyncSetupError));
+    const retry=el("button","btn buyp","↻ Coba lagi"); retry.type="button"; retry.onclick=openMobileSyncSetup; box.append(retry);
+    return box;
+  }
+  if(!mobileSyncSetup?.code) return box;
+
+  const codeWrap=el("div","mobile-sync-code-wrap");
+  codeWrap.append(el("div","mobile-sync-label","Kode pairing"));
+  codeWrap.append(el("div","mobile-sync-code",mobileSyncSetup.code));
+  codeWrap.append(el("div","mobile-sync-muted",`Berlaku sekitar ${Math.ceil(Number(mobileSyncSetup.ttl_seconds||600)/60)} menit. Kode ini dipakai bookmarklet untuk mengirim data tiket ke Radar.`));
+  box.append(codeWrap);
+
+  const step1=el("div","mobile-sync-step");
+  step1.append(el("span","mobile-sync-num","1"));
+  const s1=el("div"); s1.append(el("b","","Pasang bookmark Radar Sync di HP"));
+  s1.append(el("div","mobile-sync-muted","Salin bookmarklet di bawah, buat bookmark bernama 🎟️ Radar Sync, lalu tempel bookmarklet sebagai URL bookmark."));
+  step1.append(s1); box.append(step1);
+
+  const ta=document.createElement("textarea");
+  ta.className="mobile-sync-bookmarklet"; ta.readOnly=true; ta.spellcheck=false; ta.value=mobileSyncSetup.bookmarklet; box.append(ta);
+  const actions=el("div","mobile-sync-inline-actions");
+  const copy=el("button","btn buyp","📋 Salin Bookmarklet"); copy.type="button";
+  copy.onclick=async()=>{try{await navigator.clipboard.writeText(mobileSyncSetup.bookmarklet);copy.textContent="✅ Bookmarklet tersalin";}catch(_){ta.focus();ta.select();copy.textContent="📋 Pilih lalu salin";}};
+  const copyUrl=el("button","btn","🔗 Salin URL Dashboard"); copyUrl.type="button";
+  copyUrl.onclick=async()=>{try{await navigator.clipboard.writeText(location.href);copyUrl.textContent="✅ URL tersalin";}catch(_){}};
+  actions.append(copy,copyUrl); box.append(actions);
+
+  const step2=el("div","mobile-sync-step");
+  step2.append(el("span","mobile-sync-num","2"));
+  const s2=el("div"); s2.append(el("b","","Login ke JKT48 di HP")); s2.append(el("div","mobile-sync-muted","Buka jkt48.com di browser yang sama dan pastikan akun sudah login.")); step2.append(s2); box.append(step2);
+  const step3=el("div","mobile-sync-step");
+  step3.append(el("span","mobile-sync-num","3"));
+  const s3=el("div"); s3.append(el("b","","Jalankan Radar Sync")); s3.append(el("div","mobile-sync-muted","Saat halaman JKT48 terbuka, jalankan bookmark 🎟️ Radar Sync. Sync pertama membaca seluruh My Tickets lalu mengirimkannya ke dashboard. Tab JKT48 dapat dibiarkan terbuka untuk sync ulang setiap 60 detik.")); step3.append(s3); box.append(step3);
+  box.append(el("div","mobile-sync-warning","💡 Android Chrome: edit bookmark dan masukkan seluruh teks bookmarklet di atas sebagai URL. iPhone: Safari + Shortcuts dapat memakai aksi Run JavaScript on Webpage."));
+  return box;
+}
+
+async function openMobileSyncSetup(){
+  mobileSyncSetupError="";
+  mobileSyncSetupLoading=true;
+  mobileSyncSetup={code:""};
+  render();
+  try{
+    const r=await fetch("/api/mobile-sync/code"+dashQuery(),{cache:"no-store"});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j?.ok)throw Error(j?.error||`HTTP ${r.status}`);
+    const url=location.origin+"/mobile-sync?code="+encodeURIComponent(j.code);
+    mobileSyncSetup={...j,url,bookmarklet:buildMobileSyncBookmarklet(j.code)};
+  }catch(e){
+    mobileSyncSetupError="Gagal membuat kode Sync HP: "+String(e?.message||e);
+  }finally{
+    mobileSyncSetupLoading=false;
+    render();
+  }
+}
 async function fetchMyTickets(){return refreshMyTicketsCache(false)}
 setInterval(()=>{if(view==="tickets"&&!myTicketsLoading)refreshMyTicketsCache(true)},10000);
 
@@ -2036,6 +2140,10 @@ function renderMyTickets(){
   const fetchBtn=el("button","btn my-ticket-fetch-btn","🔄 Refresh");fetchBtn.type="button";fetchBtn.onclick=fetchMyTickets;
   actions.append(syncBtn,fetchBtn);toolbar.append(title,actions);
   wrap.append(toolbar);
+
+  if(mobileSyncSetup){
+    wrap.append(renderMobileSyncSetup());
+  }
 
   if(myTicketsError){
     const c=el("div","card");
