@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         JKT48 Ticket Radar - Browser Ticket Reader
 // @namespace    voltvoltre.jkt48.radar
-// @version      3.0.0
-// @description  Membaca tiket My Page JKT48 dari browser dan mengirim hasilnya ke Dashboard Radar tanpa membuka tab baru
+// @version      3.1.0
+// @description  Membaca tiket dari My Page JKT48 di browser dan mengirim hasilnya ke Dashboard Radar tanpa membuka tab baru
 // @match        https://jkt48.com/*
 // @grant        none
 // @run-at       document-idle
@@ -12,7 +12,7 @@
     "use strict";
 
     // =========================================================
-    // CONFIG
+    // CONFIGURATION
     // =========================================================
 
     const params = new URLSearchParams(
@@ -20,8 +20,8 @@
     );
 
     /*
-     * Script hanya aktif ketika dashboard sedang
-     * menjalankan browser fetch.
+     * Script HANYA dijalankan ketika dashboard
+     * memanggil halaman JKT48 sebagai browser bridge.
      */
     if (
         params.get("radar_fetch") !== "1"
@@ -30,10 +30,15 @@
     }
 
     /*
-     * Token ini hanya bridge-token sementara
-     * dari dashboard -> iframe -> dashboard.
+     * Temporary bridge token.
      *
-     * BUKAN access_token akun JKT48.
+     * INI BUKAN:
+     * - access_token
+     * - refresh_token
+     * - cf_clearance
+     *
+     * Token ini hanya untuk mencocokkan
+     * request dengan dashboard.
      */
     const bridgeToken =
         params.get("token") || "";
@@ -42,12 +47,14 @@
      * Origin dashboard.
      *
      * Contoh:
-     * https://domain-dashboard-kamu.com
+     * https://radar.example.com
      */
     const parentOrigin =
-        params.get("parent_origin") ||
-        "";
+        params.get("parent_origin") || "";
 
+    /*
+     * Range tanggal.
+     */
     const from =
         params.get("from") ||
         formatDate(
@@ -63,21 +70,22 @@
             )
         );
 
-    const embedded =
-        params.get("embedded") === "1";
-
     // =========================================================
-    // BASIC VALIDATION
+    // VALIDATION
     // =========================================================
 
-    if (!bridgeToken) {
+    if (
+        !bridgeToken
+    ) {
         console.error(
             "[JKT48 Radar] Bridge token tidak ditemukan."
         );
         return;
     }
 
-    if (!parentOrigin) {
+    if (
+        !parentOrigin
+    ) {
         console.error(
             "[JKT48 Radar] Parent origin tidak ditemukan."
         );
@@ -88,21 +96,27 @@
     // LOGGER
     // =========================================================
 
-    function log(...args) {
+    function log(
+        ...args
+    ) {
         console.log(
             "[JKT48 Radar]",
             ...args
         );
     }
 
-    function warn(...args) {
+    function warn(
+        ...args
+    ) {
         console.warn(
             "[JKT48 Radar]",
             ...args
         );
     }
 
-    function error(...args) {
+    function error(
+        ...args
+    ) {
         console.error(
             "[JKT48 Radar]",
             ...args
@@ -110,42 +124,58 @@
     }
 
     // =========================================================
-    // HELPER
+    // HELPERS
     // =========================================================
 
-    function sleep(ms) {
-        return new Promise(resolve => {
-            setTimeout(
-                resolve,
-                ms
-            );
-        });
+    function sleep(
+        ms
+    ) {
+        return new Promise(
+            resolve =>
+                setTimeout(
+                    resolve,
+                    ms
+                )
+        );
     }
 
-    function cleanText(value) {
+    function cleanText(
+        value
+    ) {
         return String(
-            value == null
-                ? ""
-                : value
+            value ?? ""
         )
-            .replace(/\u00a0/g, " ")
-            .replace(/\s+/g, " ")
+            .replace(
+                /\u00a0/g,
+                " "
+            )
+            .replace(
+                /\s+/g,
+                " "
+            )
             .trim();
     }
 
-    function normalizeForCompare(value) {
+    function normalizeText(
+        value
+    ) {
         return cleanText(
             value
         )
             .toLowerCase()
-            .replace(/[–—]/g, "-");
+            .replace(
+                /[–—]/g,
+                "-"
+            );
     }
 
-    function formatDate(date) {
-        const y =
+    function formatDate(
+        date
+    ) {
+        const year =
             date.getFullYear();
 
-        const m =
+        const month =
             String(
                 date.getMonth() + 1
             ).padStart(
@@ -153,7 +183,7 @@
                 "0"
             );
 
-        const d =
+        const day =
             String(
                 date.getDate()
             ).padStart(
@@ -161,7 +191,9 @@
                 "0"
             );
 
-        return `${y}-${m}-${d}`;
+        return (
+            `${year}-${month}-${day}`
+        );
     }
 
     function clamp(
@@ -179,7 +211,7 @@
     }
 
     // =========================================================
-    // PARENT MESSAGE BRIDGE
+    // PARENT COMMUNICATION
     // =========================================================
 
     function sendParentMessage(
@@ -191,13 +223,10 @@
                 !window.parent ||
                 window.parent === window
             ) {
-                /*
-                 * Ini bisa terjadi kalau URL dibuka langsung.
-                 * Tetap log agar mudah debugging.
-                 */
                 warn(
-                    "Tidak berada di iframe parent."
+                    "Parent window tidak tersedia."
                 );
+
                 return;
             }
 
@@ -213,9 +242,13 @@
 
                     ...payload
                 },
+
                 parentOrigin
             );
-        } catch (e) {
+
+        } catch (
+            e
+        ) {
             error(
                 "postMessage gagal:",
                 e
@@ -257,23 +290,26 @@
     }
 
     // =========================================================
-    // OPTIONAL HIDDEN PAGE OVERLAY
+    // OPTIONAL LOCAL DEBUG OVERLAY
     // =========================================================
 
     /*
-     * Karena halaman ini biasanya berada di iframe 1x1,
-     * overlay sebenarnya tidak terlihat oleh user.
+     * Ketika halaman JKT48 dijalankan sebagai iframe tersembunyi,
+     * overlay juga tersembunyi.
      *
-     * Tetap kita buat agar debugging manual di URL JKT48
-     * tetap nyaman.
+     * Kalau userscript dibuka secara manual,
+     * overlay akan membantu debugging.
      */
+
     function ensureOverlay() {
         let overlay =
             document.getElementById(
                 "jkt48-radar-reader-overlay"
             );
 
-        if (overlay) {
+        if (
+            overlay
+        ) {
             return overlay;
         }
 
@@ -325,25 +361,39 @@
                 position: fixed;
                 inset: 0;
                 z-index: 2147483647;
+
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                background: rgba(0,0,0,.18);
-                backdrop-filter: blur(5px);
+
+                background:
+                    rgba(0, 0, 0, .18);
+
+                backdrop-filter:
+                    blur(6px);
             }
 
             #jkt48-radar-reader-card {
-                width: min(
-                    460px,
-                    calc(100vw - 32px)
-                );
+                width:
+                    min(
+                        460px,
+                        calc(100vw - 32px)
+                    );
+
                 padding: 28px;
+
                 border-radius: 22px;
-                background: #ffffff;
+
+                background:
+                    #ffffff;
+
                 box-shadow:
                     0 25px 80px
                     rgba(0,0,0,.25);
-                text-align: center;
+
+                text-align:
+                    center;
+
                 font-family:
                     Inter,
                     system-ui,
@@ -361,31 +411,50 @@
             #jkt48-radar-reader-title {
                 font-size: 21px;
                 font-weight: 800;
-                color: #111827;
+
+                color:
+                    #111827;
+
                 margin-bottom: 8px;
             }
 
             #jkt48-radar-reader-status {
                 font-size: 14px;
                 line-height: 1.5;
-                color: #6b7280;
-                white-space: pre-line;
+
+                color:
+                    #6b7280;
+
+                white-space:
+                    pre-line;
             }
 
             #jkt48-radar-reader-progress {
                 width: 100%;
                 height: 7px;
+
                 margin-top: 20px;
-                overflow: hidden;
-                border-radius: 999px;
-                background: #f1f1f1;
+
+                overflow:
+                    hidden;
+
+                border-radius:
+                    999px;
+
+                background:
+                    #f1f1f1;
             }
 
             #jkt48-radar-reader-progress > div {
                 height: 100%;
                 width: 0%;
-                border-radius: inherit;
-                background: #ef233c;
+
+                border-radius:
+                    inherit;
+
+                background:
+                    #ef233c;
+
                 transition:
                     width .2s ease;
             }
@@ -425,7 +494,9 @@
                 "#jkt48-radar-reader-progress > div"
             );
 
-        if (status) {
+        if (
+            status
+        ) {
             status.textContent =
                 message;
         }
@@ -449,13 +520,15 @@
                 "jkt48-radar-reader-overlay"
             );
 
-        if (overlay) {
+        if (
+            overlay
+        ) {
             overlay.remove();
         }
     }
 
     // =========================================================
-    // MONTH
+    // MONTH MAP
     // =========================================================
 
     const MONTHS = {
@@ -508,7 +581,8 @@
             );
 
         /*
-         * Format:
+         * Contoh:
+         *
          * SUN, OCT 11, 2026
          * SAT, OCT 24, 2026
          */
@@ -518,18 +592,23 @@
                 /(?:MON|TUE|WED|THU|FRI|SAT|SUN)[,.\s-]*(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:TEMBER)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)[,\s]+(\d{1,2})[,\s]+(\d{4})/i
             );
 
-        if (!match) {
-            /*
-             * Fallback:
-             * OCT 24, 2026
-             */
+        /*
+         * Fallback:
+         *
+         * OCT 24, 2026
+         */
+        if (
+            !match
+        ) {
             match =
                 value.match(
                     /\b(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:TEMBER)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)[,\s]+(\d{1,2})[,\s]+(\d{4})\b/i
                 );
         }
 
-        if (!match) {
+        if (
+            !match
+        ) {
             return "";
         }
 
@@ -564,6 +643,9 @@
                 day
             );
 
+        /*
+         * Validasi date.
+         */
         if (
             date.getFullYear() !== year ||
             date.getMonth() !== month ||
@@ -585,13 +667,14 @@
         text
     ) {
         const t =
-            normalizeForCompare(
+            normalizeText(
                 text
             );
 
         /*
-         * M&G harus dicek lebih dulu.
+         * Urutan penting.
          */
+
         if (
             t.includes(
                 "meet & greet"
@@ -610,8 +693,12 @@
         }
 
         if (
-            t.includes("2shot") ||
-            t.includes("2 shot")
+            t.includes(
+                "2shot"
+            ) ||
+            t.includes(
+                "2 shot"
+            )
         ) {
             return "2SHOT";
         }
@@ -666,10 +753,6 @@
         return "OTHER";
     }
 
-    // =========================================================
-    // CATEGORY LABEL
-    // =========================================================
-
     function categoryLabel(
         category
     ) {
@@ -694,7 +777,7 @@
     }
 
     // =========================================================
-    // TIME
+    // TIME PARSER
     // =========================================================
 
     function extractTime(
@@ -705,18 +788,14 @@
                 text
             );
 
-        /*
-         * Mendukung:
-         * 14:00–16:00
-         * 14:00-16:00
-         * 14.00–16.00
-         */
         const match =
             value.match(
                 /\b(\d{1,2})[:.](\d{2})\s*[–—-]\s*(\d{1,2})[:.](\d{2})\b/
             );
 
-        if (!match) {
+        if (
+            !match
+        ) {
             return {
                 start_time: "",
                 end_time: ""
@@ -733,7 +812,7 @@
     }
 
     // =========================================================
-    // RECEPTION
+    // RECEPTION PARSER
     // =========================================================
 
     function extractReception(
@@ -749,7 +828,9 @@
                 /RECEPTION\s+(\d{1,2})[:.](\d{2})(?:\s*[–—-]\s*(\d{1,2})[:.](\d{2}))?/i
             );
 
-        if (!match) {
+        if (
+            !match
+        ) {
             return {
                 reception_start_time: "",
                 reception_end_time: ""
@@ -761,14 +842,15 @@
                 `${match[1].padStart(2, "0")}:${match[2]}`,
 
             reception_end_time:
-                match[3] && match[4]
+                match[3] &&
+                match[4]
                     ? `${match[3].padStart(2, "0")}:${match[4]}`
                     : ""
         };
     }
 
     // =========================================================
-    // SESSION
+    // SESSION PARSER
     // =========================================================
 
     function extractSession(
@@ -784,7 +866,9 @@
                 /\bSesi\s+(\d+)\b/i
             );
 
-        if (!match) {
+        if (
+            !match
+        ) {
             return "";
         }
 
@@ -795,7 +879,7 @@
     }
 
     // =========================================================
-    // LANE
+    // LANE PARSER
     // =========================================================
 
     function extractLane(
@@ -811,7 +895,9 @@
                 /\bLane\s+(\d+)\b/i
             );
 
-        if (!match) {
+        if (
+            !match
+        ) {
             return "";
         }
 
@@ -838,7 +924,9 @@
                 /\b(\d+)\s+TICKETS?\b/i
             );
 
-        if (match) {
+        if (
+            match
+        ) {
             return Number(
                 match[1]
             );
@@ -853,7 +941,9 @@
                 /\b(\d+)\s+ENTR(?:Y|IES)\b/i
             );
 
-        if (match) {
+        if (
+            match
+        ) {
             return Number(
                 match[1]
             );
@@ -867,7 +957,9 @@
                 /\b(\d+)\s+tiket\b/i
             );
 
-        if (match) {
+        if (
+            match
+        ) {
             return Number(
                 match[1]
             );
@@ -877,7 +969,7 @@
     }
 
     // =========================================================
-    // MEMBER NAME HELPERS
+    // NAME VALIDATION
     // =========================================================
 
     function looksLikeMemberName(
@@ -905,6 +997,7 @@
             "JKT48 POINTS",
             "JKT48 POINT",
             "THEATER SHOW",
+            "THEATRE SHOW",
             "MEET & GREET",
             "MEET AND GREET",
             "2SHOT",
@@ -918,7 +1011,8 @@
             "ENTRIES",
             "OFC / GENERAL",
             "PENDING",
-            "MIXED"
+            "MIXED",
+            "SHOW"
         ];
 
         if (
@@ -933,14 +1027,18 @@
         if (
             blacklist.some(
                 item =>
-                    upper.includes(item)
+                    upper.includes(
+                        item
+                    )
             )
         ) {
             return false;
         }
 
         if (
-            /^\d/.test(text)
+            /^\d/.test(
+                text
+            )
         ) {
             return false;
         }
@@ -962,8 +1060,12 @@
         }
 
         /*
-         * Nama umumnya terdiri dari huruf,
-         * spasi, titik, apostrof, atau tanda minus.
+         * Nama:
+         * huruf
+         * spasi
+         * titik
+         * apostrof
+         * minus
          */
         if (
             !/^[A-Za-zÀ-ÿ.'’\- ]+$/.test(
@@ -976,17 +1078,24 @@
         return true;
     }
 
+    // =========================================================
+    // MEMBER NAME
+    // =========================================================
+
     function guessMemberName(
         container,
         category
     ) {
         if (
-            !container ||
-            (
-                category !== "MNG" &&
-                category !== "2SHOT" &&
-                category !== "VC"
-            )
+            !container
+        ) {
+            return "";
+        }
+
+        if (
+            category !== "MNG" &&
+            category !== "2SHOT" &&
+            category !== "VC"
         ) {
             return "";
         }
@@ -1019,32 +1128,23 @@
                 const node
                 of nodes
             ) {
-                const value =
+                const text =
                     cleanText(
                         node.innerText
                     );
 
                 if (
-                    !value
-                ) {
-                    continue;
-                }
-
-                if (
                     looksLikeMemberName(
-                        value
+                        text
                     )
                 ) {
                     candidates.push(
-                        value
+                        text
                     );
                 }
             }
         }
 
-        /*
-         * Ambil kandidat pertama yang masuk akal.
-         */
         if (
             candidates.length
         ) {
@@ -1052,10 +1152,11 @@
         }
 
         /*
-         * Fallback berdasarkan baris teks.
+         * Fallback:
+         * cari berdasarkan baris.
          */
         const lines =
-            (
+            String(
                 container.innerText ||
                 ""
             )
@@ -1096,22 +1197,27 @@
             );
 
         if (
+            !text
+        ) {
+            return "";
+        }
+
+        const lines =
+            text
+                .split(/\n+/)
+                .map(
+                    cleanText
+                )
+                .filter(Boolean);
+
+        /*
+         * M&G / 2SHOT / VC.
+         */
+        if (
             category === "MNG" ||
             category === "2SHOT" ||
             category === "VC"
         ) {
-            /*
-             * Untuk event personal:
-             * cari teks panjang yang bukan member/
-             * session/lane/time.
-             */
-            const lines =
-                text.split(/\n+/)
-                    .map(
-                        cleanText
-                    )
-                    .filter(Boolean);
-
             for (
                 const line
                 of lines
@@ -1131,12 +1237,19 @@
                 ) {
                     return line;
                 }
+
+                if (
+                    /photocard/i.test(
+                        line
+                    )
+                ) {
+                    return line;
+                }
             }
         }
 
         /*
-         * SHOW:
-         * Cari heading paling masuk akal.
+         * SHOW.
          */
         const headings =
             Array.from(
@@ -1145,9 +1258,9 @@
                 )
             )
                 .map(
-                    el =>
+                    node =>
                         cleanText(
-                            el.innerText
+                            node.innerText
                         )
                 )
                 .filter(Boolean);
@@ -1157,7 +1270,7 @@
             of headings
         ) {
             if (
-                !/sesi|lane|meet & greet|2shot|reception|pending|mixed/i.test(
+                !/sesi|lane|meet & greet|meet and greet|2shot|reception|pending|mixed/i.test(
                     heading
                 )
             ) {
@@ -1169,20 +1282,20 @@
     }
 
     // =========================================================
-    // CARD VALIDATION
+    // TICKET SIGNAL
     // =========================================================
 
     function hasTicketSignals(
         text
     ) {
         const t =
-            normalizeForCompare(
+            cleanText(
                 text
             );
 
         const signals = [
-            /\b\d+\s+tickets?\b/i,
-            /\b\d+\s+entr(?:y|ies)\b/i,
+            /\b\d+\s+TICKETS?\b/i,
+            /\b\d+\s+ENTR(?:Y|IES)\b/i,
             /\b\d+\s+tiket\b/i,
             /\bSesi\s+\d+\b/i,
             /\bLane\s+\d+\b/i,
@@ -1192,6 +1305,7 @@
             /virtual call/i,
             /video call/i,
             /theater show/i,
+            /theatre show/i,
             /pajama drive/i
         ];
 
@@ -1217,12 +1331,11 @@
             element;
 
         /*
-         * Naik beberapa level untuk mencari
-         * container event card.
+         * Naik beberapa level.
          */
         for (
             let i = 0;
-            i < 8 &&
+            i < 10 &&
             current;
             i++
         ) {
@@ -1232,11 +1345,20 @@
                     ""
                 );
 
+            /*
+             * Card yang masuk akal:
+             * tidak terlalu kecil
+             * tidak terlalu besar
+             */
             if (
-                text.length > 80 &&
-                text.length < 5000 &&
-                parseDateFromText(text) &&
-                hasTicketSignals(text)
+                text.length >= 60 &&
+                text.length <= 6000 &&
+                parseDateFromText(
+                    text
+                ) &&
+                hasTicketSignals(
+                    text
+                )
             ) {
                 best =
                     current;
@@ -1250,17 +1372,14 @@
     }
 
     // =========================================================
-    // FIND TICKET CARDS
+    // FIND CARDS
     // =========================================================
 
     function findTicketCards() {
-        /*
-         * Mulai dari elemen yang memiliki tanggal.
-         */
-        const all =
+        const elements =
             Array.from(
                 document.querySelectorAll(
-                    "div,article,section,li"
+                    "article,section,li,div"
                 )
             );
 
@@ -1269,7 +1388,7 @@
 
         for (
             const element
-            of all
+            of elements
         ) {
             const text =
                 cleanText(
@@ -1313,31 +1432,39 @@
             }
         }
 
-        /*
-         * Buang nested duplicate.
-         */
-        const cards =
+        const candidates =
             Array.from(
                 roots
-            ).filter(
-                card => {
-                    return !Array.from(
-                        roots
-                    ).some(
+            );
+
+        /*
+         * Buang parent yang hanya
+         * mengandung card lain.
+         */
+        const cards =
+            candidates.filter(
+                card =>
+                    !candidates.some(
                         other =>
                             other !== card &&
                             other.contains(
                                 card
                             )
-                    );
-                }
+                    )
             );
 
-        return cards;
+        /*
+         * Safety dedupe berdasarkan DOM.
+         */
+        return Array.from(
+            new Set(
+                cards
+            )
+        );
     }
 
     // =========================================================
-    // PARSE CARD
+    // PARSE ONE CARD
     // =========================================================
 
     function parseCard(
@@ -1418,16 +1545,19 @@
             );
 
         /*
-         * Jangan kirim card yang jelas bukan ticket.
+         * Jangan ambil sesuatu yang terlalu samar.
          */
-        const likelyTicket =
+        const hasStrongSignal =
             category !== "OTHER" ||
-            session ||
-            lane ||
-            boughtCount > 0;
+            Boolean(
+                session
+            ) ||
+            Boolean(
+                lane
+            );
 
         if (
-            !likelyTicket
+            !hasStrongSignal
         ) {
             return null;
         }
@@ -1494,7 +1624,7 @@
     }
 
     // =========================================================
-    // DEDUPE
+    // DEDUPE TICKETS
     // =========================================================
 
     function dedupeTickets(
@@ -1520,7 +1650,9 @@
             ].join("|");
 
             if (
-                !map.has(key)
+                !map.has(
+                    key
+                )
             ) {
                 map.set(
                     key,
@@ -1535,7 +1667,7 @@
     }
 
     // =========================================================
-    // WAIT FOR DOM
+    // WAIT DOM
     // =========================================================
 
     async function waitForDomReady() {
@@ -1557,16 +1689,18 @@
         }
 
         /*
-         * Tunggu React / Next / Vue selesai render.
+         * Tunggu framework JKT48 selesai render.
          */
-        await sleep(1200);
+        await sleep(
+            1200
+        );
     }
 
     // =========================================================
-    // WAIT FOR TICKETS
+    // WAIT TICKET CONTENT
     // =========================================================
 
-    async function waitForTickets() {
+    async function waitForTicketContent() {
         for (
             let i = 0;
             i < 40;
@@ -1578,16 +1712,25 @@
                     ""
                 );
 
-            const found =
-                parseDateFromText(
-                    bodyText
-                ) &&
+            /*
+             * Minimal harus ada tanggal
+             * dan salah satu ticket signal.
+             */
+            const hasDate =
+                Boolean(
+                    parseDateFromText(
+                        bodyText
+                    )
+                );
+
+            const hasSignal =
                 hasTicketSignals(
                     bodyText
                 );
 
             if (
-                found
+                hasDate &&
+                hasSignal
             ) {
                 return true;
             }
@@ -1601,25 +1744,25 @@
     }
 
     // =========================================================
-    // SCROLL / LOAD LAZY CONTENT
+    // SCROLL
     // =========================================================
 
     async function scrollAll() {
         let lastHeight =
             0;
 
-        let stableCount =
+        let stableRounds =
             0;
 
         const maxRounds =
             35;
 
         for (
-            let i = 0;
-            i < maxRounds;
-            i++
+            let round = 0;
+            round < maxRounds;
+            round++
         ) {
-            const currentHeight =
+            const height =
                 document.documentElement
                     .scrollHeight;
 
@@ -1627,32 +1770,30 @@
                 Math.min(
                     70,
                     15 +
-                    i * 2
+                    round * 2
                 );
 
-            setLocalStatus(
+            const message =
                 "Membaca seluruh daftar tiket…\n" +
-                `Scroll ${i + 1}/${maxRounds}`,
+                `Memuat bagian ${round + 1}/${maxRounds}`;
+
+            setLocalStatus(
+                message,
                 progress
             );
 
             sendStatus(
-                "Membaca seluruh daftar tiket…\n" +
-                `Memuat data ${i + 1}/${maxRounds}`,
+                message,
                 progress
             );
 
             window.scrollTo(
                 0,
-                currentHeight
+                height
             );
 
-            /*
-             * Beberapa halaman lazy-load
-             * setelah scroll.
-             */
             await sleep(
-                650
+                700
             );
 
             const newHeight =
@@ -1662,24 +1803,25 @@
             if (
                 newHeight === lastHeight
             ) {
-                stableCount++;
+                stableRounds++;
             } else {
-                stableCount = 0;
+                stableRounds = 0;
             }
 
             lastHeight =
                 newHeight;
 
+            /*
+             * Tiga kali sama berarti
+             * kemungkinan sudah sampai bawah.
+             */
             if (
-                stableCount >= 3
+                stableRounds >= 3
             ) {
                 break;
             }
         }
 
-        /*
-         * Kembali ke atas.
-         */
         window.scrollTo(
             0,
             0
@@ -1691,85 +1833,93 @@
     }
 
     // =========================================================
-    // PAGINATION BUTTON HANDLER
+    // TRY LOAD MORE
     // =========================================================
 
     async function tryLoadMore() {
-        /*
-         * Beberapa implementasi page memakai
-         * button "Load more".
-         */
-        const buttons =
+        const elements =
             Array.from(
                 document.querySelectorAll(
                     "button,a"
                 )
             );
 
-        const loadMore =
-            buttons.find(
-                el => {
+        const candidates =
+            elements.filter(
+                element => {
                     const text =
                         cleanText(
-                            el.innerText
+                            element.innerText
                         );
 
-                    return /load more|selanjutnya|berikutnya|next|lihat lebih/i.test(
-                        text
+                    return (
+                        /load more/i.test(
+                            text
+                        ) ||
+                        /lihat lebih/i.test(
+                            text
+                        ) ||
+                        /selanjutnya/i.test(
+                            text
+                        ) ||
+                        /berikutnya/i.test(
+                            text
+                        ) ||
+                        /\bnext\b/i.test(
+                            text
+                        )
                     );
                 }
             );
 
+        const button =
+            candidates[0];
+
         if (
-            !loadMore
+            !button
         ) {
             return false;
         }
 
         if (
-            loadMore.disabled
+            button.disabled
+        ) {
+            return false;
+        }
+
+        /*
+         * Jangan klik kalau element memang
+         * tidak terlihat.
+         */
+        const rect =
+            button.getBoundingClientRect();
+
+        if (
+            rect.width === 0 ||
+            rect.height === 0
         ) {
             return false;
         }
 
         try {
-            loadMore.click();
+            button.click();
 
             await sleep(
-                1200
+                1300
             );
 
             return true;
+
         } catch (
-            _
+            e
         ) {
-            return false;
-        }
-    }
-
-    // =========================================================
-    // OBSERVE DOM CHANGES
-    // =========================================================
-
-    function createDomObserver(
-        callback
-    ) {
-        const observer =
-            new MutationObserver(
-                () => {
-                    callback();
-                }
+            warn(
+                "Load more gagal:",
+                e
             );
 
-        observer.observe(
-            document.documentElement,
-            {
-                childList: true,
-                subtree: true
-            }
-        );
-
-        return observer;
+            return false;
+        }
     }
 
     // =========================================================
@@ -1799,39 +1949,57 @@
             10
         );
 
-        /*
-         * Beri waktu render.
-         */
-        await sleep(
-            800
-        );
+        const found =
+            await waitForTicketContent();
 
-        await waitForTickets();
+        if (
+            !found
+        ) {
+            /*
+             * Tidak langsung gagal.
+             *
+             * Beri kesempatan page melakukan
+             * client-side rendering.
+             */
+            await sleep(
+                2000
+            );
+        }
 
-        /*
-         * Coba lazy content.
-         */
+        // -----------------------------------------------------
+        // LOAD CONTENT
+        // -----------------------------------------------------
+
         await scrollAll();
 
-        /*
-         * Coba sekali "Load More" bila ada.
-         */
+        // -----------------------------------------------------
+        // TRY PAGINATION / LOAD MORE
+        // -----------------------------------------------------
+
         for (
             let i = 0;
             i < 5;
             i++
         ) {
-            const more =
+            const loaded =
                 await tryLoadMore();
 
             if (
-                !more
+                !loaded
             ) {
                 break;
             }
 
+            await sleep(
+                500
+            );
+
             await scrollAll();
         }
+
+        // -----------------------------------------------------
+        // PARSE
+        // -----------------------------------------------------
 
         setLocalStatus(
             "Menganalisis card tiket…",
@@ -1843,9 +2011,6 @@
             75
         );
 
-        /*
-         * Tunggu perubahan DOM terakhir.
-         */
         await sleep(
             500
         );
@@ -1854,7 +2019,7 @@
             findTicketCards();
 
         log(
-            "Jumlah candidate card:",
+            "Candidate cards:",
             cards.length
         );
 
@@ -1867,23 +2032,24 @@
             i++
         ) {
             try {
-                const ticket =
+                const result =
                     parseCard(
                         cards[i]
                     );
 
                 if (
-                    ticket
+                    result
                 ) {
                     parsed.push(
-                        ticket
+                        result
                     );
                 }
+
             } catch (
                 e
             ) {
                 warn(
-                    "Gagal parse card:",
+                    "Card parse error:",
                     e
                 );
             }
@@ -1895,22 +2061,43 @@
             );
 
         /*
-         * Urutkan:
-         * tanggal → jam → kategori → member
+         * Urutan:
+         * date
+         * start_time
+         * category
+         * member
          */
         tickets.sort(
             (
                 a,
                 b
             ) => {
-                const dateA =
-                    `${a.date} ${a.start_time || "00:00"}`;
+                const left =
+                    [
+                        a.date,
+                        a.start_time ||
+                            "00:00",
+                        a.category,
+                        a.member_name ||
+                            ""
+                    ].join(
+                        " "
+                    );
 
-                const dateB =
-                    `${b.date} ${b.start_time || "00:00"}`;
+                const right =
+                    [
+                        b.date,
+                        b.start_time ||
+                            "00:00",
+                        b.category,
+                        b.member_name ||
+                            ""
+                    ].join(
+                        " "
+                    );
 
-                return dateA.localeCompare(
-                    dateB
+                return left.localeCompare(
+                    right
                 );
             }
         );
@@ -1926,17 +2113,17 @@
         ensureOverlay();
 
         setLocalStatus(
-            "🎟️ Menyiapkan pembacaan tiket…",
+            "🎟️ Menyiapkan browser reader…",
             2
         );
 
         sendStatus(
-            "🎟️ Menyiapkan pembacaan tiket…",
+            "🎟️ Menyiapkan browser reader…",
             2
         );
 
         /*
-         * Pastikan halaman memang dapat digunakan.
+         * Pastikan document siap.
          */
         if (
             !document.body
@@ -1944,60 +2131,87 @@
             await waitForDomReady();
         }
 
+        // -----------------------------------------------------
+        // SESSION
+        // -----------------------------------------------------
+
         setLocalStatus(
-            "🔐 Sesi browser JKT48 terdeteksi.\n" +
-            "Membaca halaman My Page…",
+            "🔐 Menggunakan sesi browser JKT48…",
             5
         );
 
         sendStatus(
-            "🔐 Sesi browser JKT48 terdeteksi.\n" +
-            "Membaca halaman My Page…",
+            "🔐 Menggunakan sesi browser JKT48…",
             5
         );
+
+        /*
+         * TIDAK:
+         * - mengambil access_token
+         * - mengambil refresh_token
+         * - membaca document.cookie
+         * - membaca cf_clearance
+         *
+         * Browser sendiri yang membawa session saat
+         * halaman JKT48 dimuat.
+         */
+
+        await sleep(
+            800
+        );
+
+        // -----------------------------------------------------
+        // READ
+        // -----------------------------------------------------
 
         const tickets =
             await readTickets();
 
         log(
-            "Hasil akhir:",
+            "Final ticket count:",
+            tickets.length
+        );
+
+        log(
+            "Tickets:",
             tickets
         );
 
-        /*
-         * Tidak ditemukan tiket.
-         */
+        // -----------------------------------------------------
+        // EMPTY
+        // -----------------------------------------------------
+
         if (
             !tickets.length
         ) {
             throw new Error(
-                "Tidak menemukan data tiket pada halaman My Page JKT48. " +
-                "Pastikan bagian jadwal/tiket sudah tampil."
+                "Tidak menemukan tiket pada halaman My Page JKT48. " +
+                "Pastikan jadwal tiket sudah tampil dan halaman tidak sedang loading."
             );
         }
 
-        setLocalStatus(
+        // -----------------------------------------------------
+        // SEND
+        // -----------------------------------------------------
+
+        const message =
             `✅ ${tickets.length} tiket berhasil dibaca.\n` +
-            "Mengirim hasil ke Dashboard Radar…",
+            "Mengirim hasil ke Dashboard Radar…";
+
+        setLocalStatus(
+            message,
             90
         );
 
         sendStatus(
-            `✅ ${tickets.length} tiket berhasil dibaca.\n` +
-            "Mengirim hasil ke Dashboard Radar…",
+            message,
             90
         );
 
         /*
-         * KIRIM DATA KE PARENT.
+         * HANYA DATA TIKET.
          *
-         * Tidak ada:
-         * - access_token
-         * - refresh_token
-         * - cf_clearance
-         * - cookie
-         *
-         * Yang dikirim hanya hasil tiket.
+         * Tidak ada credential akun.
          */
         sendParentMessage(
             "result",
@@ -2008,7 +2222,8 @@
 
                 fetched_at:
                     Math.floor(
-                        Date.now() / 1000
+                        Date.now() /
+                        1000
                     ),
 
                 source:
@@ -2017,6 +2232,10 @@
                 tickets
             }
         );
+
+        // -----------------------------------------------------
+        // FINISH
+        // -----------------------------------------------------
 
         setLocalStatus(
             `✅ ${tickets.length} tiket berhasil dibaca.\n` +
@@ -2033,15 +2252,20 @@
             1000
         );
 
+        /*
+         * Jangan:
+         *
+         * window.close()
+         *
+         * window.open()
+         *
+         * location.href = ...
+         *
+         * Karena iframe harus tetap menjadi
+         * bagian dari dashboard.
+         */
         closeOverlay();
 
-        /*
-         * PENTING:
-         * Tidak menggunakan window.close().
-         *
-         * Karena iframe tidak boleh mencoba
-         * menutup tab/window user.
-         */
         log(
             "Browser Ticket Reader selesai."
         );
