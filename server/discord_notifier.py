@@ -30,6 +30,7 @@ import zlib
 import random
 import re
 import shutil
+import secrets
 import urllib.request
 from curl_cffi import requests as cffi_requests
 # ------------------------------------------------------------
@@ -1844,6 +1845,13 @@ my_tickets_cache_lock = threading.Lock()
 my_tickets_cache = None
 my_tickets_fetch_lock = threading.Lock()
 my_tickets_fetching = False
+
+# Browser Bridge:
+# Browser yang sudah login ke jkt48.com melakukan request My Tickets secara same-origin.
+# Server hanya menerima hasil JSON dari browser melalui one-time token berumur singkat.
+MY_TICKETS_BRIDGE_TTL = int(os.environ.get("MY_TICKETS_BRIDGE_TTL", "120"))
+my_tickets_bridge_lock = threading.Lock()
+my_tickets_bridge = {}
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 # Proxy opsional untuk polling langsung (mis. proxy residensial Indonesia).
 # Format: http://user:pass@host:port  atau  socks5://user:pass@host:port
@@ -2888,6 +2896,108 @@ def normalize_my_ticket(ticket):
     }
 
 
+
+def _purge_my_tickets_bridge_locked(now=None):
+    now = time.time() if now is None else now
+    dead = [k for k, v in my_tickets_bridge.items() if now >= float(v.get("expires_at") or 0)]
+    for k in dead:
+        my_tickets_bridge.pop(k, None)
+
+
+def create_my_tickets_bridge(date_from, date_to):
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    with my_tickets_bridge_lock:
+        _purge_my_tickets_bridge_locked(now)
+        my_tickets_bridge[token] = {
+            "created_at": now,
+            "expires_at": now + max(30, MY_TICKETS_BRIDGE_TTL),
+            "from": date_from,
+            "to": date_to,
+            "status": "pending",
+            "result": None,
+            "error": "",
+        }
+    return token
+
+
+def get_my_tickets_bridge(token):
+    token = str(token or "").strip()
+    if not token:
+        return None
+    with my_tickets_bridge_lock:
+        _purge_my_tickets_bridge_locked()
+        item = my_tickets_bridge.get(token)
+        if not item:
+            return None
+        out = dict(item)
+        return out
+
+
+def set_my_tickets_bridge_result(token, result=None, error=""):
+    token = str(token or "").strip()
+    with my_tickets_bridge_lock:
+        item = my_tickets_bridge.get(token)
+        if not item:
+            return False
+        item["status"] = "success" if result is not None else "error"
+        item["result"] = result
+        item["error"] = str(error or "")[:500]
+        # Beri dashboard sedikit waktu untuk polling hasil setelah import selesai.
+        item["expires_at"] = time.time() + 120
+        return True
+
+
+def _prepare_browser_my_tickets(raw_tickets, date_from, date_to, pages_fetched=1):
+    rows = raw_tickets if isinstance(raw_tickets, list) else []
+    normalized = [normalize_my_ticket(x) for x in rows if isinstance(x, dict)]
+
+    unique = []
+    seen = set()
+    for ticket in normalized:
+        key = (
+            ticket.get("reference_code"),
+            ticket.get("member_name"),
+            ticket.get("session_label"),
+            ticket.get("lane_label"),
+            ticket.get("date"),
+            ticket.get("start_time"),
+            tuple(ticket.get("transaction_numbers") or []),
+            ticket.get("bought_count"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ticket)
+
+    unique.sort(key=lambda x: (
+        str(x.get("date") or "9999-99-99"),
+        str(x.get("start_time") or "99:99:99"),
+        str(x.get("member_name") or ""),
+        str(x.get("session_label") or ""),
+        str(x.get("lane_label") or ""),
+    ))
+
+    counts = {"MNG": 0, "2SHOT": 0, "VC": 0, "SHOW": 0, "OTHER": 0}
+    for ticket in unique:
+        category = ticket.get("category") or "OTHER"
+        counts[category] = counts.get(category, 0) + 1
+
+    return {
+        "ok": True,
+        "fetched": True,
+        "fetching": False,
+        "authenticated": True,
+        "source": "browser-session",
+        "updated_at": time.time(),
+        "from": date_from,
+        "to": date_to,
+        "pages_fetched": max(1, int(pages_fetched or 1)),
+        "tickets": unique,
+        "counts": counts,
+        "message": "My Tickets berhasil dibaca dari browser yang sedang login ke JKT48.",
+    }
+
 def fetch_my_tickets_page(session, page, date_from, date_to):
     params = {
         "lang": "id",
@@ -3196,7 +3306,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._dash_ok(url):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
-            # GET sengaja TIDAK memanggil jkt48.com. Ia hanya membaca hasil fetch terakhir.
+            # GET hanya membaca cache hasil browser bridge. Tidak pernah menghubungi jkt48.com.
             with my_tickets_cache_lock:
                 cached = dict(my_tickets_cache) if isinstance(my_tickets_cache, dict) else None
                 fetching = bool(my_tickets_fetching)
@@ -3206,8 +3316,9 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "fetched": False,
                     "fetching": fetching,
-                    "authenticated": bool(JKT48_ACCOUNT_COOKIE),
-                    "message": "Belum ada data. Tekan Fetch Akun untuk membaca tiket dari akun JKT48.",
+                    "authenticated": False,
+                    "source": "browser-session",
+                    "message": "Belum ada data. Tekan Fetch Akun untuk membaca tiket dari browser yang sudah login ke JKT48.",
                     "tickets": [],
                     "counts": {},
                 })
@@ -3215,6 +3326,51 @@ class Handler(BaseHTTPRequestHandler):
             cached["fetching"] = fetching
             cached["fetched"] = True
             return self.send_json(200, cached)
+
+        if url.path == "/api/my-tickets/bridge-token":
+            if not self._dash_ok(url):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+            qs = parse_qs(url.query)
+            date_from = (qs.get("from") or [""])[0].strip()
+            date_to = (qs.get("to") or [""])[0].strip()
+            now_dt = datetime.now(timezone.utc)
+            if not date_from:
+                date_from = now_dt.strftime("%Y-%m-%d")
+            if not date_to:
+                date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
+            try:
+                datetime.strptime(date_from, "%Y-%m-%d")
+                datetime.strptime(date_to, "%Y-%m-%d")
+                if date_to < date_from:
+                    raise ValueError
+            except ValueError:
+                return self.send_json(400, {"ok": False, "error": "Rentang tanggal tidak valid."})
+
+            token = create_my_tickets_bridge(date_from, date_to)
+            return self.send_json(200, {
+                "ok": True,
+                "token": token,
+                "from": date_from,
+                "to": date_to,
+                "expires_in": max(30, MY_TICKETS_BRIDGE_TTL),
+            })
+
+        if url.path == "/api/my-tickets/bridge-status":
+            if not self._dash_ok(url):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+            token = (parse_qs(url.query).get("token") or [""])[0]
+            item = get_my_tickets_bridge(token)
+            if item is None:
+                return self.send_json(404, {"ok": False, "status": "missing", "error": "Bridge token tidak ditemukan atau sudah kedaluwarsa."})
+            body = {
+                "ok": True,
+                "status": item.get("status", "pending"),
+                "expires_at": item.get("expires_at"),
+                "error": item.get("error", ""),
+            }
+            if item.get("status") == "success" and isinstance(item.get("result"), dict):
+                body.update(item["result"])
+            return self.send_json(200, body)
 
         if url.path == "/api/war":
             return self.send_json(200, war_info())
@@ -3297,50 +3453,76 @@ class Handler(BaseHTTPRequestHandler):
         if url0.path.startswith("/api/push/"):
             return self.handle_push_post(url0)
 
-        # Tombol "Fetch Akun" dari dashboard. Endpoint ini memakai dashboard key
-        # (jika DASHBOARD_KEY diaktifkan), bukan NOTIFY_SECRET.
+        # Browser bridge menerima hasil My Tickets yang sudah di-fetch dari jkt48.com
+        # oleh browser yang sedang login. Token bersifat singkat dan one-time per proses fetch.
+        if url0.path == "/api/my-tickets/import":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except (TypeError, ValueError):
+                length = 0
+            if length <= 0 or length > 900000:
+                return self.send_json(413, {"ok": False, "error": "Ukuran payload My Tickets tidak valid."})
+
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(payload, dict):
+                    return self.send_json(400, {"ok": False, "error": "Payload harus JSON object."})
+
+                token = str(payload.get("token") or "").strip()
+                item = get_my_tickets_bridge(token)
+                if item is None:
+                    return self.send_json(410, {"ok": False, "error": "Bridge token tidak valid atau kedaluwarsa."})
+                if item.get("status") != "pending":
+                    return self.send_json(409, {"ok": False, "error": "Bridge token sudah dipakai atau selesai."})
+
+                rows = payload.get("tickets")
+                if not isinstance(rows, list) or len(rows) > 500:
+                    return self.send_json(400, {"ok": False, "error": "Daftar ticket tidak valid."})
+
+                date_from = str(payload.get("from") or item.get("from") or "").strip()
+                date_to = str(payload.get("to") or item.get("to") or "").strip()
+                try:
+                    datetime.strptime(date_from, "%Y-%m-%d")
+                    datetime.strptime(date_to, "%Y-%m-%d")
+                except ValueError:
+                    return self.send_json(400, {"ok": False, "error": "Format tanggal harus YYYY-MM-DD."})
+
+                pages_fetched = payload.get("pages_fetched") or 1
+                try:
+                    pages_fetched = max(1, int(pages_fetched))
+                except (TypeError, ValueError):
+                    pages_fetched = 1
+
+                result = _prepare_browser_my_tickets(rows, date_from, date_to, pages_fetched)
+                result["browser_fetched_at"] = payload.get("fetched_at")
+                result["bridge"] = True
+
+                global my_tickets_cache, my_tickets_fetching
+                with my_tickets_cache_lock:
+                    my_tickets_cache = dict(result)
+                    my_tickets_fetching = False
+
+                set_my_tickets_bridge_result(token, result=result)
+                print(f"[MY TICKETS] Browser fetch imported: records={len(result['tickets'])} pages={result['pages_fetched']}")
+                return self.send_json(200, result)
+            except Exception as error:
+                traceback.print_exc()
+                try:
+                    token = str(payload.get("token") or "").strip() if isinstance(payload, dict) else ""
+                    set_my_tickets_bridge_result(token, result=None, error=f"{type(error).__name__}: {str(error)[:400]}")
+                except Exception:
+                    pass
+                return self.send_json(500, {"ok": False, "error": f"Import My Tickets gagal: {type(error).__name__}: {str(error)[:300]}"})
+
+        # Compatibility endpoint lama: jangan lagi fetch dari server karena dapat terkena Cloudflare 403.
         if url0.path == "/api/my-tickets/fetch":
             if not self._dash_ok(url0):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            qs = parse_qs(url0.query)
-            date_from = (qs.get("from") or [""])[0].strip()
-            date_to = (qs.get("to") or [""])[0].strip()
-            now_dt = datetime.now(timezone.utc)
-            if not date_from:
-                date_from = now_dt.strftime("%Y-%m-%d")
-            if not date_to:
-                date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
-            try:
-                datetime.strptime(date_from, "%Y-%m-%d")
-                datetime.strptime(date_to, "%Y-%m-%d")
-            except ValueError:
-                return self.send_json(400, {"ok": False, "error": "Format tanggal harus YYYY-MM-DD."})
-
-            global my_tickets_fetching, my_tickets_cache
-            with my_tickets_cache_lock:
-                if my_tickets_fetching:
-                    return self.send_json(409, {"ok": False, "fetching": True, "error": "Fetch akun sedang berjalan. Tunggu sebentar."})
-                my_tickets_fetching = True
-
-            try:
-                result = fetch_my_tickets(date_from, date_to)
-                if result.get("ok"):
-                    result["fetched"] = True
-                    result["fetching"] = False
-                    with my_tickets_cache_lock:
-                        my_tickets_cache = dict(result)
-                return self.send_json(200 if result.get("ok") else 401, result)
-            except Exception as error:
-                traceback.print_exc()
-                return self.send_json(502, {
-                    "ok": False, "fetched": False, "fetching": False,
-                    "authenticated": False,
-                    "error": f"Gagal mengambil My Tickets: {type(error).__name__}: {str(error)[:240]}",
-                    "tickets": [],
-                })
-            finally:
-                with my_tickets_cache_lock:
-                    my_tickets_fetching = False
+            return self.send_json(409, {
+                "ok": False,
+                "fetched": False,
+                "error": "Fetch server-side dinonaktifkan. Gunakan Browser Session Bridge melalui tombol Fetch Akun.",
+            })
 
         secret = self.headers.get("X-Notify-Secret", "")
         if not NOTIFY_SECRET or not _same(secret, NOTIFY_SECRET):
@@ -3418,10 +3600,9 @@ def main():
     else:
         print("[PUSH] Nonaktif: pasang pywebpush dan set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY.")
     threading.Thread(target=run_http, daemon=True).start()
+    print("[MY TICKETS] Browser Session Bridge aktif: Fetch Akun dibaca dari browser yang login ke jkt48.com.")
     if JKT48_ACCOUNT_COOKIE:
-        print("[MY TICKETS] Account session configured: tombol Fetch Akun aktif.")
-    else:
-        print("[MY TICKETS] Account session belum diset: set JKT48_ACCOUNT_COOKIE.")
+        print("[MY TICKETS] JKT48_ACCOUNT_COOKIE masih tersedia sebagai legacy server-side session, tetapi Fetch Akun tidak menggunakannya.")
 
     if POLL_ENABLED:
         threading.Thread(target=poll_loop, daemon=True).start()
