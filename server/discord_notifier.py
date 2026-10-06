@@ -1968,9 +1968,20 @@ jkt48_account_profile = {}
 jkt48_account_connected_at = 0.0
 jkt48_account_last_error = ""
 jkt48_account_email = ""
-# Bearer access token untuk API My Tickets. Hanya disimpan di RAM proses.
-# Bisa diisi saat runtime lewat /api/jkt48/token atau saat startup lewat env.
+
+# Credential/session akun JKT48 hanya disimpan di RAM proses.
+# Token tidak pernah dikembalikan ke frontend.
 jkt48_account_access_token = os.environ.get("JKT48_ACCESS_TOKEN", "").strip()
+jkt48_account_refresh_token = ""
+jkt48_account_cookie_header = ""
+jkt48_account_session_expires_at = 0.0
+jkt48_account_access_expires_at = 0.0
+jkt48_account_last_session_refresh_at = 0.0
+jkt48_account_auto_refresh = False
+
+# Refresh dilakukan sedikit sebelum token/session kedaluwarsa.
+JKT48_SESSION_REFRESH_MARGIN = int(os.environ.get("JKT48_SESSION_REFRESH_MARGIN", "90"))
+JKT48_SESSION_REFRESH_INTERVAL = int(os.environ.get("JKT48_SESSION_REFRESH_INTERVAL", "30"))
 
 def _jkt48_account_build_session():
     kwargs = {"impersonate": JKT48_ACCOUNT_IMPERSONATE or "chrome"}
@@ -1978,16 +1989,20 @@ def _jkt48_account_build_session():
         kwargs["proxies"] = {"http": JKT48_ACCOUNT_PROXY, "https": JKT48_ACCOUNT_PROXY}
     return cffi_requests.Session(**kwargs)
 
-def _jkt48_account_session_payload(session):
+def _jkt48_account_session_payload(session, cookie_header=""):
+    headers = {
+        "Accept": "application/json",
+        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": "https://jkt48.com/my-page",
+        "User-Agent": "Mozilla/5.0",
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
     response = session.get(
         "https://jkt48.com" + JKT48_AUTH_SESSION_PATH,
-        headers={
-            "Accept": "application/json",
-            "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Referer": "https://jkt48.com/my-page",
-        },
+        headers=headers,
         timeout=JKT48_LOGIN_TIMEOUT,
         allow_redirects=True,
     )
@@ -1996,6 +2011,32 @@ def _jkt48_account_session_payload(session):
     except Exception:
         payload = {}
     return response, payload
+
+
+def _parse_iso_ts(value):
+    try:
+        raw = str(value or "").strip()
+        if not raw:
+            return 0.0
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return datetime.fromisoformat(raw).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _jwt_exp(access_token):
+    """Read exp from JWT payload only to schedule a safe refresh."""
+    try:
+        parts = str(access_token or "").split(".")
+        if len(parts) != 3:
+            return 0.0
+        raw = parts[1] + "=" * (-len(parts[1]) % 4)
+        body = base64.urlsafe_b64decode(raw.encode("ascii"))
+        obj = json.loads(body.decode("utf-8"))
+        return float(obj.get("exp") or 0.0)
+    except Exception:
+        return 0.0
 
 def _jkt48_account_extract_profile(payload):
     user = payload.get("user") if isinstance(payload, dict) else {}
@@ -2006,12 +2047,19 @@ def _jkt48_account_extract_profile(payload):
     }
 
 def jkt48_account_status():
+    now = time.time()
     with jkt48_account_lock:
         connected = bool(jkt48_account_access_token)
         profile = dict(jkt48_account_profile)
         connected_at = jkt48_account_connected_at
         last_error = jkt48_account_last_error
         email = jkt48_account_email
+        session_exp = jkt48_account_session_expires_at
+        access_exp = jkt48_account_access_expires_at
+        auto_refresh = bool(jkt48_account_auto_refresh and jkt48_account_cookie_header)
+        last_refresh = jkt48_account_last_session_refresh_at
+    expiries = [x for x in (session_exp, access_exp) if x > 0]
+    next_exp = min(expiries) if expiries else 0.0
     return {
         "authenticated": connected,
         "profile": profile,
@@ -2019,19 +2067,25 @@ def jkt48_account_status():
         "email_hint": (email[:2] + "***" if email and "@" not in email[:2] else ""),
         "error": last_error,
         "auth_mode": "bearer",
+        "auto_refresh": auto_refresh,
+        "session_expires_at": session_exp or None,
+        "access_token_expires_at": access_exp or None,
+        "next_expires_at": next_exp or None,
+        "seconds_to_expiry": max(0, int(next_exp - now)) if next_exp else None,
+        "last_session_refresh_at": last_refresh or None,
     }
 
 
-def jkt48_account_store_token(access_token, profile=None, email_hint=""):
-    """Store an existing JKT48 API access token in RAM without calling JKT48.
-
-    The dashboard can import the JSON returned by /api/auth/session and extract
-    user.access_token locally. The token is never written to disk or returned
-    to the frontend. Verification happens on the first /api/my-tickets/fetch.
-    """
+def jkt48_account_store_token(access_token, profile=None, email_hint="",
+                               cookie_header="", refresh_token="",
+                               session_expires_at=0.0):
+    """Store JKT48 credentials/session metadata in RAM only."""
     global jkt48_account_session, jkt48_account_access_token
     global jkt48_account_profile, jkt48_account_connected_at
     global jkt48_account_last_error, jkt48_account_email
+    global jkt48_account_cookie_header, jkt48_account_refresh_token
+    global jkt48_account_session_expires_at, jkt48_account_access_expires_at
+    global jkt48_account_auto_refresh
 
     token = str(access_token or "").strip()
     if not token or len(token) < 20:
@@ -2039,13 +2093,23 @@ def jkt48_account_store_token(access_token, profile=None, email_hint=""):
     if len(token) > 20000:
         raise ValueError("Access token JKT48 terlalu panjang.")
 
+    cookie = str(cookie_header or "").strip()
+    if len(cookie) > 12000:
+        raise ValueError("Cookie session JKT48 terlalu panjang.")
+
     with jkt48_account_lock:
         old = jkt48_account_session
         jkt48_account_session = _jkt48_account_build_session()
         jkt48_account_access_token = token
+        jkt48_account_refresh_token = str(refresh_token or "").strip()[:20000]
+        jkt48_account_cookie_header = cookie
         jkt48_account_profile = dict(profile or {})
         jkt48_account_connected_at = time.time()
         jkt48_account_last_error = ""
+        jkt48_account_access_expires_at = _jwt_exp(token)
+        jkt48_account_session_expires_at = float(session_expires_at or 0.0)
+        jkt48_account_auto_refresh = bool(cookie)
+
         if email_hint:
             jkt48_account_email = str(email_hint).strip()
 
@@ -2058,8 +2122,128 @@ def jkt48_account_store_token(access_token, profile=None, email_hint=""):
     return jkt48_account_status()
 
 
+def jkt48_account_refresh_from_session(force=False):
+    """Refresh the JKT48 access token from /api/auth/session using the saved browser cookie."""
+    global jkt48_account_access_token, jkt48_account_refresh_token
+    global jkt48_account_profile, jkt48_account_email
+    global jkt48_account_session_expires_at, jkt48_account_access_expires_at
+    global jkt48_account_last_session_refresh_at, jkt48_account_last_error
+    global jkt48_account_auto_refresh
+
+    now = time.time()
+    with jkt48_account_lock:
+        session = jkt48_account_session
+        cookie = jkt48_account_cookie_header
+        current_token = jkt48_account_access_token
+        sess_exp = jkt48_account_session_expires_at
+        access_exp = jkt48_account_access_expires_at
+
+    if session is None or not cookie:
+        return False
+
+    expiries = [x for x in (sess_exp, access_exp) if x > 0]
+    nearest = min(expiries) if expiries else 0.0
+    if not force and nearest and nearest > now + JKT48_SESSION_REFRESH_MARGIN:
+        return False
+
+    try:
+        response, payload = _jkt48_account_session_payload(session, cookie)
+        status = int(response.status_code)
+        if status != 200 or not isinstance(payload, dict):
+            raise RuntimeError(f"/api/auth/session HTTP {status}")
+
+        root = payload
+        if isinstance(payload.get("session"), dict):
+            root = payload["session"]
+        user = root.get("user") if isinstance(root.get("user"), dict) else {}
+        token = str(
+            user.get("access_token")
+            or root.get("access_token")
+            or payload.get("access_token")
+            or ""
+        ).strip()
+        if not token:
+            raise RuntimeError("Response /api/auth/session tidak mengandung user.access_token.")
+
+        profile = user.get("profile") if isinstance(user.get("profile"), dict) else {}
+        safe_profile = {
+            "nickname": str(profile.get("nickname") or "").strip(),
+            "full_name": str(profile.get("full_name") or "").strip(),
+        }
+        email = str(profile.get("email") or user.get("email") or "").strip()
+        refresh_token = str(
+            user.get("refresh_token")
+            or root.get("refresh_token")
+            or payload.get("refresh_token")
+            or ""
+        ).strip()
+
+        session_exp_new = _parse_iso_ts(payload.get("expires") or root.get("expires"))
+        if not session_exp_new:
+            session_exp_new = sess_exp
+
+        with jkt48_account_lock:
+            jkt48_account_access_token = token
+            if refresh_token:
+                jkt48_account_refresh_token = refresh_token
+            if safe_profile:
+                jkt48_account_profile = safe_profile
+            if email:
+                jkt48_account_email = email
+            jkt48_account_session_expires_at = session_exp_new
+            jkt48_account_access_expires_at = _jwt_exp(token)
+            jkt48_account_last_session_refresh_at = time.time()
+            jkt48_account_last_error = ""
+            jkt48_account_auto_refresh = True
+
+        if token != current_token:
+            print("[MY TICKETS] Access token diperbarui otomatis dari /api/auth/session.")
+        else:
+            print("[MY TICKETS] /api/auth/session diperiksa; token masih aktif.")
+        return True
+
+    except Exception as exc:
+        with jkt48_account_lock:
+            jkt48_account_last_error = f"Auto-refresh session gagal: {type(exc).__name__}: {str(exc)[:300]}"
+        return False
+
+
+def ensure_jkt48_session_fresh(force=False):
+    """Refresh the session when token/session expiry is near."""
+    now = time.time()
+    with jkt48_account_lock:
+        token = jkt48_account_access_token
+        session_exp = jkt48_account_session_expires_at
+        access_exp = jkt48_account_access_expires_at
+    if not token:
+        return False
+
+    expiries = [x for x in (session_exp, access_exp) if x > 0]
+    nearest = min(expiries) if expiries else 0.0
+    if force or (nearest and nearest <= now + JKT48_SESSION_REFRESH_MARGIN):
+        jkt48_account_refresh_from_session(force=True)
+
+    with jkt48_account_lock:
+        token = jkt48_account_access_token
+        access_exp = jkt48_account_access_expires_at
+    return bool(token) and (not access_exp or access_exp > time.time())
+
+
+def jkt48_session_refresh_loop():
+    """Background watcher that checks the account session before expiry."""
+    while True:
+        try:
+            time.sleep(max(10, JKT48_SESSION_REFRESH_INTERVAL))
+            with jkt48_account_lock:
+                active = bool(jkt48_account_access_token and jkt48_account_cookie_header)
+            if active:
+                jkt48_account_refresh_from_session(force=False)
+        except Exception:
+            traceback.print_exc()
+
+
 def _extract_session_import(payload):
-    """Accept either full /api/auth/session JSON or a direct access_token."""
+    """Extract token, cookie and expiry metadata from /api/auth/session JSON."""
     if isinstance(payload, str):
         raw = payload.strip()
         if not raw:
@@ -2067,15 +2251,13 @@ def _extract_session_import(payload):
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            # Convenience: allow pasting the token itself.
             if len(raw) >= 20:
-                return raw, {}, ""
+                return raw, {}, "", "", "", 0.0
             raise ValueError("Isi bukan JSON session JKT48 yang valid.")
 
     if not isinstance(payload, dict):
         raise ValueError("Session JKT48 harus berupa JSON object.")
 
-    # Support wrapper forms: {session:{...}}, {data:{...}}, or direct object.
     root = payload
     if isinstance(payload.get("session"), dict):
         root = payload["session"]
@@ -2083,7 +2265,12 @@ def _extract_session_import(payload):
         root = payload["data"]
 
     user = root.get("user") if isinstance(root.get("user"), dict) else {}
-    token = str(user.get("access_token") or root.get("access_token") or payload.get("access_token") or "").strip()
+    token = str(
+        user.get("access_token")
+        or root.get("access_token")
+        or payload.get("access_token")
+        or ""
+    ).strip()
     if not token:
         raise ValueError("Field user.access_token tidak ditemukan pada session JKT48.")
 
@@ -2093,18 +2280,42 @@ def _extract_session_import(payload):
         "full_name": str(profile.get("full_name") or "").strip(),
     }
     email = str(profile.get("email") or user.get("email") or "").strip()
-    return token, safe_profile, email
+
+    refresh_token = str(
+        user.get("refresh_token")
+        or root.get("refresh_token")
+        or payload.get("refresh_token")
+        or ""
+    ).strip()
+
+    cookie_header = str(
+        payload.get("allCookies")
+        or payload.get("cookie")
+        or payload.get("cookies")
+        or root.get("allCookies")
+        or ""
+    ).strip()
+
+    session_expires_at = _parse_iso_ts(payload.get("expires") or root.get("expires"))
+    return token, safe_profile, email, cookie_header, refresh_token, session_expires_at
 
 
 def jkt48_account_import_session(payload):
-    """Import /api/auth/session JSON into the RAM-only account state."""
-    token, profile, email = _extract_session_import(payload)
-    status = jkt48_account_store_token(token, profile, email)
-    # Do not echo token or raw session back to the browser.
+    """Import /api/auth/session JSON and enable automatic refresh."""
+    token, profile, email, cookie_header, refresh_token, session_expires_at = _extract_session_import(payload)
+    status = jkt48_account_store_token(
+        token,
+        profile,
+        email,
+        cookie_header=cookie_header,
+        refresh_token=refresh_token,
+        session_expires_at=session_expires_at,
+    )
     return {
         "ok": True,
         **status,
         "session_imported": True,
+        "auto_refresh": bool(cookie_header),
     }
 
 
@@ -3538,9 +3749,12 @@ def fetch_my_tickets_page(session, page, date_from, date_to, access_token=""):
 
 
 def fetch_my_tickets(date_from, date_to):
-    """Fetch every My Tickets page directly from JKT48 using the server-side bearer token."""
+    """Fetch every My Tickets page directly from JKT48 using the current session token."""
     global jkt48_account_last_error, jkt48_account_profile
     global jkt48_account_session
+
+    # Refresh proactively before the first request when token/session expiry is near.
+    ensure_jkt48_session_fresh(force=False)
 
     with jkt48_account_lock:
         session = jkt48_account_session
@@ -3596,14 +3810,35 @@ def fetch_my_tickets(date_from, date_to):
         status = int(response.status_code)
 
         if status == 401:
-            with jkt48_account_lock:
-                jkt48_account_last_error = "Access token JKT48 sudah tidak valid."
-            return {
-                "ok": False,
-                "authenticated": False,
-                "error": "Access token JKT48 sudah tidak valid. Hubungkan token baru.",
-                "tickets": [],
-            }
+            # Jika access token baru saja habis, refresh session lalu ulangi halaman ini sekali.
+            if jkt48_account_refresh_from_session(force=True):
+                with jkt48_account_lock:
+                    session = jkt48_account_session
+                    access_token = jkt48_account_access_token
+                try:
+                    response, payload = fetch_my_tickets_page(
+                        session, page, date_from, date_to, access_token
+                    )
+                    status = int(response.status_code)
+                except Exception as exc:
+                    with jkt48_account_lock:
+                        jkt48_account_last_error = f"Retry My Tickets gagal: {type(exc).__name__}: {str(exc)[:220]}"
+                    return {
+                        "ok": False,
+                        "authenticated": True,
+                        "error": "Retry My Tickets gagal: " + str(exc)[:400],
+                        "tickets": [],
+                    }
+
+            if status == 401:
+                with jkt48_account_lock:
+                    jkt48_account_last_error = "Access token JKT48 sudah tidak valid."
+                return {
+                    "ok": False,
+                    "authenticated": False,
+                    "error": "Access token JKT48 sudah tidak valid dan session otomatis tidak dapat diperbarui.",
+                    "tickets": [],
+                }
 
         if status == 403:
             with jkt48_account_lock:
@@ -4328,7 +4563,9 @@ def main():
     else:
         print("[PUSH] Nonaktif: pasang pywebpush dan set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY.")
     threading.Thread(target=run_http, daemon=True).start()
-    print("[MY TICKETS] Server Session Auth aktif: Dashboard login -> server JKT48 -> My Tickets.")
+    threading.Thread(target=jkt48_session_refresh_loop, daemon=True).start()
+    print("[MY TICKETS] Server Session Auth aktif: Dashboard -> server JKT48 -> My Tickets.")
+    print("[MY TICKETS] Auto-refresh session watcher aktif.")
     if JKT48_ACCOUNT_COOKIE:
         print("[MY TICKETS] JKT48_ACCOUNT_COOKIE masih tersedia sebagai legacy fallback; login Dashboard memakai session RAM server.")
 
