@@ -1837,6 +1837,13 @@ JKT48_ACCOUNT_COOKIE = os.environ.get("JKT48_ACCOUNT_COOKIE", "").strip() or JKT
 MY_TICKETS_LIMIT = int(os.environ.get("MY_TICKETS_LIMIT", "10"))
 MY_TICKETS_DAYS = int(os.environ.get("MY_TICKETS_DAYS", "32"))
 MY_TICKETS_URL = "https://jkt48.com/api/v1/accounts/my-tickets"
+
+# My Tickets sekarang manual-fetch: GET hanya membaca cache, POST /api/my-tickets/fetch
+# yang benar-benar menghubungi akun JKT48. Cookie akun tidak pernah dikirim ke frontend.
+my_tickets_cache_lock = threading.Lock()
+my_tickets_cache = None
+my_tickets_fetch_lock = threading.Lock()
+my_tickets_fetching = False
 IMPERSONATE = os.environ.get("IMPERSONATE", "chrome")
 # Proxy opsional untuk polling langsung (mis. proxy residensial Indonesia).
 # Format: http://user:pass@host:port  atau  socks5://user:pass@host:port
@@ -3189,34 +3196,25 @@ class Handler(BaseHTTPRequestHandler):
             if not self._dash_ok(url):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
-            qs = parse_qs(url.query)
-            date_from = (qs.get("from") or [""])[0].strip()
-            date_to = (qs.get("to") or [""])[0].strip()
+            # GET sengaja TIDAK memanggil jkt48.com. Ia hanya membaca hasil fetch terakhir.
+            with my_tickets_cache_lock:
+                cached = dict(my_tickets_cache) if isinstance(my_tickets_cache, dict) else None
+                fetching = bool(my_tickets_fetching)
 
-            now_dt = datetime.now(timezone.utc)
-            if not date_from:
-                date_from = now_dt.strftime("%Y-%m-%d")
-            if not date_to:
-                date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
-
-            # Basic date validation prevents accidental malformed API requests.
-            try:
-                datetime.strptime(date_from, "%Y-%m-%d")
-                datetime.strptime(date_to, "%Y-%m-%d")
-            except ValueError:
-                return self.send_json(400, {"ok": False, "error": "Format tanggal harus YYYY-MM-DD."})
-
-            try:
-                result = fetch_my_tickets(date_from, date_to)
-                return self.send_json(200 if result.get("ok") else 401, result)
-            except Exception as error:
-                traceback.print_exc()
-                return self.send_json(502, {
-                    "ok": False,
-                    "authenticated": False,
-                    "error": f"Gagal mengambil My Tickets: {type(error).__name__}: {str(error)[:240]}",
+            if cached is None:
+                return self.send_json(200, {
+                    "ok": True,
+                    "fetched": False,
+                    "fetching": fetching,
+                    "authenticated": bool(JKT48_ACCOUNT_COOKIE),
+                    "message": "Belum ada data. Tekan Fetch Akun untuk membaca tiket dari akun JKT48.",
                     "tickets": [],
+                    "counts": {},
                 })
+
+            cached["fetching"] = fetching
+            cached["fetched"] = True
+            return self.send_json(200, cached)
 
         if url.path == "/api/war":
             return self.send_json(200, war_info())
@@ -3297,7 +3295,53 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         url0 = urlparse(self.path)
         if url0.path.startswith("/api/push/"):
-            return self.handle_push_post(url0)       
+            return self.handle_push_post(url0)
+
+        # Tombol "Fetch Akun" dari dashboard. Endpoint ini memakai dashboard key
+        # (jika DASHBOARD_KEY diaktifkan), bukan NOTIFY_SECRET.
+        if url0.path == "/api/my-tickets/fetch":
+            if not self._dash_ok(url0):
+                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
+            qs = parse_qs(url0.query)
+            date_from = (qs.get("from") or [""])[0].strip()
+            date_to = (qs.get("to") or [""])[0].strip()
+            now_dt = datetime.now(timezone.utc)
+            if not date_from:
+                date_from = now_dt.strftime("%Y-%m-%d")
+            if not date_to:
+                date_to = (now_dt + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
+            try:
+                datetime.strptime(date_from, "%Y-%m-%d")
+                datetime.strptime(date_to, "%Y-%m-%d")
+            except ValueError:
+                return self.send_json(400, {"ok": False, "error": "Format tanggal harus YYYY-MM-DD."})
+
+            global my_tickets_fetching, my_tickets_cache
+            with my_tickets_cache_lock:
+                if my_tickets_fetching:
+                    return self.send_json(409, {"ok": False, "fetching": True, "error": "Fetch akun sedang berjalan. Tunggu sebentar."})
+                my_tickets_fetching = True
+
+            try:
+                result = fetch_my_tickets(date_from, date_to)
+                if result.get("ok"):
+                    result["fetched"] = True
+                    result["fetching"] = False
+                    with my_tickets_cache_lock:
+                        my_tickets_cache = dict(result)
+                return self.send_json(200 if result.get("ok") else 401, result)
+            except Exception as error:
+                traceback.print_exc()
+                return self.send_json(502, {
+                    "ok": False, "fetched": False, "fetching": False,
+                    "authenticated": False,
+                    "error": f"Gagal mengambil My Tickets: {type(error).__name__}: {str(error)[:240]}",
+                    "tickets": [],
+                })
+            finally:
+                with my_tickets_cache_lock:
+                    my_tickets_fetching = False
+
         secret = self.headers.get("X-Notify-Secret", "")
         if not NOTIFY_SECRET or not _same(secret, NOTIFY_SECRET):
             return self.send_json(401, {"ok": False, "error": "Unauthorized."})
@@ -3375,7 +3419,7 @@ def main():
         print("[PUSH] Nonaktif: pasang pywebpush dan set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY.")
     threading.Thread(target=run_http, daemon=True).start()
     if JKT48_ACCOUNT_COOKIE:
-        print("[MY TICKETS] Account session configured: /api/my-tickets aktif.")
+        print("[MY TICKETS] Account session configured: tombol Fetch Akun aktif.")
     else:
         print("[MY TICKETS] Account session belum diset: set JKT48_ACCOUNT_COOKIE.")
 

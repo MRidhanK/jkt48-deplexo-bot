@@ -1000,6 +1000,13 @@ table.hm{border-spacing:4px}
 .ticket-transactions{font-size:11px;opacity:.55;word-break:break-word;border-top:1px solid rgba(148,163,184,.12);padding-top:10px}
 .my-ticket-countdown{margin-top:12px;border-radius:11px;padding:10px 12px;background:rgba(96,165,250,.10);font-weight:700;font-size:13px}
 .my-ticket-toolbar .btn{white-space:nowrap}
+.my-ticket-fetch-btn{font-weight:800;min-width:140px}
+.my-ticket-fetch-card{font-weight:800;text-align:center;padding:24px}
+.my-ticket-empty{text-align:center;padding:34px 22px}
+.my-ticket-empty-icon{font-size:42px;margin-bottom:8px}
+.my-ticket-empty h2{margin:4px 0 8px}
+.my-ticket-empty .btn{margin-top:14px}
+.my-ticket-meta{margin-top:-5px}
 @media(max-width:760px){.my-ticket-toolbar{align-items:flex-start;flex-direction:column}.my-ticket-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:480px){.my-ticket-grid{grid-template-columns:1fr 1fr}.ticket-info{padding:8px}.my-ticket-card h2{font-size:18px}}
 </style>
@@ -1752,7 +1759,7 @@ function kcard(val, label) {
 async function loadExtra() {
   const v = view;
   if (v === "tickets") {
-    await loadMyTickets();
+    await loadMyTicketsCache();
     return;
   }
   if (v !== "analytics" && v !== "status") return;
@@ -1766,32 +1773,51 @@ async function loadExtra() {
   render();
 }
 
-async function loadMyTickets() {
+async function myTicketsRequest(path, options = {}) {
+  const sep = path.includes("?") ? "&" : "?";
+  const url = path + (KEY ? sep + "key=" + encodeURIComponent(KEY) : "");
+  const r = await fetch(url, { cache: "no-store", ...options });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) throw new Error(j.error || j.message || ("HTTP " + r.status));
+  return j;
+}
+
+async function loadMyTicketsCache() {
+  try {
+    const j = await myTicketsRequest("/api/my-tickets");
+    if (j.fetched) myTickets = j;
+    myTicketsError = "";
+  } catch (e) {
+    myTicketsError = e?.message || "Gagal membaca cache tiket akun JKT48.";
+  }
+  if (view === "tickets") render();
+}
+
+async function fetchMyTickets() {
   myTicketsLoading = true;
   myTicketsError = "";
   if (view === "tickets") render();
 
   try {
-    const params = new URLSearchParams();
     const now = new Date();
     const from = now.toISOString().slice(0,10);
     const to = new Date(now.getTime() + 32 * 86400000).toISOString().slice(0,10);
-    params.set("from", from);
-    params.set("to", to);
-    if (KEY) params.set("key", KEY);
-
-    const r = await fetch("/api/my-tickets?" + params.toString(), { cache: "no-store" });
-    const j = await r.json();
-    if (!r.ok || !j.ok) throw new Error(j.error || j.message || ("HTTP " + r.status));
+    const j = await myTicketsRequest(`/api/my-tickets/fetch?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
     myTickets = j;
   } catch (e) {
-    myTickets = null;
-    myTicketsError = e?.message || "Gagal mengambil tiket akun JKT48.";
+    myTicketsError = e?.message || "Gagal membaca akun JKT48.";
   } finally {
     myTicketsLoading = false;
     if (view === "tickets") render();
   }
 }
+
+// Alias lama supaya bagian UI lain tidak rusak jika masih memanggil loadMyTickets().
+const loadMyTickets = fetchMyTickets;
 
 function isUpcomingTicket(t) {
   if (!t?.date) return false;
@@ -1854,25 +1880,77 @@ function renderMyTicketList(container,tickets,filter){
 }
 function renderMyTickets(){
   const wrap=el("div","my-tickets-page");
-  if(myTicketsLoading){wrap.append(el("div","card","⏳ Mengambil tiket dari akun JKT48…"));return wrap;}
-  if(myTicketsError){const c=el("div","card");c.append(el("h2","","🔐 My Tickets"),el("div","note",myTicketsError),el("div","note","Pastikan JKT48_ACCOUNT_COOKIE di server masih valid."));const b=el("button","btn","⟳ Coba lagi");b.onclick=loadMyTickets;c.append(b);wrap.append(c);return wrap;}
-  if(!myTickets){wrap.append(el("div","card","Belum ada data tiket."));return wrap;}
+  if(myTicketsLoading){
+    wrap.append(el("div","card my-ticket-fetch-card",
+      "⏳ Sedang membaca tiket dari akun JKT48…"));
+    return wrap;
+  }
+
+  const toolbar=el("div","card my-ticket-toolbar");
+  const title=el("div","my-ticket-title");
+  title.append(el("h2","","🎟️ Jadwal Saya"));
+
+  const statusLine=el("div","note");
+  if(myTickets?.updated_at){
+    statusLine.textContent = `Terakhir fetch: ${new Date(myTickets.updated_at*1000).toLocaleTimeString("id-ID")}`;
+  } else {
+    statusLine.textContent = "Belum membaca akun · tekan Fetch Akun untuk mengambil tiket.";
+  }
+  title.append(statusLine);
+
+  const fetchBtn=el("button","btn my-ticket-fetch-btn","🔄 Fetch Akun");
+  fetchBtn.type="button";
+  fetchBtn.onclick=fetchMyTickets;
+  toolbar.append(title,fetchBtn);
+  wrap.append(toolbar);
+
+  if(myTicketsError){
+    const c=el("div","card");
+    c.append(
+      el("h2","","🔐 Fetch Akun Gagal"),
+      el("div","note",myTicketsError),
+      el("div","note","Session akun dibaca dari JKT48_ACCOUNT_COOKIE di server. Cookie tidak dikirim ke browser.")
+    );
+    wrap.append(c);
+    return wrap;
+  }
+
+  if(!myTickets?.fetched){
+    const c=el("div","card my-ticket-empty");
+    c.append(
+      el("div","my-ticket-empty-icon","🎟️"),
+      el("h2","","Belum ada data akun"),
+      el("div","note","Dashboard tidak otomatis mengakses akun. Tekan tombol Fetch Akun untuk membaca My Tickets JKT48."),
+      el("button","btn buyp","🔄 Fetch Akun Sekarang")
+    );
+    c.lastChild.onclick=fetchMyTickets;
+    wrap.append(c);
+    return wrap;
+  }
 
   const tickets=myTickets.tickets || [];
   const upcoming=tickets.filter(isUpcomingTicket);
   const counts=myTickets.counts || {};
   const summary=el("div","sum");
-  summary.append(kcard(tickets.length,"transaksi"),kcard(counts.MNG||0,"M&G"),kcard(counts["2SHOT"]||0,"2 Shoot"),kcard(counts.VC||0,"VC"),kcard(upcoming.length,"upcoming"));
+  summary.append(
+    kcard(tickets.length,"record"),
+    kcard(counts.MNG||0,"M&G"),
+    kcard(counts["2SHOT"]||0,"2 Shoot"),
+    kcard(counts.VC||0,"VC"),
+    kcard(counts.SHOW||0,"Show"),
+    kcard(upcoming.length,"upcoming")
+  );
   wrap.append(summary);
 
-  const toolbar=el("div","card my-ticket-toolbar");
-  const title=el("div","my-ticket-title");
-  title.append(el("h2","","🎟️ Jadwal Saya"),el("div","note",`${tickets.length} record · ${myTickets.pages_fetched || 1} halaman · ${myTickets.from} → ${myTickets.to}`));
-  const refresh=el("button","btn","⟳ Refresh");refresh.onclick=loadMyTickets;toolbar.append(title,refresh);wrap.append(toolbar);
+  const meta=el("div","note my-ticket-meta");
+  meta.textContent=`${tickets.length} record · ${myTickets.pages_fetched || 1} halaman · ${myTickets.from} → ${myTickets.to}`;
+  wrap.append(meta);
 
   const filter=el("div","tabs my-ticket-filter");
   for(const [key,label] of [["all","Semua"],["MNG","🩷 M&G"],["2SHOT","💙 2 Shoot"],["VC","💜 VC"],["SHOW","🎭 Show"]]){
-    const b=el("button","tab"+(myTicketFilter===key?" on":""),label);b.onclick=()=>{myTicketFilter=key;render();};filter.append(b);
+    const b=el("button","tab"+(myTicketFilter===key?" on":""),label);
+    b.onclick=()=>{myTicketFilter=key;render();};
+    filter.append(b);
   }
   wrap.append(filter);
   renderMyTicketList(wrap,tickets,myTicketFilter);
