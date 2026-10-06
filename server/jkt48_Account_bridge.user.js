@@ -6,8 +6,13 @@ javascript:(() => {
     // MOBILE BOOKMARKLET
     // =========================================================
     //
-    // Jalankan bookmarklet ini ketika sedang berada di:
-    // https://jkt48.com/
+    // Cara:
+    // 1. Dashboard membuat URL JKT48 + bridge token.
+    // 2. Browser masuk ke jkt48.com.
+    // 3. Jalankan bookmarklet ini.
+    // 4. Bookmarklet mengambil semua My Tickets.
+    // 5. Hasil dikirim ke Ticket Radar.
+    // 6. Browser otomatis kembali ke dashboard.
     //
     // Tidak membutuhkan:
     // - Tampermonkey
@@ -16,11 +21,10 @@ javascript:(() => {
     //
     // =========================================================
 
-
     const CONFIG = {
 
         // -----------------------------------------------------
-        // Backend Ticket Radar
+        // Ticket Radar
         // -----------------------------------------------------
 
         RADAR_ORIGIN:
@@ -34,39 +38,41 @@ javascript:(() => {
             "/api/my-tickets/import",
 
         // -----------------------------------------------------
-        // Endpoint session JKT48
+        // API JKT48
         // -----------------------------------------------------
 
         SESSION_PATH:
             "/api/auth/session",
 
-        // -----------------------------------------------------
-        // Endpoint My Tickets
-        // -----------------------------------------------------
-
         MY_TICKETS_PATH:
             "/api/v1/accounts/my-tickets",
 
         // -----------------------------------------------------
-        // API language
+        // API
         // -----------------------------------------------------
 
         LANG:
             "id",
 
-        // -----------------------------------------------------
-        // Limit API
-        // -----------------------------------------------------
-
         LIMIT:
             10,
 
-        // -----------------------------------------------------
-        // Max page
-        // -----------------------------------------------------
-
         MAX_PAGES:
             100,
+
+        // -----------------------------------------------------
+        // Default tanggal
+        // -----------------------------------------------------
+
+        DATE_RANGE_DAYS:
+            32,
+
+        // -----------------------------------------------------
+        // Delay antar halaman
+        // -----------------------------------------------------
+
+        PAGE_DELAY:
+            250,
 
         // -----------------------------------------------------
         // Timeout
@@ -76,19 +82,11 @@ javascript:(() => {
             30000,
 
         // -----------------------------------------------------
-        // Jeda halaman
-        // -----------------------------------------------------
-
-        PAGE_DELAY:
-            250,
-
-        // -----------------------------------------------------
         // Debug
         // -----------------------------------------------------
 
         DEBUG:
             true
-
     };
 
 
@@ -134,25 +132,27 @@ javascript:(() => {
     // HELPER
     // =========================================================
 
-    function sleep(ms) {
-
-        return new Promise(
-            resolve => {
-                setTimeout(
-                    resolve,
-                    ms
-                );
-            }
-        );
-
-    }
-
-
     function clean(value) {
 
         return String(
             value ?? ""
         ).trim();
+
+    }
+
+
+    function sleep(ms) {
+
+        return new Promise(
+            resolve => {
+
+                setTimeout(
+                    resolve,
+                    ms
+                );
+
+            }
+        );
 
     }
 
@@ -165,7 +165,7 @@ javascript:(() => {
                 text || "{}"
             );
 
-        } catch (e) {
+        } catch {
 
             return null;
 
@@ -180,10 +180,10 @@ javascript:(() => {
 
     function formatDate(date) {
 
-        const y =
+        const year =
             date.getFullYear();
 
-        const m =
+        const month =
             String(
                 date.getMonth() + 1
             ).padStart(
@@ -191,7 +191,7 @@ javascript:(() => {
                 "0"
             );
 
-        const d =
+        const day =
             String(
                 date.getDate()
             ).padStart(
@@ -200,11 +200,11 @@ javascript:(() => {
             );
 
         return (
-            y +
+            year +
             "-" +
-            m +
+            month +
             "-" +
-            d
+            day
         );
 
     }
@@ -221,22 +221,19 @@ javascript:(() => {
 
     function getDefaultTo() {
 
-        const date =
+        return formatDate(
             new Date(
                 Date.now() +
-                32 *
+                CONFIG.DATE_RANGE_DAYS *
                 86400000
-            );
-
-        return formatDate(
-            date
+            )
         );
 
     }
 
 
     // =========================================================
-    // READ TOKEN / DATE FROM URL
+    // PARAMETER DARI URL
     // =========================================================
 
     function readParams() {
@@ -245,6 +242,7 @@ javascript:(() => {
             new URLSearchParams(
                 location.search
             );
+
 
         const hash =
             new URLSearchParams(
@@ -258,9 +256,13 @@ javascript:(() => {
         function get(name) {
 
             return (
+
                 hash.get(name) ||
+
                 query.get(name) ||
+
                 ""
+
             );
 
         }
@@ -270,24 +272,32 @@ javascript:(() => {
 
             token:
                 clean(
-                    get("radar_token")
+                    get(
+                        "radar_token"
+                    )
                 ),
 
             from:
                 clean(
-                    get("from")
+                    get(
+                        "from"
+                    )
                 ) ||
                 getDefaultFrom(),
 
             to:
                 clean(
-                    get("to")
+                    get(
+                        "to"
+                    )
                 ) ||
                 getDefaultTo(),
 
             returnUrl:
                 clean(
-                    get("radar_return")
+                    get(
+                        "radar_return"
+                    )
                 )
 
         };
@@ -299,13 +309,17 @@ javascript:(() => {
     // VALIDATE PARAMETER
     // =========================================================
 
-    function validateParams(params) {
+    function validateParams(
+        params
+    ) {
 
-        if (!params.token) {
+        if (
+            !params.token
+        ) {
 
             throw new Error(
                 "Bridge token tidak ditemukan.\n\n" +
-                "Tekan Fetch Akun dari Dashboard Ticket Radar terlebih dahulu."
+                "Buka Fetch Akun dari Dashboard terlebih dahulu."
             );
 
         }
@@ -365,7 +379,9 @@ javascript:(() => {
 
 
         if (!value) {
+
             return fallback;
+
         }
 
 
@@ -378,18 +394,14 @@ javascript:(() => {
 
 
             /*
-             * Jangan izinkan redirect
-             * ke domain lain.
+             * Hanya izinkan
+             * domain Ticket Radar.
              */
 
             if (
                 url.origin !==
                 CONFIG.RADAR_ORIGIN
             ) {
-
-                warn(
-                    "Return URL bukan domain Radar."
-                );
 
                 return fallback;
 
@@ -398,7 +410,7 @@ javascript:(() => {
 
             return url.toString();
 
-        } catch (e) {
+        } catch {
 
             return fallback;
 
@@ -423,7 +435,9 @@ javascript:(() => {
         const timer =
             setTimeout(
                 () => {
+
                     controller.abort();
+
                 },
                 CONFIG.REQUEST_TIMEOUT
             );
@@ -452,7 +466,7 @@ javascript:(() => {
 
 
     // =========================================================
-    // BUILD API URL
+    // BUILD MY TICKETS URL
     // =========================================================
 
     function buildMyTicketsUrl(
@@ -508,10 +522,10 @@ javascript:(() => {
 
 
     // =========================================================
-    // GET SESSION
+    // FETCH SESSION
     // =========================================================
 
-    async function getSession() {
+    async function fetchSession() {
 
         const url =
             new URL(
@@ -521,7 +535,7 @@ javascript:(() => {
 
 
         log(
-            "GET session:",
+            "Session:",
             url
         );
 
@@ -571,7 +585,7 @@ javascript:(() => {
 
 
         log(
-            "Session:",
+            "Session HTTP:",
             response.status,
             payload
         );
@@ -596,7 +610,7 @@ javascript:(() => {
         ) {
 
             throw new Error(
-                "Akun JKT48 tidak terdeteksi."
+                "Session akun JKT48 tidak ditemukan."
             );
 
         }
@@ -611,7 +625,7 @@ javascript:(() => {
     // FETCH ONE PAGE
     // =========================================================
 
-    async function getMyTicketsPage(
+    async function fetchMyTicketsPage(
         page,
         from,
         to,
@@ -644,17 +658,14 @@ javascript:(() => {
 
 
         /*
-         * Token hanya hidup
-         * selama script berjalan.
+         * access_token hanya ada di memory.
          */
 
         if (
             accessToken
         ) {
 
-            headers[
-                "Authorization"
-            ] =
+            headers.Authorization =
                 "Bearer " +
                 accessToken;
 
@@ -662,7 +673,7 @@ javascript:(() => {
 
 
         log(
-            "GET My Tickets:",
+            "GET:",
             url
         );
 
@@ -697,15 +708,6 @@ javascript:(() => {
             );
 
 
-        log(
-            "My Tickets:",
-            response.status,
-            "page:",
-            page,
-            payload
-        );
-
-
         return {
 
             response,
@@ -726,14 +728,16 @@ javascript:(() => {
         accessToken
     ) {
 
+        const allTickets =
+            [];
+
+
         let page =
             1;
 
+
         let totalPages =
             1;
-
-        const allTickets =
-            [];
 
 
         while (
@@ -746,9 +750,8 @@ javascript:(() => {
 
         ) {
 
-
             const result =
-                await getMyTicketsPage(
+                await fetchMyTicketsPage(
                     page,
                     from,
                     to,
@@ -762,12 +765,21 @@ javascript:(() => {
                 );
 
 
-            /*
-             * Cloudflare / forbidden.
-             */
+            log(
+                "Page",
+                page,
+                "HTTP",
+                status
+            );
+
+
+            // -------------------------------------------------
+            // Cloudflare
+            // -------------------------------------------------
 
             if (
-                status === 403
+                status ===
+                403
             ) {
 
                 throw new Error(
@@ -778,12 +790,13 @@ javascript:(() => {
             }
 
 
-            /*
-             * Session expired.
-             */
+            // -------------------------------------------------
+            // Unauthorized
+            // -------------------------------------------------
 
             if (
-                status === 401
+                status ===
+                401
             ) {
 
                 throw new Error(
@@ -794,12 +807,13 @@ javascript:(() => {
             }
 
 
-            /*
-             * Error lain.
-             */
+            // -------------------------------------------------
+            // HTTP error
+            // -------------------------------------------------
 
             if (
-                status !== 200
+                status !==
+                200
             ) {
 
                 throw new Error(
@@ -809,6 +823,10 @@ javascript:(() => {
 
             }
 
+
+            // -------------------------------------------------
+            // JSON
+            // -------------------------------------------------
 
             if (
                 !result.payload
@@ -820,6 +838,10 @@ javascript:(() => {
 
             }
 
+
+            // -------------------------------------------------
+            // API error
+            // -------------------------------------------------
 
             if (
                 result.payload.status ===
@@ -836,9 +858,9 @@ javascript:(() => {
             }
 
 
-            /*
-             * Data tiket.
-             */
+            // -------------------------------------------------
+            // RECORD
+            // -------------------------------------------------
 
             const rows =
                 Array.isArray(
@@ -858,16 +880,16 @@ javascript:(() => {
             );
 
 
-            /*
-             * Baca _meta.total_page.
-             */
+            // -------------------------------------------------
+            // META
+            // -------------------------------------------------
 
             const meta =
                 result.payload._meta ||
                 {};
 
 
-            const parsedTotal =
+            const total =
                 Number(
                     meta.total_page
                 );
@@ -876,10 +898,10 @@ javascript:(() => {
             if (
 
                 Number.isFinite(
-                    parsedTotal
+                    total
                 ) &&
 
-                parsedTotal >
+                total >
                 0
 
             ) {
@@ -888,14 +910,16 @@ javascript:(() => {
                     Math.min(
                         CONFIG.MAX_PAGES,
                         Math.floor(
-                            parsedTotal
+                            total
                         )
                     );
 
             } else {
 
                 /*
-                 * Fallback.
+                 * Fallback:
+                 * kalau record kurang dari limit,
+                 * berarti halaman terakhir.
                  */
 
                 if (
@@ -918,21 +942,13 @@ javascript:(() => {
 
 
             log(
-                "Progress:",
-                page +
-                "/" +
-                totalPages,
-                "records:",
-                rows.length
+                `Page ${page}/${totalPages}`,
+                `record=${rows.length}`
             );
 
 
             page++;
 
-
-            /*
-             * Jangan terlalu cepat.
-             */
 
             if (
                 page <=
@@ -959,8 +975,7 @@ javascript:(() => {
                     page - 1
                 ),
 
-            totalPages:
-                totalPages
+            totalPages
 
         };
 
@@ -998,10 +1013,10 @@ javascript:(() => {
                         ticket
                     );
 
-            } catch (e) {
+            } catch {
 
                 key =
-                    "__UNSERIALIZABLE__" +
+                    "__fallback__" +
                     Math.random();
 
             }
@@ -1039,7 +1054,7 @@ javascript:(() => {
     // SAFE PROFILE
     // =========================================================
 
-    function safeProfile(
+    function getSafeProfile(
         session
     ) {
 
@@ -1049,7 +1064,15 @@ javascript:(() => {
 
 
         /*
-         * Hanya data display.
+         * Hanya data tampilan.
+         *
+         * Tidak mengirim:
+         * - email
+         * - phone
+         * - address
+         * - id_no
+         * - access_token
+         * - refresh_token
          */
 
         return {
@@ -1070,7 +1093,7 @@ javascript:(() => {
 
 
     // =========================================================
-    // SEND RESULT
+    // SEND DATA TO RADAR
     // =========================================================
 
     async function sendToRadar(
@@ -1113,13 +1136,9 @@ javascript:(() => {
                 "jkt48_mobile_bookmarklet",
 
             profile:
-                safeProfile(
+                getSafeProfile(
                     session
                 ),
-
-            /*
-             * Yang dikirim hanya tiket.
-             */
 
             tickets:
                 tickets
@@ -1134,9 +1153,9 @@ javascript:(() => {
 
 
         log(
-            "Mengirim:",
+            "Send ke Radar:",
             {
-                records:
+                tickets:
                     tickets.length,
 
                 pages:
@@ -1147,14 +1166,12 @@ javascript:(() => {
 
         /*
          * -----------------------------------------------------
-         * Cara utama:
-         *
-         * fetch POST no-cors.
-         *
-         * Karena response tidak perlu dibaca,
-         * browser tidak membutuhkan CORS response header
-         * untuk menyelesaikan request.
+         * POST no-cors
          * -----------------------------------------------------
+         *
+         * Response tidak perlu dibaca.
+         *
+         * Endpoint backend hanya perlu menerima payload.
          */
 
         try {
@@ -1190,17 +1207,17 @@ javascript:(() => {
 
 
             log(
-                "POST no-cors terkirim."
+                "Payload berhasil dikirim via fetch."
             );
 
 
             return true;
 
-        } catch (e) {
+        } catch (fetchError) {
 
             warn(
-                "fetch no-cors gagal:",
-                e
+                "Fetch no-cors gagal:",
+                fetchError
             );
 
         }
@@ -1208,7 +1225,7 @@ javascript:(() => {
 
         /*
          * -----------------------------------------------------
-         * Fallback sendBeacon.
+         * Fallback sendBeacon
          * -----------------------------------------------------
          */
 
@@ -1218,8 +1235,10 @@ javascript:(() => {
                 new Blob(
                     [body],
                     {
+
                         type:
                             "text/plain;charset=UTF-8"
+
                     }
                 );
 
@@ -1236,25 +1255,26 @@ javascript:(() => {
             ) {
 
                 log(
-                    "sendBeacon diterima browser."
+                    "Payload diterima sendBeacon."
                 );
+
 
                 return true;
 
             }
 
-        } catch (e) {
+        } catch (beaconError) {
 
             warn(
                 "sendBeacon gagal:",
-                e
+                beaconError
             );
 
         }
 
 
         throw new Error(
-            "Hasil tiket gagal dikirim ke Ticket Radar."
+            "Data tiket gagal dikirim ke Ticket Radar."
         );
 
     }
@@ -1275,7 +1295,7 @@ javascript:(() => {
                 location.search
             );
 
-        } catch (e) {
+        } catch {
 
             // Tidak fatal.
 
@@ -1295,14 +1315,14 @@ javascript:(() => {
 
 
         document.title =
-            "⏳ JKT48 Radar Fetch...";
+            "⏳ Fetch JKT48 → Ticket Radar";
 
 
         try {
 
-            // -------------------------------------------------
-            // PARAMETER
-            // -------------------------------------------------
+            // =================================================
+            // 1. PARAMETER
+            // =================================================
 
             const params =
                 readParams();
@@ -1314,9 +1334,8 @@ javascript:(() => {
 
 
             log(
-                "Parameter:",
+                "Fetch dimulai",
                 {
-
                     from:
                         params.from,
 
@@ -1325,14 +1344,13 @@ javascript:(() => {
 
                     token:
                         "ADA"
-
                 }
             );
 
 
-            // -------------------------------------------------
-            // SESSION
-            // -------------------------------------------------
+            // =================================================
+            // 2. SESSION
+            // =================================================
 
             let session =
                 null;
@@ -1343,13 +1361,18 @@ javascript:(() => {
 
 
             /*
-             * Session terlebih dahulu.
+             * Session digunakan untuk mendapatkan:
+             * - profile
+             * - access_token
+             *
+             * Kalau endpoint session 404,
+             * proses ticket tetap dicoba.
              */
 
             try {
 
                 session =
-                    await getSession();
+                    await fetchSession();
 
 
                 accessToken =
@@ -1357,28 +1380,22 @@ javascript:(() => {
                         session?.user?.access_token
                     );
 
+
             } catch (sessionError) {
 
-                /*
-                 * Jangan langsung berhenti.
-                 *
-                 * Kita masih mencoba My Tickets
-                 * menggunakan cookie browser.
-                 */
-
                 warn(
-                    "Session endpoint gagal, tetap mencoba My Tickets.",
+                    "Session endpoint gagal.",
                     sessionError
                 );
 
             }
 
 
-            // -------------------------------------------------
-            // FETCH MY TICKETS
-            // -------------------------------------------------
+            // =================================================
+            // 3. FETCH SEMUA TIKET
+            // =================================================
 
-            const ticketResult =
+            const result =
                 await fetchAllTickets(
                     params.from,
                     params.to,
@@ -1386,49 +1403,38 @@ javascript:(() => {
                 );
 
 
-            // -------------------------------------------------
-            // DEDUP
-            // -------------------------------------------------
+            // =================================================
+            // 4. DEDUP
+            // =================================================
 
             const tickets =
                 deduplicateTickets(
-                    ticketResult.tickets
+                    result.tickets
                 );
 
 
             log(
-                "Fetch selesai:",
-                {
-
-                    records:
-                        tickets.length,
-
-                    pages:
-                        ticketResult.pagesFetched,
-
-                    totalPages:
-                        ticketResult.totalPages
-
-                }
+                "Total tiket:",
+                tickets.length
             );
 
 
-            // -------------------------------------------------
-            // SEND TO SERVER
-            // -------------------------------------------------
+            // =================================================
+            // 5. SEND KE BACKEND
+            // =================================================
 
             await sendToRadar(
                 params,
                 tickets,
-                ticketResult.pagesFetched,
-                ticketResult.totalPages,
+                result.pagesFetched,
+                result.totalPages,
                 session
             );
 
 
-            // -------------------------------------------------
-            // SUCCESS
-            // -------------------------------------------------
+            // =================================================
+            // 6. CLEAN URL
+            // =================================================
 
             cleanHash();
 
@@ -1436,6 +1442,10 @@ javascript:(() => {
             document.title =
                 originalTitle;
 
+
+            // =================================================
+            // 7. RETURN URL
+            // =================================================
 
             const returnUrl =
                 getSafeReturnUrl(
@@ -1445,24 +1455,22 @@ javascript:(() => {
 
             alert(
                 "✅ Fetch Akun selesai!\n\n" +
-
                 tickets.length +
-                " record tiket berhasil dibaca.\n" +
-
-                ticketResult.pagesFetched +
+                " record tiket berhasil dibaca.\n\n" +
+                result.pagesFetched +
                 " halaman berhasil diproses.\n\n" +
-
-                "Data sudah dikirim ke Ticket Radar."
+                "Kembali ke Ticket Radar..."
             );
 
 
-            /*
-             * Kembali ke dashboard.
-             */
+            // =================================================
+            // 8. KEMBALI KE DASHBOARD
+            // =================================================
 
             location.replace(
                 returnUrl
             );
+
 
         } catch (e) {
 
@@ -1478,7 +1486,6 @@ javascript:(() => {
 
             alert(
                 "❌ Fetch Akun gagal\n\n" +
-
                 (
                     e?.message ||
                     String(e)
@@ -1491,7 +1498,7 @@ javascript:(() => {
 
 
     // =========================================================
-    // START
+    // RUN
     // =========================================================
 
     main();
