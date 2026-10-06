@@ -3538,12 +3538,32 @@ def fetch_my_tickets_page(session, page, date_from, date_to, access_token=""):
 
 
 def fetch_my_tickets(date_from, date_to):
-    """Fetch every My Tickets page using a bearer token held only in server RAM."""
+    """Fetch every My Tickets page directly from JKT48 using the server-side bearer token."""
     global jkt48_account_last_error, jkt48_account_profile
+    global jkt48_account_session
 
     with jkt48_account_lock:
         session = jkt48_account_session
         access_token = jkt48_account_access_token
+
+    # Auto-build session when JKT48_ACCESS_TOKEN is supplied in Railway ENV.
+    # This removes the need for a separate browser/token-connect action on the dashboard.
+    if access_token and session is None:
+        try:
+            session = _jkt48_account_build_session()
+            with jkt48_account_lock:
+                if jkt48_account_session is None and jkt48_account_access_token == access_token:
+                    jkt48_account_session = session
+                else:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+                    session = jkt48_account_session
+        except Exception as exc:
+            with jkt48_account_lock:
+                jkt48_account_last_error = f"Gagal membuat session JKT48: {type(exc).__name__}: {str(exc)[:220]}"
+            session = None
 
     if session is None or not access_token:
         return {
@@ -3820,22 +3840,55 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(404, {"ok": False, "error": "Endpoint tidak ditemukan."})
 
     def _handle_my_tickets_fetch(self, url):
-        """Return latest cache imported by the mobile browser bridge."""
+        """Fetch My Tickets directly from JKT48 and cache the normalized result."""
+        global my_tickets_fetching, my_tickets_cache
         if not self._dash_ok(url):
             return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-        with my_tickets_cache_lock:
-            cached = dict(my_tickets_cache) if isinstance(my_tickets_cache, dict) else None
-            fetching = bool(my_tickets_fetching)
-        if cached is None:
-            return self.send_json(200, {
-                "ok": True, "fetched": False, "fetching": fetching,
-                "authenticated": False, "source": "mobile-browser",
-                "message": "Belum ada sinkronisasi dari HP. Jalankan Radar Sync di halaman JKT48 yang sedang login.",
+
+        if not my_tickets_fetch_lock.acquire(blocking=False):
+            with my_tickets_cache_lock:
+                cached = dict(my_tickets_cache) if isinstance(my_tickets_cache, dict) else None
+            if cached is not None:
+                cached["fetching"] = True
+                cached["fetched"] = True
+                return self.send_json(200, cached)
+            return self.send_json(202, {
+                "ok": True, "fetched": False, "fetching": True,
+                "authenticated": bool(jkt48_account_status().get("authenticated")),
+                "source": "server-jkt48",
+                "message": "Fetch My Tickets sedang berjalan. Coba lagi sebentar lagi.",
                 "tickets": [], "counts": {},
             })
-        cached["fetching"] = fetching
-        cached["fetched"] = True
-        return self.send_json(200, cached)
+
+        my_tickets_fetching = True
+        try:
+            now = datetime.now(LOCAL_TZ)
+            date_from = now.strftime("%Y-%m-%d")
+            date_to = (now + timedelta(days=MY_TICKETS_DAYS)).strftime("%Y-%m-%d")
+            result = fetch_my_tickets(date_from, date_to)
+            result = dict(result or {})
+            if result.get("ok") and result.get("fetched"):
+                result["source"] = "server-jkt48"
+                result["fetching"] = False
+                with my_tickets_cache_lock:
+                    my_tickets_cache = dict(result)
+            else:
+                result.setdefault("ok", False)
+                result.setdefault("fetched", False)
+                result["fetching"] = False
+            return self.send_json(200 if result.get("ok") else 502, result)
+        except Exception as exc:
+            traceback.print_exc()
+            return self.send_json(502, {
+                "ok": False, "fetched": False, "fetching": False,
+                "authenticated": bool(jkt48_account_status().get("authenticated")),
+                "source": "server-jkt48",
+                "error": f"Fetch My Tickets gagal: {type(exc).__name__}: {str(exc)[:500]}",
+                "tickets": [], "counts": {},
+            })
+        finally:
+            my_tickets_fetching = False
+            my_tickets_fetch_lock.release()
 
     def do_GET(self):
         url = urlparse(self.path)

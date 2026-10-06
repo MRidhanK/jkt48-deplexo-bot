@@ -1879,89 +1879,53 @@ async function loadExtra() {
   render();
 }
 
-/* MOBILE_MY_TICKETS: HP melakukan same-origin fetch di jkt48.com; Dashboard membaca cache Radar. */
+/* DIRECT_MY_TICKETS: Dashboard meminta server membaca My Tickets langsung dari JKT48. */
 function dashQuery(extra={}){const q=new URLSearchParams();if(KEY)q.set("key",KEY);for(const[k,v]of Object.entries(extra||{}))if(v!=null&&v!=="")q.set(k,v);const s=q.toString();return s?"?"+s:"";}
-async function refreshMyTicketsCache(silent=false){if(!silent){myTicketsLoading=true;myTicketsError="";myTicketsBridgeStatus="🔄 Membaca cache Jadwal Saya…";myTicketsBridgeProgress=35;if(view==="tickets")render();}try{const r=await fetch("/api/my-tickets"+dashQuery(),{cache:"no-store"});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j?.error||j?.message||`HTTP ${r.status}`);if(j?.fetched&&Array.isArray(j.tickets)){myTickets=j;myTicketsAuthenticated=true;try{localStorage.setItem("radar_my_tickets_cache_v3",JSON.stringify(j))}catch(_){}myTicketsError="";myTicketsBridgeStatus=`✅ ${j.tickets.length} record · sync ${j.updated_at?new Date(j.updated_at*1000).toLocaleTimeString("id-ID"):"-"}`;myTicketsBridgeProgress=100}else if(!myTickets?.fetched){myTickets=j;myTicketsAuthenticated=false;myTicketsBridgeStatus="📱 Belum ada sync dari HP.";myTicketsBridgeProgress=0}if(!silent){myTicketsLoading=false;if(view==="tickets")render()}return myTickets}catch(e){if(!silent){myTicketsLoading=false;myTicketsBridgeStatus="";myTicketsBridgeProgress=null}myTicketsError=String(e?.message||e||"Gagal membaca Jadwal Saya.");if(view==="tickets")render();return null;}}
-function buildMobileSyncBookmarklet(code){
-  const R=location.origin, C=String(code||"");
-  let src=`(()=>{const R='__RADAR__',C='__CODE__';if(window.__JKT48_RADAR_SYNC__){alert('Radar Sync sudah aktif di tab ini.');return}window.__JKT48_RADAR_SYNC__=1;const A=location.origin+'/api/v1/accounts/my-tickets',b=document.createElement('div');b.style='position:fixed;left:10px;right:10px;bottom:10px;z-index:2147483647;background:#111827;color:#fff;border:1px solid #334155;border-radius:16px;padding:12px;font:13px system-ui,-apple-system,Segoe UI,sans-serif;box-shadow:0 16px 55px rgba(0,0,0,.45)';b.innerHTML='<b>🎟️ JKT48 Radar Sync</b><div id="__rs" style="margin-top:6px;opacity:.8">Menyiapkan…</div><button id="__rx" style="margin-top:9px;border:1px solid #475569;background:#1e293b;color:#fff;border-radius:9px;padding:7px 10px;font-weight:700">Stop</button>';document.documentElement.appendChild(b);const s=b.querySelector('#__rs'),x=b.querySelector('#__rx');let timer=0,busy=0;x.onclick=()=>{clearInterval(timer);window.__JKT48_RADAR_SYNC__=0;b.remove()};const wait=m=>new Promise(r=>setTimeout(r,m));async function pull(){if(busy)return;busy=1;try{s.textContent='Membaca seluruh My Tickets…';const now=new Date(),from=new Date(now.getTime()-86400000).toISOString().slice(0,10),to=new Date(now.getTime()+32*86400000).toISOString().slice(0,10);let page=1,total=1,rows=[];while(page<=total&&page<=50){s.textContent='JKT48 · halaman '+page+'/'+Math.max(total,1);const rr=await fetch(A+'?lang=id&limit=10&page='+page+'&from='+from+'&to='+to,{credentials:'include',cache:'no-store'}),jj=await rr.json().catch(()=>({}));if(!rr.ok)throw Error(jj.message||'JKT48 HTTP '+rr.status);if(jj.status===false)throw Error(jj.message||'API JKT48 menolak permintaan');rows=rows.concat(Array.isArray(jj.data)?jj.data:[]);total=Math.max(1,Number((jj._meta||{}).total_page||1)||1);page++;if(page<=total)await wait(150)}s.textContent='Mengirim '+rows.length+' record ke Radar…';const rr=await fetch(R+'/api/jkt48/mobile-sync',{method:'POST',mode:'cors',body:new URLSearchParams({code:C,payload:JSON.stringify({from,to,pages_fetched:total,tickets:rows,fetched_at:Date.now()/1000})})}),jj=await rr.json().catch(()=>({}));if(!rr.ok||!jj.ok)throw Error(jj.error||'Radar HTTP '+rr.status);s.textContent='✅ Sync berhasil · '+(jj.total||rows.length)+' record · '+new Date().toLocaleTimeString('id-ID')}catch(e){s.textContent='⚠️ '+(e&&e.message||e)}finally{busy=0}}pull();timer=setInterval(pull,60000)})()`;
-  src=src.replace('__RADAR__',R).replace('__CODE__',C);
-  return 'javascript:'+src.replace(/\s+/g,' ');
-}
 
-function renderMobileSyncSetup(){
-  const box=el("div","card mobile-sync-inline");
-  const head=el("div","mobile-sync-inline-head");
-  const title=el("div");
-  title.append(el("div","mobile-sync-kicker","📱 MOBILE SYNC"));
-  title.append(el("h2","","JKT48 → Ticket Radar"));
-  title.append(el("div","note","Setup Sync HP sekarang ditampilkan langsung di halaman ini. Tidak perlu membuka halaman /mobile-sync baru."));
-  const close=el("button","btn sq mobile-sync-close","✕");
-  close.type="button"; close.title="Tutup setup"; close.onclick=()=>{mobileSyncSetup=null;mobileSyncSetupError="";render();};
-  head.append(title,close); box.append(head);
-
-  if(mobileSyncSetupLoading){
-    box.append(el("div","mobile-sync-loading","⏳ Membuat kode pairing…"));
-    return box;
+async function refreshMyTicketsCache(silent=false){
+  if(!silent){
+    myTicketsLoading=true;
+    myTicketsError="";
+    myTicketsBridgeStatus="🔄 Mengambil My Tickets langsung dari server JKT48…";
+    myTicketsBridgeProgress=35;
+    if(view==="tickets")render();
   }
-  if(mobileSyncSetupError){
-    box.append(el("div","note mobile-sync-error","⚠️ "+mobileSyncSetupError));
-    const retry=el("button","btn buyp","↻ Coba lagi"); retry.type="button"; retry.onclick=openMobileSyncSetup; box.append(retry);
-    return box;
-  }
-  if(!mobileSyncSetup?.code) return box;
-
-  const codeWrap=el("div","mobile-sync-code-wrap");
-  codeWrap.append(el("div","mobile-sync-label","Kode pairing"));
-  codeWrap.append(el("div","mobile-sync-code",mobileSyncSetup.code));
-  codeWrap.append(el("div","mobile-sync-muted",`Berlaku sekitar ${Math.ceil(Number(mobileSyncSetup.ttl_seconds||600)/60)} menit. Kode ini dipakai bookmarklet untuk mengirim data tiket ke Radar.`));
-  box.append(codeWrap);
-
-  const step1=el("div","mobile-sync-step");
-  step1.append(el("span","mobile-sync-num","1"));
-  const s1=el("div"); s1.append(el("b","","Pasang bookmark Radar Sync di HP"));
-  s1.append(el("div","mobile-sync-muted","Salin bookmarklet di bawah, buat bookmark bernama 🎟️ Radar Sync, lalu tempel bookmarklet sebagai URL bookmark."));
-  step1.append(s1); box.append(step1);
-
-  const ta=document.createElement("textarea");
-  ta.className="mobile-sync-bookmarklet"; ta.readOnly=true; ta.spellcheck=false; ta.value=mobileSyncSetup.bookmarklet; box.append(ta);
-  const actions=el("div","mobile-sync-inline-actions");
-  const copy=el("button","btn buyp","📋 Salin Bookmarklet"); copy.type="button";
-  copy.onclick=async()=>{try{await navigator.clipboard.writeText(mobileSyncSetup.bookmarklet);copy.textContent="✅ Bookmarklet tersalin";}catch(_){ta.focus();ta.select();copy.textContent="📋 Pilih lalu salin";}};
-  const copyUrl=el("button","btn","🔗 Salin URL Dashboard"); copyUrl.type="button";
-  copyUrl.onclick=async()=>{try{await navigator.clipboard.writeText(location.href);copyUrl.textContent="✅ URL tersalin";}catch(_){}};
-  actions.append(copy,copyUrl); box.append(actions);
-
-  const step2=el("div","mobile-sync-step");
-  step2.append(el("span","mobile-sync-num","2"));
-  const s2=el("div"); s2.append(el("b","","Login ke JKT48 di HP")); s2.append(el("div","mobile-sync-muted","Buka jkt48.com di browser yang sama dan pastikan akun sudah login.")); step2.append(s2); box.append(step2);
-  const step3=el("div","mobile-sync-step");
-  step3.append(el("span","mobile-sync-num","3"));
-  const s3=el("div"); s3.append(el("b","","Jalankan Radar Sync")); s3.append(el("div","mobile-sync-muted","Saat halaman JKT48 terbuka, jalankan bookmark 🎟️ Radar Sync. Sync pertama membaca seluruh My Tickets lalu mengirimkannya ke dashboard. Tab JKT48 dapat dibiarkan terbuka untuk sync ulang setiap 60 detik.")); step3.append(s3); box.append(step3);
-  box.append(el("div","mobile-sync-warning","💡 Android Chrome: edit bookmark dan masukkan seluruh teks bookmarklet di atas sebagai URL. iPhone: Safari + Shortcuts dapat memakai aksi Run JavaScript on Webpage."));
-  return box;
-}
-
-async function openMobileSyncSetup(){
-  mobileSyncSetupError="";
-  mobileSyncSetupLoading=true;
-  mobileSyncSetup={code:""};
-  render();
   try{
-    const r=await fetch("/api/mobile-sync/code"+dashQuery(),{cache:"no-store"});
+    const r=await fetch("/api/my-tickets/fetch"+dashQuery(),{
+      method:"POST",
+      cache:"no-store",
+      headers:{"Content-Type":"application/json"},
+      body:"{}"
+    });
     const j=await r.json().catch(()=>({}));
-    if(!r.ok||!j?.ok)throw Error(j?.error||`HTTP ${r.status}`);
-    const url=location.origin+"/mobile-sync?code="+encodeURIComponent(j.code);
-    mobileSyncSetup={...j,url,bookmarklet:buildMobileSyncBookmarklet(j.code)};
+    if(!r.ok||j?.ok===false)throw Error(j?.error||j?.message||`HTTP ${r.status}`);
+    if(j?.fetched&&Array.isArray(j.tickets)){
+      myTickets=j;
+      myTicketsAuthenticated=true;
+      try{localStorage.setItem("radar_my_tickets_cache_v3",JSON.stringify(j))}catch(_){}
+      myTicketsError="";
+      myTicketsBridgeStatus=`✅ ${j.tickets.length} record · ${j.pages_fetched||1} halaman · ${j.updated_at?new Date(j.updated_at*1000).toLocaleTimeString("id-ID"):"baru saja"}`;
+      myTicketsBridgeProgress=100;
+    }else{
+      myTickets=j;
+      myTicketsAuthenticated=!!j?.authenticated;
+      myTicketsError=String(j?.error||j?.message||"Server belum mengembalikan data My Tickets.");
+      myTicketsBridgeStatus="⚠️ Belum ada data My Tickets.";
+      myTicketsBridgeProgress=0;
+    }
+    if(!silent){myTicketsLoading=false;if(view==="tickets")render();}
+    return myTickets;
   }catch(e){
-    mobileSyncSetupError="Gagal membuat kode Sync HP: "+String(e?.message||e);
-  }finally{
-    mobileSyncSetupLoading=false;
-    render();
+    if(!silent){myTicketsLoading=false;myTicketsBridgeStatus="";myTicketsBridgeProgress=null}
+    myTicketsError=String(e?.message||e||"Gagal mengambil My Tickets.");
+    if(view==="tickets")render();
+    return null;
   }
 }
+
+async function openDirectMyTickets(){return refreshMyTicketsCache(false)}
 async function fetchMyTickets(){return refreshMyTicketsCache(false)}
-setInterval(()=>{if(view==="tickets"&&!myTicketsLoading)refreshMyTicketsCache(true)},10000);
+
 
 function loadMyTicketsFromLocalCache() {
   try {
@@ -2125,35 +2089,32 @@ function renderMyTickets(){
   if(myTickets?.updated_at){
     statusLine.textContent = `Terakhir fetch: ${new Date(myTickets.updated_at*1000).toLocaleTimeString("id-ID")}`;
   } else {
-    statusLine.textContent = "Belum ada sinkronisasi dari HP · tekan Sync HP untuk setup.";
+    statusLine.textContent = "Belum ada data · tekan Get Data JKT48 untuk mengambil langsung dari server.";
   }
   title.append(statusLine);
 
   if (myTickets?.bridge || myTickets?.source === "mobile-browser") {
     const accountLine = el("div","note my-ticket-account-line");
-    accountLine.textContent = "📱 Data terakhir dikirim dari browser HP · token/cookie tidak disalin";
+    accountLine.textContent = "☁️ Data diambil langsung oleh server Radar dari akun JKT48 yang terhubung";
     title.append(accountLine);
   }
 
   const actions=el("div","my-ticket-actions");
-  const syncBtn=el("button","btn buyp","📱 Sync HP");syncBtn.type="button";syncBtn.onclick=openMobileSyncSetup;
+  const syncBtn=el("button","btn buyp","📡 Get Data JKT48");syncBtn.type="button";syncBtn.onclick=openDirectMyTickets;
   const fetchBtn=el("button","btn my-ticket-fetch-btn","🔄 Refresh");fetchBtn.type="button";fetchBtn.onclick=fetchMyTickets;
   actions.append(syncBtn,fetchBtn);toolbar.append(title,actions);
   wrap.append(toolbar);
 
-  if(mobileSyncSetup){
-    wrap.append(renderMobileSyncSetup());
-  }
 
   if(myTicketsError){
     const c=el("div","card");
     c.append(
       el("h2","","⚠️ Jadwal Saya belum tersinkron"),
       el("div","note",myTicketsError),
-      el("div","note","Jalankan Radar Sync dari halaman JKT48 yang sedang login di HP. Setelah itu Refresh membaca cache terbaru."),
-      el("button","btn buyp","📱 Setup Sync HP")
+      el("div","note","Server akan mengambil My Tickets langsung dari JKT48. Pastikan access token JKT48 sudah terhubung di server."),
+      el("button","btn buyp","📡 Get Data JKT48")
     );
-    c.lastChild.onclick = openMobileSyncSetup;
+    c.lastChild.onclick = openDirectMyTickets;
     wrap.append(c);
   }
 
@@ -2161,11 +2122,11 @@ function renderMyTickets(){
     const c=el("div","card my-ticket-empty");
     c.append(
       el("div","my-ticket-empty-icon","🎟️"),
-      el("h2","","📱 Hubungkan Jadwal dari HP"),
-      el("div","note","Buka JKT48 di HP dalam keadaan login, jalankan Radar Sync sekali, lalu biarkan tab JKT48 tetap terbuka. Radar akan mengirim seluruh detail My Tickets dan menggabungkan member + sesi + waktu yang sama menjadi satu card."),
-      el("button","btn buyp","📱 Setup Sync HP")
+      el("h2","","📡 Ambil Jadwal dari JKT48"),
+      el("div","note","Klik tombol di bawah untuk meminta server Radar mengambil seluruh My Tickets langsung dari JKT48. Tidak perlu bookmarklet atau Sync HP."),
+      el("button","btn buyp","📡 Get Data JKT48")
     );
-    c.lastChild.onclick = openMobileSyncSetup;
+    c.lastChild.onclick = openDirectMyTickets;
     wrap.append(c);
     return wrap;
   }
@@ -2187,7 +2148,7 @@ function renderMyTickets(){
   wrap.append(summary);
 
   const meta=el("div","note my-ticket-meta");
-  meta.textContent=`${groupedTickets.length} event card · ${tickets.length} record tiket · ${myTickets.pages_fetched || 1} halaman · ${myTickets.from} → ${myTickets.to} · 📱 mobile sync`;
+  meta.textContent=`${groupedTickets.length} event card · ${tickets.length} record tiket · ${myTickets.pages_fetched || 1} halaman · ${myTickets.from} → ${myTickets.to} · ☁️ direct server fetch`;
   wrap.append(meta);
 
   const filter=el("div","tabs my-ticket-filter");
