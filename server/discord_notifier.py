@@ -2917,7 +2917,7 @@ def export_csv(only_today=False):
     since = day_start_ts() if only_today else 0
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["waktu_lokal", "epoch", "jenis", "kode_event", "event", "member",
+    w.writerow(["waktu_lokal", "epoch", "server/mobile-sync.html", "kode_event", "event", "member",
                 "jalur", "sesi", "tanggal_sesi", "jam_mulai", "jumlah", "durasi_detik"])
     with lock:
         for ts, kind, code, sdc, n, dur in activity:
