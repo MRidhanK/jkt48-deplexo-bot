@@ -2272,6 +2272,27 @@ function renderMyTicketCard(t){
   if(isUpcomingTicket(t)) card.append(el("div","my-ticket-countdown","⏳ " + ticketCountdown(t)));
   return card;
 }
+/* Gabungkan record per-jalur menjadi satu kartu per (member + sesi + waktu). */
+function groupMyTickets(tickets){
+  const map=new Map();
+  for(const t of (Array.isArray(tickets)?tickets:[])){
+    if(!t||typeof t!=="object")continue;
+    const key=[t.category,t.member_name||t.name||t.ticket_label,t.ticket_label,t.date,t.start_time,t.end_time,t.session_label].join("|");
+    let g=map.get(key);
+    if(!g){
+      g={...t,bought_count:0,used_count:0,transaction_numbers:[],lanes:[]};
+      map.set(key,g);
+    }
+    const bought=Number(t.bought_count||0)||0, used=Number(t.used_count||0)||0;
+    g.bought_count+=bought; g.used_count+=used;
+    for(const n of (t.transaction_numbers||[])) if(!g.transaction_numbers.includes(n)) g.transaction_numbers.push(n);
+    const label=String(t.lane_label||"Tanpa jalur");
+    const ex=g.lanes.find(x=>x.lane_label===label);
+    if(ex){ex.bought_count+=bought;ex.used_count+=used;}
+    else g.lanes.push({lane_label:label,bought_count:bought,used_count:used});
+  }
+  return [...map.values()];
+}
 function renderMyTicketList(container,tickets,filter){
   const old=container.querySelector(".my-ticket-list"); if(old) old.remove();
   const list=el("div","my-ticket-list");
