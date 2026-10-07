@@ -2533,6 +2533,9 @@ my_tickets_bridge_lock = threading.Lock()
 my_tickets_bridge = {}
 # Mobile Browser Sync: HP yang sedang login di jkt48.com menjadi pembaca session.
 MOBILE_SYNC_TTL = int(os.environ.get("MOBILE_SYNC_TTL", "600"))
+# Setelah kode dipakai sync pertama kali, masa berlakunya diperpanjang (sliding) setiap sync berhasil,
+# supaya loop bookmarklet 60 detik tidak mati setelah 10 menit. Default 12 jam sejak sync terakhir.
+MOBILE_SYNC_ACTIVE_TTL = int(os.environ.get("MOBILE_SYNC_ACTIVE_TTL", "43200"))
 MOBILE_SYNC_MAX_PAYLOAD = int(os.environ.get("MOBILE_SYNC_MAX_PAYLOAD", "900000"))
 MOBILE_SYNC_ORIGINS = {"https://jkt48.com", "https://www.jkt48.com"}
 # MOBILE_SYNC_FILE sudah ditentukan lebih atas lewat _resolve_mobile_sync_file()
@@ -2559,6 +2562,7 @@ def validate_mobile_sync_code(code):
             mobile_sync_codes.pop(code, None)
             return False
         item["hits"] = int(item.get("hits") or 0) + 1
+        item["expires_at"] = max(float(item.get("expires_at") or 0), now + max(60, MOBILE_SYNC_ACTIVE_TTL))
         return True
 
 def mobile_sync_origin_allowed(origin):
