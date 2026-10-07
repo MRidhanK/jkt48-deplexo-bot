@@ -1149,6 +1149,327 @@ table.hm{border-spacing:4px}
 </style>
 
 
+
+<style id="responsive-ticket-refresh">
+/* =========================================================
+   JKT48 TICKET RADAR — RESPONSIVE TICKET PAGE REFRESH
+   Fokus: My Tickets / Jadwal Saya + header/filter + cards.
+   Tidak mengubah ID atau JavaScript yang sudah ada.
+   ========================================================= */
+
+/* ---------- fluid page shell ---------- */
+html, body { min-width: 0; }
+body { overflow-x: hidden; }
+main { width: 100%; }
+
+.my-tickets-page {
+  width: 100%;
+  max-width: 1320px;
+  margin-inline: auto;
+  gap: clamp(10px, 1.2vw, 16px);
+}
+
+/* ---------- summary: 6 cards adapt to viewport ---------- */
+.my-tickets-page > .sum {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.my-tickets-page > .sum > div {
+  min-width: 0;
+  min-height: 86px;
+  padding: 13px 14px;
+}
+
+.my-tickets-page > .sum b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- meta information ---------- */
+.my-ticket-meta {
+  margin: 0 !important;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+
+/* ---------- category tabs ---------- */
+.my-ticket-filter {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px;
+  margin: 0;
+}
+.my-ticket-filter::-webkit-scrollbar { display: none; }
+.my-ticket-filter .tab {
+  flex: 0 0 auto;
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+/* ---------- ticket cards: 2 columns on wide screens ---------- */
+.my-ticket-list {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(10px, 1.1vw, 16px);
+  align-items: start;
+}
+
+.my-ticket-card {
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  padding: clamp(13px, 1.25vw, 18px) !important;
+}
+
+.my-ticket-card h2,
+.my-ticket-event,
+.ticket-transactions {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.my-ticket-card h2 {
+  font-size: clamp(17px, 1.35vw, 21px);
+  line-height: 1.25;
+}
+
+.my-ticket-event {
+  margin-top: 2px;
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+
+/* ---------- ticket information grid ---------- */
+.my-ticket-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.ticket-info {
+  min-width: 0;
+  min-height: 76px;
+  padding: 9px 10px;
+}
+
+.ticket-info span {
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.ticket-info small {
+  line-height: 1.2;
+}
+
+.ticket-info b {
+  min-width: 0;
+  font-size: clamp(12px, 1vw, 14px);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* ---------- lane cards ---------- */
+.my-ticket-lane-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+}
+.my-ticket-lane-item { min-width: 0; }
+.my-ticket-lane-label,
+.my-ticket-lane-meta,
+.my-ticket-lane-total {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- toolbar ---------- */
+.my-ticket-toolbar {
+  width: 100%;
+  align-items: center;
+}
+.my-ticket-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.my-ticket-title .note {
+  overflow-wrap: anywhere;
+}
+.my-ticket-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+/* ---------- tablet ---------- */
+@media (max-width: 1100px) {
+  .my-tickets-page > .sum {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .my-ticket-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ---------- mobile / small tablet ---------- */
+@media (max-width: 900px) {
+  .my-ticket-list {
+    grid-template-columns: 1fr;
+  }
+
+  .my-ticket-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .my-ticket-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .my-ticket-actions .btn {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .my-tickets-page > .sum {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .my-tickets-page > .sum > div {
+    min-height: 76px;
+    padding: 11px 12px;
+  }
+
+  .my-tickets-page > .sum b {
+    font-size: 22px;
+  }
+
+  .my-ticket-card {
+    padding: 13px !important;
+    border-radius: 14px;
+  }
+
+  .my-ticket-head {
+    margin-bottom: 6px;
+  }
+
+  .my-ticket-grid {
+    gap: 7px;
+  }
+
+  .ticket-info {
+    min-height: 72px;
+    padding: 8px;
+    border-radius: 10px;
+  }
+
+  .my-ticket-lane-focus {
+    padding: 10px;
+    border-radius: 14px;
+  }
+
+  .my-ticket-lane-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- very narrow phones ---------- */
+@media (max-width: 430px) {
+  .my-tickets-page { gap: 9px; }
+
+  .my-tickets-page > .sum {
+    gap: 7px;
+  }
+
+  .my-tickets-page > .sum > div {
+    min-height: 70px;
+    padding: 10px;
+    border-radius: 12px;
+  }
+
+  .my-tickets-page > .sum b {
+    font-size: 20px;
+  }
+
+  .my-tickets-page > .sum span {
+    font-size: 11px;
+  }
+
+  .my-ticket-filter {
+    margin-inline: -2px;
+    width: calc(100% + 4px);
+  }
+
+  .my-ticket-filter .tab {
+    min-height: 40px;
+    padding: 8px 11px;
+    font-size: 12px;
+  }
+
+  .my-ticket-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ticket-info {
+    min-height: 68px;
+  }
+
+  .ticket-info b {
+    font-size: 12px;
+  }
+
+  .my-ticket-lane-label {
+    font-size: 18px;
+  }
+}
+
+/* ---------- ultra narrow phones: prevent cramped date/time blocks ---------- */
+@media (max-width: 350px) {
+  .my-ticket-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .my-ticket-actions {
+    flex-direction: column;
+  }
+
+  .my-ticket-actions .btn {
+    width: 100%;
+  }
+}
+
+/* ---------- desktop breathing room ---------- */
+@media (min-width: 1200px) {
+  .my-ticket-list { gap: 16px; }
+  .my-ticket-grid { gap: 10px; }
+}
+
+/* ---------- accessibility / touch ---------- */
+@media (pointer: coarse) {
+  .my-ticket-filter .tab,
+  .my-ticket-actions .btn,
+  .my-ticket-lane-item {
+    min-height: 42px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .my-ticket-card,
+  .my-ticket-lane-item { transition: none !important; }
+}
+</style>
+
 </head>
 <body>
 <header>
