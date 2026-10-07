@@ -1324,6 +1324,44 @@ main>*{min-width:0}
 }
 </style>
 
+
+<style id="my-ticket-session-responsive">
+/* ===== Jadwal Saya: tampil per SESI ===== */
+.my-ticket-session-card{min-width:0;width:100%;}
+.my-ticket-session-card h2{margin:0;font-size:18px;font-weight:850;letter-spacing:-.02em;overflow-wrap:anywhere}
+.my-ticket-session-card .my-ticket-event{margin-top:3px;margin-bottom:12px;font-size:12px;color:var(--mut)}
+.my-ticket-session-card .my-ticket-grid{grid-template-columns:repeat(6,minmax(0,1fr));}
+.my-ticket-session-members{margin-top:4px;border:1px solid var(--line);border-radius:13px;overflow:hidden;background:rgba(255,255,255,.012)}
+.my-ticket-session-members-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:linear-gradient(90deg,var(--soft),transparent);border-bottom:1px solid var(--line)}
+.my-ticket-member-list{display:grid}
+.my-ticket-member-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 12px;border-top:1px solid var(--line);min-width:0}
+.my-ticket-member-row:first-child{border-top:0}
+.my-ticket-member-main{min-width:0}
+.my-ticket-member-top{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+.my-ticket-member-name{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.my-ticket-member-lane{font-size:11px;color:var(--mut);padding:3px 7px;border-radius:999px;background:var(--soft);border:1px solid var(--line);white-space:nowrap}
+.my-ticket-member-meta{margin-top:3px;font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums}
+.my-ticket-member-count{min-width:38px;height:34px;padding:0 9px;border-radius:9px;display:grid;place-items:center;background:rgba(34,199,122,.10);color:var(--ok);font-weight:900;font-variant-numeric:tabular-nums}
+.my-ticket-list{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+@media(max-width:1200px){
+  .my-ticket-session-card .my-ticket-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+}
+@media(max-width:900px){
+  .my-ticket-list{grid-template-columns:1fr;}
+  .my-ticket-session-card .my-ticket-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+}
+@media(max-width:650px){
+  .my-ticket-session-card .my-ticket-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+  .my-ticket-member-row{padding:9px 10px;gap:8px}
+  .my-ticket-session-members-head{padding:9px 10px}
+  .my-ticket-member-name{max-width:58vw}
+}
+@media(max-width:420px){
+  .my-ticket-session-card .my-ticket-grid{grid-template-columns:1fr 1fr;}
+  .my-ticket-member-top{align-items:flex-start;flex-direction:column;gap:4px}
+  .my-ticket-member-lane{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+}
+</style>
 </head>
 <body>
 <header>
@@ -2421,60 +2459,148 @@ function ticketLaneFocus(t){
   return wrap;
 }
 
-function renderMyTicketCard(t){
-  const card=el("article","card my-ticket-card");
+function renderMyTicketSessionCard(t){
+  const card=el("article","card my-ticket-card my-ticket-session-card");
   const head=el("div","my-ticket-head");
-  head.append(el("span","chip",ticketTypeLabel(t)),el("span","chip",isUpcomingTicket(t)?"● UPCOMING":"HISTORY"));
+  head.append(
+    el("span","chip",ticketTypeLabel(t)),
+    el("span","chip",isUpcomingTicket(t)?"● UPCOMING":"HISTORY")
+  );
   card.append(head);
-  card.append(el("h2","",t.member_name || t.name || t.ticket_label || "JKT48 Ticket"));
-  if(t.member_name && t.ticket_label) card.append(el("div","my-ticket-event",t.ticket_label));
-  else if(t.name) card.append(el("div","my-ticket-event",t.name));
+
+  card.append(el("h2","",t.event_title || t.ticket_label || t.name || "JKT48 Session"));
+  card.append(el("div","my-ticket-event",`Sesi ${t.session_label || "-"}`));
 
   const grid=el("div","my-ticket-grid");
   grid.append(
     ticketInfo("📅","Tanggal",ticketDate(t)),
     ticketInfo("🕐","Waktu",ticketTime(t)),
     ticketInfo("🎫","Sesi",t.session_label || "-"),
-    ticketInfo("🎟️","Jumlah",`${t.bought_count || 0} tiket`),
-    ticketInfo("✅","Terpakai",`${t.used_count || 0}`)
+    ticketInfo("🎟️","Total tiket",`${t.bought_count || 0} tiket`),
+    ticketInfo("✅","Terpakai",`${t.used_count || 0}`),
+    ticketInfo("👥","Member",`${t.members?.length || 0} member`)
   );
-  if(t.category === "VC") grid.append(ticketInfo("📹","Jenis","Virtual Call"));
   card.append(grid);
-  card.append(ticketLaneFocus(t));
 
-  if(t.reception_start_time) card.append(el("div","note",`🚪 Check-in mulai ${String(t.reception_start_time).slice(0,5)}${t.reception_end_time ? ` · sampai ${String(t.reception_end_time).slice(0,5)}` : ""}`));
-  if(t.transaction_numbers?.length) card.append(el("div","ticket-transactions","Transaksi: " + t.transaction_numbers.join(", ")));
+  const memberSection=el("section","my-ticket-session-members");
+  const memberHead=el("div","my-ticket-session-members-head");
+  memberHead.append(
+    el("div","my-ticket-lane-focus-title","👥 Detail tiket per member"),
+    el("span","my-ticket-lane-focus-count",`${t.members?.length || 0} member`)
+  );
+  memberSection.append(memberHead);
+
+  const list=el("div","my-ticket-member-list");
+  for(const m of (t.members || [])){
+    const row=el("div","my-ticket-member-row");
+    const main=el("div","my-ticket-member-main");
+    const top=el("div","my-ticket-member-top");
+    top.append(
+      el("b","my-ticket-member-name",m.member_name || "Tanpa nama"),
+      el("span","my-ticket-member-lane",m.lane_label || "Tanpa jalur")
+    );
+    const meta=el("div","my-ticket-member-meta");
+    meta.textContent=`${m.bought_count || 0} tiket · ${m.used_count || 0} terpakai · sisa ${Math.max(0,(m.bought_count||0)-(m.used_count||0))}`;
+    main.append(top,meta);
+    row.append(main,el("div","my-ticket-member-count",`${m.bought_count || 0}`));
+    list.append(row);
+  }
+  memberSection.append(list);
+  card.append(memberSection);
+
+  if(t.reception_start_time){
+    card.append(el("div","note",`🚪 Check-in mulai ${String(t.reception_start_time).slice(0,5)}${t.reception_end_time ? ` · sampai ${String(t.reception_end_time).slice(0,5)}` : ""}`));
+  }
+  if(t.transaction_numbers?.length){
+    card.append(el("div","ticket-transactions","Transaksi: " + t.transaction_numbers.join(", ")));
+  }
   if(isUpcomingTicket(t)) card.append(el("div","my-ticket-countdown","⏳ " + ticketCountdown(t)));
   return card;
 }
-/* Gabungkan record per-jalur menjadi satu kartu per (member + sesi + waktu). */
-function groupMyTickets(tickets){
+
+/* Kelompokkan My Tickets berdasarkan SESI, bukan berdasarkan member.
+   Satu kartu = satu sesi (event + tanggal + jam + session_label).
+   Di dalam kartu ditampilkan semua member/jalur yang mempunyai tiket pada sesi tersebut. */
+function groupMyTicketSessions(tickets){
   const map=new Map();
   for(const t of (Array.isArray(tickets)?tickets:[])){
-    if(!t||typeof t!=="object")continue;
-    const key=[t.category,t.member_name||t.name||t.ticket_label,t.ticket_label,t.date,t.start_time,t.end_time,t.session_label].join("|");
+    if(!t || typeof t!=="object") continue;
+    const key=[
+      t.category || "OTHER",
+      t.ticket_label || t.name || "JKT48 Session",
+      t.date || "",
+      t.start_time || "",
+      t.end_time || "",
+      t.session_label || "-"
+    ].join("|");
+
     let g=map.get(key);
     if(!g){
-      g={...t,bought_count:0,used_count:0,transaction_numbers:[],lanes:[]};
+      g={
+        ...t,
+        event_title: t.ticket_label || t.name || "JKT48 Session",
+        bought_count:0,
+        used_count:0,
+        transaction_numbers:[],
+        members:[]
+      };
       map.set(key,g);
     }
-    const bought=Number(t.bought_count||0)||0, used=Number(t.used_count||0)||0;
-    g.bought_count+=bought; g.used_count+=used;
-    for(const n of (t.transaction_numbers||[])) if(!g.transaction_numbers.includes(n)) g.transaction_numbers.push(n);
-    const label=String(t.lane_label||"Tanpa jalur");
-    const ex=g.lanes.find(x=>x.lane_label===label);
-    if(ex){ex.bought_count+=bought;ex.used_count+=used;}
-    else g.lanes.push({lane_label:label,bought_count:bought,used_count:used});
+
+    const bought=Number(t.bought_count||0)||0;
+    const used=Number(t.used_count||0)||0;
+    g.bought_count += bought;
+    g.used_count += used;
+
+    for(const n of (t.transaction_numbers||[])){
+      if(n!=null && !g.transaction_numbers.includes(n)) g.transaction_numbers.push(n);
+    }
+
+    const memberName=String(t.member_name || t.name || "Tanpa nama");
+    const laneLabel=String(t.lane_label || "Tanpa jalur");
+    const mk=memberName+"|"+laneLabel;
+    const ex=g.members.find(x=>x._key===mk);
+    if(ex){
+      ex.bought_count += bought;
+      ex.used_count += used;
+    }else{
+      g.members.push({
+        _key:mk,
+        member_name:memberName,
+        lane_label:laneLabel,
+        bought_count:bought,
+        used_count:used
+      });
+    }
   }
-  return [...map.values()];
+
+  for(const g of map.values()){
+    g.members.sort((a,b)=>
+      String(a.member_name).localeCompare(String(b.member_name),"id") ||
+      String(a.lane_label).localeCompare(String(b.lane_label),"id",{numeric:true})
+    );
+  }
+
+  return [...map.values()].sort((a,b)=>
+    String(a.date||"").localeCompare(String(b.date||"")) ||
+    String(a.start_time||"").localeCompare(String(b.start_time||"")) ||
+    String(a.category||"").localeCompare(String(b.category||"")) ||
+    String(a.event_title||"").localeCompare(String(b.event_title||"")) ||
+    String(a.session_label||"").localeCompare(String(b.session_label||""),"id",{numeric:true})
+  );
 }
+
 function renderMyTicketList(container,tickets,filter){
   const old=container.querySelector(".my-ticket-list"); if(old) old.remove();
   const list=el("div","my-ticket-list");
-  const grouped = groupMyTickets(tickets);
+  const grouped = groupMyTicketSessions(tickets);
   const rows=filter === "all" ? grouped : grouped.filter(x=>x.category===filter);
-  if(!rows.length){list.append(el("div","card","Tidak ada tiket pada filter ini."));container.append(list);return;}
-  rows.forEach(t=>list.append(renderMyTicketCard(t)));
+  if(!rows.length){
+    list.append(el("div","card","Tidak ada sesi pada filter ini."));
+    container.append(list);
+    return;
+  }
+  rows.forEach(t=>list.append(renderMyTicketSessionCard(t)));
   container.append(list);
 }
 function renderMyTickets(){
@@ -2522,7 +2648,6 @@ function renderMyTickets(){
   actions.append(syncBtn,fetchBtn);toolbar.append(title,actions);
   wrap.append(toolbar);
 
-
   if(myTicketsError){
     const c=el("div","card");
     c.append(
@@ -2549,13 +2674,13 @@ function renderMyTickets(){
   }
 
   const tickets=myTickets.tickets || [];
-  const groupedTickets=groupMyTickets(tickets);
+  const groupedTickets=groupMyTicketSessions(tickets);
   const upcoming=groupedTickets.filter(isUpcomingTicket);
   const counts={MNG:0,"2SHOT":0,VC:0,SHOW:0,OTHER:0};
   for(const t of groupedTickets) counts[t.category]=(counts[t.category]||0)+1;
   const summary=el("div","sum");
   summary.append(
-    kcard(groupedTickets.length,"event"),
+    kcard(groupedTickets.length,"sesi"),
     kcard(counts.MNG||0,"M&G"),
     kcard(counts["2SHOT"]||0,"2 Shoot"),
     kcard(counts.VC||0,"VC"),
@@ -2565,7 +2690,7 @@ function renderMyTickets(){
   wrap.append(summary);
 
   const meta=el("div","note my-ticket-meta");
-  meta.textContent=`${groupedTickets.length} event card · ${tickets.length} record tiket · ${myTickets.pages_fetched || 1} halaman · ${myTickets.from} → ${myTickets.to} · ☁️ direct server fetch`;
+  meta.textContent=`${groupedTickets.length} sesi · ${tickets.length} record tiket · ${myTickets.pages_fetched || 1} halaman · ${myTickets.from} → ${myTickets.to} · ☁️ direct server fetch`;
   wrap.append(meta);
 
   const filter=el("div","tabs my-ticket-filter");
