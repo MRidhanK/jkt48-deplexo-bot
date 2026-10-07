@@ -4345,6 +4345,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"ok": False, "error": "Payload mobile sync tidak valid."})
             if not validate_mobile_sync_code(code):
                 return self.send_json(410, {"ok": False, "error": "Kode pairing kedaluwarsa atau tidak valid."})
+            # Auto-connect: bookmarklet di jkt48.com membaca /api/auth/session lalu
+            # mengirim isinya di sini, sehingga dashboard tidak perlu tempel JSON manual.
+            session_result = None
+            sess_payload = payload.get("session")
+            if isinstance(sess_payload, dict):
+                try:
+                    session_result = jkt48_account_import_session(sess_payload)
+                    print("[JKT48] Session diterima otomatis dari browser (mobile-sync).")
+                except Exception as error:
+                    with jkt48_account_lock:
+                        jkt48_account_last_error = f"{type(error).__name__}: {str(error)[:300]}"
+                    session_result = {"ok": False, "error": str(error)[:300]}
+                if payload.get("session_only"):
+                    ok_s = bool(session_result.get("ok"))
+                    return self.send_json(200 if ok_s else 400, session_result)
             rows = payload.get("tickets")
             if not isinstance(rows, list) or len(rows) > 500:
                 return self.send_json(400, {"ok": False, "error": "Daftar ticket tidak valid."})
@@ -4361,6 +4376,7 @@ class Handler(BaseHTTPRequestHandler):
                 pages = 1
             result = _prepare_browser_my_tickets(rows, date_from, date_to, pages)
             result.update({"bridge": True, "source": "mobile-browser", "sync_device": "mobile", "browser_fetched_at": payload.get("fetched_at")})
+            result["session_imported"] = bool(session_result and session_result.get("ok"))
             with my_tickets_cache_lock:
                 my_tickets_cache = dict(result)
                 my_tickets_fetching = False

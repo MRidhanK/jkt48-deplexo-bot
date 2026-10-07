@@ -1513,6 +1513,8 @@ let jkt48SessionImportOpen = false;
 let jkt48SessionImportText = "";
 let jkt48SessionImportBusy = false;
 let jkt48SessionImportError = "";
+let jkt48AutoWatchTimer = null;
+let jkt48AutoWatchUntil = 0;
 
 
 const buyFor = code => "https://jkt48.com/purchase/exclusive?code=" + encodeURIComponent(code);
@@ -1922,6 +1924,38 @@ async function refreshJkt48AccountStatus(silent=true){
   }
 }
 
+/* AUTO CONNECT: bookmarklet di jkt48.com membaca /api/auth/session lalu mengirim token ke server. */
+function jkt48AutoWatch(){
+  clearInterval(jkt48AutoWatchTimer);
+  jkt48AutoWatchUntil=Date.now()+10*60*1000;
+  jkt48AutoWatchTimer=setInterval(async()=>{
+    if(Date.now()>jkt48AutoWatchUntil){clearInterval(jkt48AutoWatchTimer);return;}
+    const st=await refreshJkt48AccountStatus(true);
+    if(st?.authenticated){
+      clearInterval(jkt48AutoWatchTimer);
+      jkt48SessionImportOpen=false;
+      if(view==="tickets")render();
+      await refreshMyTicketsCache(false);
+    }
+  },3000);
+}
+async function startJkt48AutoConnect(){
+  jkt48SessionImportError="";
+  const win=window.open("about:blank","_blank"); // dibuka sinkron agar tidak diblokir popup blocker
+  try{
+    const r=await fetch("/api/mobile-sync/code"+dashQuery(),{cache:"no-store"});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j?.ok||!j.code)throw Error(j?.error||`HTTP ${r.status}`);
+    const url="/mobile-sync?code="+encodeURIComponent(j.code);
+    if(win)win.location.href=url;else window.location.href=url;
+    jkt48AutoWatch();
+  }catch(e){
+    if(win)win.close();
+    jkt48SessionImportError=String(e?.message||e||"Gagal membuat kode pairing.");
+  }
+  if(view==="tickets")render();
+}
+
 async function importJkt48Session(){
   const raw=String(jkt48SessionImportText||"").trim();
   if(!raw){
@@ -1972,7 +2006,7 @@ function renderJkt48SessionCard(){
     el("div","jkt48-session-sub",
       myTicketsAccount?.authenticated
         ? "Session JKT48 terhubung. Radar akan memeriksa /api/auth/session dan mengambil access_token baru saat masa berlaku mendekat."
-        : "Hubungkan session JKT48 satu kali. Setelah itu Radar dapat memperbarui access_token otomatis saat session masih valid."
+        : "Tekan Hubungkan Otomatis. Radar membaca access_token langsung dari session JKT48 yang sedang login di browser kamu (/api/auth/session), tanpa tempel JSON."
     )
   );
   head.append(left);
@@ -1988,7 +2022,17 @@ function renderJkt48SessionCard(){
   if(myTicketsAccount?.seconds_to_expiry!=null)status.append(el("span","jkt48-session-badge","⏳ "+fmtUp(myTicketsAccount.seconds_to_expiry)));
   card.append(status);
 
-  if(!myTicketsAccount?.authenticated || jkt48SessionImportOpen){
+  if(!myTicketsAccount?.authenticated && !jkt48SessionImportOpen){
+    const acts=el("div","jkt48-session-actions");
+    const auto=el("button","btn buyp","⚡ Hubungkan Otomatis");
+    auto.type="button";auto.onclick=startJkt48AutoConnect;
+    const man=el("button","btn","✍️ Tempel manual");
+    man.type="button";man.onclick=()=>{jkt48SessionImportOpen=true;jkt48SessionImportError="";render();};
+    acts.append(auto,man);
+    card.append(acts);
+    card.append(el("div","jkt48-session-ok","Satu tab baru akan terbuka berisi bookmarklet Radar Sync. Login ke jkt48.com di browser yang sama, jalankan bookmark-nya, lalu halaman ini terhubung sendiri dalam beberapa detik."));
+    if(jkt48SessionImportError)card.append(el("div","jkt48-session-error","⚠️ "+jkt48SessionImportError));
+  }else if(!myTicketsAccount?.authenticated || jkt48SessionImportOpen){
     const imp=el("div","jkt48-session-import");
     const ta=document.createElement("textarea");
     ta.placeholder='Tempel seluruh response JSON dari /api/auth/session di sini...';
@@ -2004,8 +2048,8 @@ function renderJkt48SessionCard(){
     btn.onclick=importJkt48Session;
     acts.append(btn);
 
-    if(myTicketsAccount?.authenticated){
-      const close=el("button","btn","Tutup");
+    {
+      const close=el("button","btn",myTicketsAccount?.authenticated?"Tutup":"Kembali");
       close.type="button";
       close.onclick=()=>{jkt48SessionImportOpen=false;render();};
       acts.append(close);
@@ -2017,10 +2061,12 @@ function renderJkt48SessionCard(){
     card.append(imp);
   }else{
     const acts=el("div","jkt48-session-actions");
+    const re=el("button","btn","⚡ Sync Ulang Otomatis");
+    re.type="button";re.onclick=startJkt48AutoConnect;
     const b=el("button","btn","⚙️ Ganti Session");
     b.type="button";
     b.onclick=()=>{jkt48SessionImportOpen=true;jkt48SessionImportError="";render();};
-    acts.append(b);
+    acts.append(re,b);
     card.append(acts);
   }
   return card;
@@ -2067,7 +2113,11 @@ async function refreshMyTicketsCache(silent=false){
   }
 }
 
-async function openDirectMyTickets(){return refreshMyTicketsCache(false)}
+async function openDirectMyTickets(){
+  // Belum terhubung -> langsung jalankan alur otomatis, bukan menampilkan error "token belum ada".
+  if(!myTicketsAccount?.authenticated){return startJkt48AutoConnect();}
+  return refreshMyTicketsCache(false);
+}
 async function fetchMyTickets(){return refreshMyTicketsCache(false)}
 
 
