@@ -1891,6 +1891,7 @@ async function loadExtra() {
   if (v === "tickets") {
     loadMyTicketsFromLocalCache();
     refreshJkt48AccountStatus(true);
+    pullMyTicketsCache().then(x=>{if(x==="changed"&&view==="tickets")render();});
     return;
   }
   if (v !== "analytics" && v !== "status") return;
@@ -2072,7 +2073,31 @@ function renderJkt48SessionCard(){
   return card;
 }
 
+/* Data hasil Radar Sync (browser) disimpan server di cache. Server Railway sendiri sering diblokir
+   Cloudflare saat fetch langsung ke JKT48, jadi cache dari browser dipakai lebih dulu. */
+async function pullMyTicketsCache(){
+  try{
+    const r=await fetch("/api/my-tickets"+dashQuery(),{cache:"no-store"});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j?.fetched&&Array.isArray(j.tickets)){
+      const changed=!myTickets||myTickets.updated_at!==j.updated_at||myTickets.tickets?.length!==j.tickets.length;
+      myTickets=j;myTicketsAuthenticated=true;myTicketsError="";
+      try{localStorage.setItem("radar_my_tickets_cache_v3",JSON.stringify(j))}catch(_){}
+      return changed?"changed":"same";
+    }
+  }catch(_){}
+  return null;
+}
+
 async function refreshMyTicketsCache(silent=false){
+  const got=await pullMyTicketsCache();
+  if(got){
+    myTicketsLoading=false;
+    myTicketsBridgeStatus=`✅ ${myTickets.tickets.length} record · ${myTickets.pages_fetched||1} halaman · ${myTickets.updated_at?new Date(myTickets.updated_at*1000).toLocaleTimeString("id-ID"):"baru saja"}`;
+    myTicketsBridgeProgress=100;
+    if(view==="tickets")render();
+    return myTickets;
+  }
   if(!silent){
     myTicketsLoading=true;
     myTicketsError="";
@@ -2307,7 +2332,7 @@ function renderMyTickets(){
     c.append(
       el("h2","","⚠️ Jadwal Saya belum tersinkron"),
       el("div","note",myTicketsError),
-      el("div","note","Server akan mengambil My Tickets langsung dari JKT48. Pastikan access token JKT48 sudah terhubung di server."),
+      el("div","note","Server mengambil My Tickets langsung dari JKT48, tapi sering ditolak Cloudflare. Jalur yang andal: jalankan bookmark Radar Sync di tab jkt48.com yang sedang login, data akan muncul di sini otomatis."),
       el("button","btn buyp","📡 Get Data JKT48")
     );
     c.lastChild.onclick = openDirectMyTickets;
@@ -3010,6 +3035,11 @@ function startJkt48AccountWatcher(){
   jkt48AccountTimer=setInterval(()=>{
     if(view==="tickets") refreshJkt48AccountStatus(true);
   },30000);
+  setInterval(async()=>{
+    if(view!=="tickets"||myTicketsLoading)return;
+    const x=await pullMyTicketsCache();
+    if(x==="changed"&&view==="tickets")render();
+  },10000);
 }
 startJkt48AccountWatcher();
 
