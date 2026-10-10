@@ -991,6 +991,28 @@
 
 
 
+
+  .ana-extra-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:14px}
+  .ana-calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px;margin-top:10px}
+  .ana-cal-head,.ana-cal-day{padding:7px 3px;text-align:center;border-radius:8px;font-size:11px;min-width:0}
+  .ana-cal-head{color:var(--mut);font-weight:800}
+  .ana-cal-day{border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer;min-height:42px}
+  .ana-cal-day:disabled{opacity:.35;cursor:default}
+  .ana-cal-day.selected{outline:2px solid var(--accent,#60a5fa)}
+  .ana-cal-day.has-show{border-color:rgba(96,165,250,.45)}
+  .ana-cal-day .dots{display:block;font-size:10px;margin-top:3px}
+  .ana-status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin:0 1px}
+  .ana-status-dot.available{background:#22c55e}.ana-status-dot.low{background:#f59e0b}.ana-status-dot.sold_out{background:#ef4444}.ana-status-dot.unknown{background:#94a3b8}
+  .ana-session-list{display:grid;gap:7px;margin-top:10px}
+  .ana-session{display:flex;gap:8px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:10px;padding:9px;background:var(--panel)}
+  .ana-session small{display:block;color:var(--mut);margin-top:3px}
+  .ana-linechart{width:100%;height:150px;display:block;overflow:visible}
+  .ana-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:9px;margin-top:10px}
+  .ana-form-grid label{font-size:11px;color:var(--mut);display:grid;gap:5px}
+  .ana-form-grid input,.ana-form-grid select{min-width:0;width:100%;padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--text)}
+  .ana-kind-options{display:flex;flex-wrap:wrap;gap:9px;margin:10px 0;font-size:12px}
+  .ana-kind-options label{display:flex;align-items:center;gap:5px}
+
   /* Analytics enhancements */
   .ana-insights{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
   .ana-insight{border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:13px;background:linear-gradient(145deg,rgba(96,165,250,.09),rgba(255,255,255,.02));min-width:0}
@@ -2856,16 +2878,88 @@
       const soMax = Math.max(1, ...soMembers.map(x => Number(x.sold_out || 0)));
       soMembers.forEach((x, i) => {
         const row = el("div", "ana-bar-row"), name = el("div", "ana-bar-name", (i + 1) + ". " + (x.member || "-"));
-        const track = el("div", "ana-bar-track"), fill = el("div", "ana-bar-fill"), val = el("div", "ana-bar-value", String(x.sold_out || 0) + " SO");
+        const track = el("div", "ana-bar-track"), fill = el("div", "ana-bar-fill"), val = el("div", "ana-bar-value", String(x.sold_out || 0) + " SO" + (x.avg_so_seconds != null ? " · " + fmtMS(x.avg_so_seconds) : ""));
         fill.style.width = Math.max(2, Number(x.sold_out || 0) / soMax * 100) + "%";
         track.append(fill); row.append(name, track, val);
         const eventCounts = x.events || {};
         const topEvent = Object.entries(eventCounts).sort((a,b) => Number(b[1]) - Number(a[1]))[0];
-        row.title = (x.sold_out || 0) + " kejadian SO · " + (x.sessions || 0) + " sesi/jalur teramati" + (topEvent ? " · event terbanyak: " + topEvent[0] + " (" + topEvent[1] + ")" : "");
+        row.title = (x.sold_out || 0) + " kejadian SO · " + (x.sessions || 0) + " sesi/jalur teramati" + (x.avg_so_seconds != null ? " · rata-rata restock→SO: " + fmtMS(x.avg_so_seconds) : " · durasi belum cukup") + (topEvent ? " · event terbanyak: " + topEvent[0] + " (" + topEvent[1] + ")" : "");
         soMemberBox.append(row);
       });
     }
     rangeCard.append(soMemberBox); pg.append(rangeCard);
+
+    // Kalender semua sesi yang berhasil dipetakan oleh poller.
+    const extraGrid = el("div", "ana-extra-grid");
+    const calCard = el("div", "card");
+    calCard.append(el("h2", "", "KALENDER JADWAL & STATUS TIKET"));
+    calCard.append(el("div", "note", "Status berdasarkan snapshot terakhir server. Tanggal tanpa sesi terdata tidak berarti tiket tersedia."));
+    const calendarRows = a.calendar_sessions || [];
+    let calMonth = new Date(); calMonth.setDate(1);
+    let selectedDate = new Date().toISOString().slice(0,10);
+    const calTitle = el("div", "ana-chart-head"), calLabel = el("b", "", ""), calPrev = el("button", "", "‹"), calNext = el("button", "", "›");
+    calPrev.type=calNext.type="button"; calTitle.append(calPrev,calLabel,calNext); calCard.append(calTitle);
+    const calGrid=el("div","ana-calendar"); const calDetails=el("div","ana-session-list"); calCard.append(calGrid,calDetails);
+    const monthNames=["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+    function paintCalendar(){
+      calGrid.textContent=""; calDetails.textContent="";
+      calLabel.textContent=monthNames[calMonth.getMonth()] + " " + calMonth.getFullYear();
+      ["Min","Sen","Sel","Rab","Kam","Jum","Sab"].forEach(x=>calGrid.append(el("div","ana-cal-head",x)));
+      const first=new Date(calMonth.getFullYear(),calMonth.getMonth(),1).getDay();
+      const count=new Date(calMonth.getFullYear(),calMonth.getMonth()+1,0).getDate();
+      for(let i=0;i<first;i++){const blank=el("button","ana-cal-day","");blank.disabled=true;calGrid.append(blank);}
+      for(let d=1;d<=count;d++){
+        const date=calMonth.getFullYear()+"-"+String(calMonth.getMonth()+1).padStart(2,"0")+"-"+String(d).padStart(2,"0");
+        const rows=calendarRows.filter(x=>x.date===date); const b=el("button","ana-cal-day"+(rows.length?" has-show":"")+(selectedDate===date?" selected":""),String(d)); b.type="button";
+        if(rows.length){const dots=el("span","dots"); const statuses=[...new Set(rows.map(x=>x.status))]; statuses.forEach(st=>{const dot=el("i","ana-status-dot "+st);dot.title=st;dots.append(dot)});b.append(dots);b.title=rows.length+" sesi";}
+        b.onclick=()=>{selectedDate=date;paintCalendar();};calGrid.append(b);
+      }
+      const rows=calendarRows.filter(x=>x.date===selectedDate);
+      calDetails.append(el("div","note",selectedDate+" · "+rows.length+" sesi terpantau"));
+      if(!rows.length)calDetails.append(el("div","empty","Tidak ada sesi dengan tanggal ini pada data poller."));
+      rows.forEach(x=>{const row=el("div","ana-session"),left=el("div",""),right=el("div",""),status=x.status==="sold_out"?"SO":x.status==="low"?"Hampir habis":x.status==="unknown"?"Belum terpantau":"Tersedia";left.append(el("b","",x.member+" · "+x.event),el("small","",(x.start||"Jam belum tersedia")+" · "+x.session));right.append(el("b","",status),el("small","",x.quota==null?"Kuota ?":x.quota+" tiket"));row.append(left,right);calDetails.append(row);});
+    }
+    calPrev.onclick=()=>{calMonth.setMonth(calMonth.getMonth()-1);paintCalendar();};calNext.onclick=()=>{calMonth.setMonth(calMonth.getMonth()+1);paintCalendar();};paintCalendar();
+    extraGrid.append(calCard);
+
+    // Timeline kuota per sesi, memakai titik historis yang tersimpan di server.
+    const timelineCard=el("div","card");timelineCard.append(el("h2","","TIMELINE PERUBAHAN KUOTA"));
+    timelineCard.append(el("div","note","Riwayat grafik tersedia sejak data direkam dan dibatasi sekitar 24 jam oleh konfigurasi history saat ini."));
+    const timelineRows=a.timeline_sessions||[];const select=el("select","r12-input r12-select");
+    timelineRows.forEach((x,i)=>{const op=el("option","",x.member+" · "+x.event+" · "+x.date+" "+(x.start||"")+" · "+x.session);op.value=String(i);select.append(op);});
+    const chart=el("div",""),timelineMeta=el("div","note","");timelineCard.append(select,chart,timelineMeta);
+    function paintTimeline(){chart.textContent="";timelineMeta.textContent="";const x=timelineRows[Number(select.value)||0];if(!x){chart.append(el("div","empty","Belum ada sampel kuota untuk digrafikkan."));return;}
+      const pts=x.points||[];if(pts.length<2){chart.append(el("div","empty","Perlu minimal dua snapshot kuota untuk membentuk grafik."));timelineMeta.textContent="Snapshot terakhir: "+(x.quota==null?"?":x.quota)+" tiket.";return;}
+      const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("viewBox","0 0 600 160");svg.setAttribute("class","ana-linechart");
+      const max=Math.max(1,...pts.map(p=>p.quota)),min=Math.min(...pts.map(p=>p.quota));const coords=pts.map((p,i)=>[12+i*576/(pts.length-1),145-(p.quota-min)/(Math.max(1,max-min))*125]);
+      for(let j=0;j<4;j++){const y=20+j*38;const line=document.createElementNS(svg.namespaceURI,"line");line.setAttribute("x1","8");line.setAttribute("x2","592");line.setAttribute("y1",String(y));line.setAttribute("y2",String(y));line.setAttribute("stroke","currentColor");line.setAttribute("opacity",".12");svg.append(line);}
+      const poly=document.createElementNS(svg.namespaceURI,"polyline");poly.setAttribute("points",coords.map(p=>p.join(",")).join(" "));poly.setAttribute("fill","none");poly.setAttribute("stroke","#60a5fa");poly.setAttribute("stroke-width","3");poly.setAttribute("stroke-linecap","round");poly.setAttribute("stroke-linejoin","round");svg.append(poly);
+      coords.forEach((p,i)=>{const c=document.createElementNS(svg.namespaceURI,"circle");c.setAttribute("cx",p[0]);c.setAttribute("cy",p[1]);c.setAttribute("r","3");c.setAttribute("fill","#60a5fa");c.setAttribute("title",new Date(pts[i].at*1000).toLocaleTimeString()+" · "+pts[i].quota+" tiket");svg.append(c);});chart.append(svg);
+      timelineMeta.textContent=pts.length+" snapshot · "+new Date(pts[0].at*1000).toLocaleTimeString()+" – "+new Date(pts[pts.length-1].at*1000).toLocaleTimeString()+" · kuota "+min+"–"+max+" · terbaru "+x.quota;
+      const marks=(x.markers||[]).slice(-12).reverse();
+      if(marks.length){const list=el("div","ana-session-list");list.append(el("b","","Perubahan yang teramati"));marks.forEach(m=>{const row=el("div","ana-session"),kind=m.kind==="so"?"🔴 Sold out":m.kind==="in"?"🟢 Restock":m.kind==="sold"?"📉 Kuota berkurang":m.kind;row.append(el("span","",kind),el("small","",new Date(m.at*1000).toLocaleString()+" · "+(m.n||0)));list.append(row);});chart.append(list);}
+    }
+    select.onchange=paintTimeline;paintTimeline();extraGrid.append(timelineCard);
+
+    // Aturan smart alert server-side
+    const alertCard=el("div","card");alertCard.append(el("h2","","SMART ALERT · PENGATURAN"));
+    alertCard.append(el("div","note","Filter diterapkan di backend untuk alert yang direkam. Kosongkan filter agar berlaku untuk semua member/event/tanggal/sesi."));
+    const form=el("div","ana-form-grid");
+    function addField(labelText,id,type,value,placeholder){const lab=el("label","",labelText),inp=el("input");inp.id=id;inp.type=type;inp.value=value||"";inp.placeholder=placeholder||"Semua";lab.append(inp);form.append(lab);return inp;}
+    const memberInput=addField("Filter member","anaAlertMember","text","","Nama mengandung…");
+    const eventInput=addField("Filter event/kode","anaAlertEvent","text","","Nama event atau kode");
+    const dateInput=addField("Tanggal sesi","anaAlertDate","date","");
+    const sessionInput=addField("Filter sesi","anaAlertSession","text","","Nama sesi mengandung…");
+    const thresholdInput=addField("Ambang penurunan stok","anaAlertThreshold","number",String(a.smart_alerts?.drop_threshold||10));thresholdInput.min="1";thresholdInput.max="500";
+    const cooldownInput=addField("Cooldown (detik)","anaAlertCooldown","number",String(a.smart_alerts?.cooldown_seconds||900));cooldownInput.min="60";cooldownInput.max="86400";
+    alertCard.append(form);
+    const kinds=el("div","ana-kind-options");const kindLabels=[["stock_drop","Penurunan kuota"],["restock","Restock"],["sold_out","Sold out"],["poller_stale","Poller basi"]];const kindInputs={};kindLabels.forEach(([k,l])=>{const lab=el("label"),inp=el("input");inp.type="checkbox";inp.checked=true;kindInputs[k]=inp;lab.append(inp,document.createTextNode(l));kinds.append(lab);});alertCard.append(kinds);
+    const enabledLabel=el("label","ana-kind-options"),enabledInput=el("input");enabledInput.type="checkbox";enabledInput.checked=true;enabledLabel.append(enabledInput,document.createTextNode("Aktifkan aturan smart alert"));alertCard.append(enabledLabel);
+    const alertActions=el("div","r12-actions"),saveAlert=el("button","btn","Simpan aturan"),alertStatus=el("span","note","");saveAlert.type="button";alertActions.append(saveAlert,alertStatus);alertCard.append(alertActions);
+    async function loadAlertSettings(){try{const u=new URLSearchParams();if(KEY)u.set("key",KEY);const r=await fetch("/api/smart-alert-settings?"+u,{cache:"no-store"});if(!r.ok)throw Error("HTTP "+r.status);const cfg=await r.json();memberInput.value=cfg.member_filter||"";eventInput.value=cfg.event_filter||"";dateInput.value=cfg.date_filter||"";sessionInput.value=cfg.session_filter||"";thresholdInput.value=cfg.threshold||10;cooldownInput.value=cfg.cooldown_seconds||900;enabledInput.checked=cfg.enabled!==false;kindLabels.forEach(([k])=>kindInputs[k].checked=(cfg.kinds||[]).includes(k));}catch(e){alertStatus.textContent="Pengaturan gagal dimuat: "+e.message;}}
+    saveAlert.onclick=async()=>{saveAlert.disabled=true;alertStatus.textContent="Menyimpan…";try{const u=new URLSearchParams();if(KEY)u.set("key",KEY);const cfg={enabled:enabledInput.checked,threshold:Number(thresholdInput.value),cooldown_seconds:Number(cooldownInput.value),member_filter:memberInput.value,event_filter:eventInput.value,date_filter:dateInput.value,session_filter:sessionInput.value,kinds:kindLabels.filter(([k])=>kindInputs[k].checked).map(([k])=>k)};const r=await fetch("/api/smart-alert-settings?"+u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)});const j=await r.json();if(!r.ok||!j.ok)throw Error(j.error||"Gagal menyimpan");alertStatus.textContent="Tersimpan di server ✓";}catch(e){alertStatus.textContent=e.message;}finally{saveAlert.disabled=false;}};
+    loadAlertSettings();extraGrid.append(alertCard);pg.append(extraGrid);
+
     if (a.tracked_since && a.tracked_since > a.day_start + 60)
       pg.append(el("div", "note", "Pencatatan baru dimulai pukul " + hm(a.tracked_since) + ", jadi kejadian sebelum jam itu tidak ikut terhitung."));
 
