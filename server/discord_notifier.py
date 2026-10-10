@@ -7,6 +7,7 @@ Server ini juga bisa polling langsung ke jkt48.com kalau POLL_ENABLED=1.
 import asyncio
 import concurrent.futures
 import hmac
+import hashlib
 import csv
 import io
 import json
@@ -3208,6 +3209,15 @@ def _same(a, b):
     """Bandingkan string secara aman dan tidak error untuk karakter non-ASCII."""
     return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
 
+
+def _dashboard_key_valid(given):
+    given = str(given or "").strip()
+    if not given:
+        return False
+    if DASHBOARD_KEY and _same(given, DASHBOARD_KEY):
+        return True
+    return any(isinstance(secret, str) and secret and _same(given, secret) for secret in DASHBOARD_USERS.values())
+
 # ------------------------------------------------------------------ Web Push
 PUSH_FILE = Path(os.environ.get("PUSH_FILE") or SUBS_FILE.with_name("push_subs.json"))
 push_lock = threading.Lock()
@@ -3997,6 +4007,62 @@ def fetch_my_tickets(date_from, date_to):
         "updated_at": time.time(),
     }
 
+# ------------------------------------------------------------------ User-scoped dashboard preferences (Backup & Multi-Device Sync)
+# DASHBOARD_USERS_JSON optional format: {"user-a":"secret-key-a","user-b":"secret-key-b"}.
+# If omitted, the existing DASHBOARD_KEY is the single authenticated owner.
+try:
+    DASHBOARD_USERS = json.loads(os.environ.get("DASHBOARD_USERS_JSON", "{}") or "{}")
+    if not isinstance(DASHBOARD_USERS, dict):
+        DASHBOARD_USERS = {}
+except (TypeError, json.JSONDecodeError):
+    DASHBOARD_USERS = {}
+
+PREFERENCES_DIR = Path(DATA_DIR) if DATA_DIR else SUBS_FILE.parent
+PREFERENCES_DIR = PREFERENCES_DIR / "user_preferences"
+PREFERENCES_DIR.mkdir(parents=True, exist_ok=True)
+PREFERENCES_MAX_BYTES = 1_000_000
+
+
+def _preferences_identity(url, handler):
+    """Return authenticated user id, or None. Never accept anonymous preference access."""
+    given = (parse_qs(url.query).get("key") or [handler.headers.get("X-Dashboard-Key", "")])[0]
+    given = str(given or "").strip()
+    if not given:
+        return None
+    for user_id, secret in DASHBOARD_USERS.items():
+        if isinstance(user_id, str) and isinstance(secret, str) and secret and _same(given, secret):
+            return re.sub(r"[^A-Za-z0-9_-]", "_", user_id)[:80] or None
+    if DASHBOARD_KEY and _same(given, DASHBOARD_KEY):
+        return "default-" + hashlib.sha256(given.encode("utf-8")).hexdigest()[:24]
+    return None
+
+
+def _preferences_path(user_id):
+    safe_id = hashlib.sha256(str(user_id).encode("utf-8")).hexdigest()[:32]
+    return PREFERENCES_DIR / (safe_id + ".json")
+
+
+def _read_user_preferences(user_id):
+    path = _preferences_path(user_id)
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_user_preferences(user_id, bundle):
+    path = _preferences_path(user_id)
+    temp = path.with_suffix(".tmp")
+    raw = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
+    if len(raw.encode("utf-8")) > PREFERENCES_MAX_BYTES:
+        raise ValueError("Konfigurasi terlalu besar (maksimum 1 MB).")
+    temp.write_text(raw, encoding="utf-8")
+    temp.replace(path)
+
+
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     def send_response(self, code, message=None):
@@ -4050,10 +4116,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _dash_ok(self, url):
-        if not DASHBOARD_KEY:
+        if not DASHBOARD_KEY and not DASHBOARD_USERS:
             return True
         given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
-        return _same(given, DASHBOARD_KEY)
+        return _dashboard_key_valid(given)
 
     def handle_push_post(self, url):
         if not self._dash_ok(url):
@@ -4239,9 +4305,16 @@ class Handler(BaseHTTPRequestHandler):
             code, expires_at = create_mobile_sync_code()
             return self.send_json(200, {"ok": True, "code": code, "expires_at": expires_at, "ttl_seconds": max(60, MOBILE_SYNC_TTL)})
 
-        if DASHBOARD_KEY:
+        if url.path == "/api/preferences":
+            user_id = _preferences_identity(url, self)
+            if not user_id:
+                return self.send_json(401 if (DASHBOARD_KEY or DASHBOARD_USERS) else 503, {"ok": False, "error": "Backup server memerlukan autentikasi. Atur DASHBOARD_KEY atau DASHBOARD_USERS_JSON dan buka dashboard dengan ?key=..."})
+            bundle = _read_user_preferences(user_id)
+            return self.send_json(200, {"ok": True, "found": bundle is not None, "bundle": bundle, "user_scope": hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:12]})
+
+        if DASHBOARD_KEY or DASHBOARD_USERS:
             given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
-            if not _same(given, DASHBOARD_KEY):
+            if not _dashboard_key_valid(given):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
         if url.path == "/api/jkt48/account/status":
@@ -4377,6 +4450,36 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         global my_tickets_cache, my_tickets_fetching, mobile_sync_last_at, mobile_sync_success_count
         url0 = urlparse(self.path)
+        if url0.path == "/api/preferences":
+            user_id = _preferences_identity(url0, self)
+            if not user_id:
+                return self.send_json(401 if (DASHBOARD_KEY or DASHBOARD_USERS) else 503, {"ok": False, "error": "Backup server memerlukan autentikasi. Atur DASHBOARD_KEY atau DASHBOARD_USERS_JSON."})
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except (TypeError, ValueError):
+                length = 0
+            if length <= 0 or length > PREFERENCES_MAX_BYTES:
+                return self.send_json(413, {"ok": False, "error": "Ukuran konfigurasi kosong atau melebihi 1 MB."})
+            try:
+                bundle = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return self.send_json(400, {"ok": False, "error": "Body harus JSON valid."})
+            if not isinstance(bundle, dict) or bundle.get("schema") != "jkt48-radar-preferences" or bundle.get("version") != 1 or not isinstance(bundle.get("data"), dict):
+                return self.send_json(400, {"ok": False, "error": "Format konfigurasi tidak valid."})
+            allowed = {
+                "jr_favs","jr_only","jr_favOnly","jr_vipOnly","jr_hotOnly","jr_compact","jr_beep","jr_notif","jr_wake",
+                "jr_sort","jr_theme","jr_tab","jr_view","jr_feed","jr_buyPrep","jr_alerts","jr_alertMember","jr_alertScope","jr_alertEvent",
+                "r12_watch","r12_history","r12_rules","r12_bookmarks","r12_profile",
+                "jkt48-radar-feature-visibility-v3","jkt48-radar-feature-visibility-open-v2"
+            }
+            clean_data = {k: v for k, v in bundle["data"].items() if k in allowed and isinstance(v, str)}
+            clean_bundle = {"schema": "jkt48-radar-preferences", "version": 1, "updated_at": str(bundle.get("updated_at") or datetime.now(timezone.utc).isoformat()), "data": clean_data}
+            try:
+                _write_user_preferences(user_id, clean_bundle)
+                return self.send_json(200, {"ok": True, "saved": len(clean_data), "updated_at": clean_bundle["updated_at"]})
+            except (OSError, ValueError) as exc:
+                return self.send_json(500, {"ok": False, "error": str(exc)[:250]})
+
         if url0.path == "/api/jkt48/mobile-sync":
             origin = self.headers.get("Origin", "")
             if not mobile_sync_origin_allowed(origin):

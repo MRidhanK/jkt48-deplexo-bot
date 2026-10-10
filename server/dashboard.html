@@ -1578,6 +1578,22 @@
           <div class="r12-sub">Simpan sesi favorit untuk dibuka kembali kapan saja.</div>
           <div class="r12-list" id="r12Bookmarks"><div class="r12-empty">Belum ada bookmark.</div></div>
         </div>
+        <div class="r12-card full" id="r12BackupPanel">
+          <div class="r12-title"><span>🔐 Backup & Multi-Device Sync</span><span class="r12-score" id="r12BackupStatus">LOKAL</span></div>
+          <div class="r12-sub">Sinkronkan favorit, watchlist, aturan notifikasi, riwayat, bookmark, profil, dan preferensi tampilan melalui server yang terautentikasi. Data tetap dipisahkan berdasarkan identitas dashboard.</div>
+          <div class="r12-grid2" style="margin-top:10px">
+            <label class="r12-sub">Nama profil dashboard<input class="r12-input" id="r12ProfileName" maxlength="60" placeholder="Mis. Radar pribadi"></label>
+            <label class="r12-sub">Preferensi tampilan<select class="r12-input r12-select" id="r12ProfileDensity"><option value="comfortable">Nyaman</option><option value="compact">Ringkas</option></select></label>
+          </div>
+          <div class="r12-actions">
+            <button class="btn" id="r12BackupSync">☁️ Sinkronkan sekarang</button>
+            <button class="btn" id="r12BackupExport">⬇️ Ekspor JSON</button>
+            <button class="btn" id="r12BackupCsv">📄 Ekspor riwayat CSV</button>
+            <button class="btn" id="r12BackupImport">⬆️ Impor konfigurasi</button>
+            <input id="r12BackupFile" type="file" accept=".json,application/json" hidden>
+          </div>
+          <div class="r12-sub" id="r12BackupHelp" style="margin-top:8px">Status: memeriksa koneksi server… File JSON bisa dipindahkan ke browser lain sebagai backup.</div>
+        </div>
       </div>
     </section>
 
@@ -3961,6 +3977,130 @@
       apply();
     }
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+  })();
+  </script>
+
+  <script>
+  /* Backup & Multi-Device Sync v1 — authenticated server storage */
+  (() => {
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const panel = $('r12BackupPanel');
+    if (!panel) return;
+    const STORAGE_KEYS = [
+      'jr_favs','jr_only','jr_favOnly','jr_vipOnly','jr_hotOnly','jr_compact','jr_beep','jr_notif','jr_wake',
+      'jr_sort','jr_theme','jr_tab','jr_view','jr_feed','jr_buyPrep','jr_alerts','jr_alertMember','jr_alertScope','jr_alertEvent',
+      'r12_watch','r12_history','r12_rules','r12_bookmarks','r12_profile',
+      'jkt48-radar-feature-visibility-v3','jkt48-radar-feature-controls-open-v1'
+    ];
+    const API = '/api/preferences' + (typeof KEY !== 'undefined' && KEY ? '?key='+encodeURIComponent(KEY) : '');
+    const status = (label, help, error=false) => {
+      $('r12BackupStatus').textContent = label;
+      $('r12BackupStatus').style.color = error ? '#f87171' : '';
+      $('r12BackupHelp').textContent = help;
+    };
+    const snapshot = () => {
+      const data = {};
+      for (const key of STORAGE_KEYS) { try { const v=localStorage.getItem(key); if(v!==null)data[key]=v; } catch {} }
+      data['r12_profile'] = JSON.stringify({name:$('r12ProfileName').value.trim().slice(0,60),density:$('r12ProfileDensity').value});
+      return {schema:'jkt48-radar-preferences',version:1,updated_at:new Date().toISOString(),data};
+    };
+    const validBundle = x => x && x.schema==='jkt48-radar-preferences' && x.version===1 && x.data && typeof x.data==='object' && !Array.isArray(x.data);
+    let applyingBundle = false, syncReady = false, syncTimer = 0, lastServerUpdated = '';
+    const applyBundle = bundle => {
+      if(!validBundle(bundle)) throw new Error('Format backup tidak dikenali. Gunakan JSON hasil ekspor Ticket Radar.');
+      let changed = false; applyingBundle = true;
+      try {
+        for(const key of STORAGE_KEYS){
+          if(Object.prototype.hasOwnProperty.call(bundle.data,key) && typeof bundle.data[key]==='string') {
+            if(localStorage.getItem(key)!==bundle.data[key]) changed=true;
+            localStorage.setItem(key,bundle.data[key]);
+          } else if(localStorage.getItem(key)!==null) {
+            localStorage.removeItem(key); changed=true;
+          }
+        }
+        try { const prof=JSON.parse(localStorage.getItem('r12_profile')||'{}'); $('r12ProfileName').value=String(prof.name||'').slice(0,60); $('r12ProfileDensity').value=prof.density==='compact'?'compact':'comfortable'; } catch {}
+      } finally { applyingBundle = false; }
+      return changed;
+    };
+    const download = (name, text, type) => { const blob=new Blob([text],{type}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); };
+    const syncServer = async () => {
+      const body=snapshot();
+      const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok||!j.ok) throw new Error(j.error||('Server HTTP '+r.status));
+      return j;
+    };
+    const loadServer = async () => {
+      const r=await fetch(API,{cache:'no-store'}); const j=await r.json().catch(()=>({}));
+      if(!r.ok||!j.ok) throw new Error(j.error||('Server HTTP '+r.status));
+      let changed=false;
+      if(j.bundle && validBundle(j.bundle)) changed=applyBundle(j.bundle);
+      lastServerUpdated=String(j.bundle?.updated_at||'');
+      j.local_changed=changed;
+      return j;
+    };
+    const saveProfile = () => { localStorage.setItem('r12_profile',JSON.stringify({name:$('r12ProfileName').value.trim().slice(0,60),density:$('r12ProfileDensity').value})); };
+    $('r12ProfileName').addEventListener('change',saveProfile);
+    $('r12ProfileDensity').addEventListener('change',()=>{saveProfile(); document.getElementById('list')?.classList.toggle('compact',$('r12ProfileDensity').value==='compact');});
+    $('r12BackupSync').onclick = async () => {
+      $('r12BackupSync').disabled=true; status('SYNC…','Mengirim konfigurasi ke penyimpanan server…');
+      try { const j=await syncServer(); lastServerUpdated=String(j.updated_at||new Date().toISOString()); status('TERSINKRON','Sinkron berhasil · '+new Date().toLocaleTimeString('id-ID')+'. Perubahan berikutnya disimpan otomatis.'); }
+      catch(e){ status('GAGAL',e.message+' Pastikan DASHBOARD_KEY sudah diatur dan sama dengan key URL dashboard.',true); }
+      finally { $('r12BackupSync').disabled=false; }
+    };
+    $('r12BackupExport').onclick=()=>{ saveProfile(); download('jkt48-radar-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(snapshot(),null,2),'application/json'); status('DIEKSPOR','Backup JSON siap dipindahkan ke browser lain.'); };
+    $('r12BackupCsv').onclick=()=>{
+      let hist=[]; try{hist=JSON.parse(localStorage.getItem('r12_history')||'[]');}catch{}
+      const cols=['member','event','lane','session','date','delta','score','at','savedAt'];
+      const cell=v=>{let s=String(v??''); if(/^[=+\-@]/.test(s))s="'"+s; return '"'+s.replace(/"/g,'""')+'"';};
+      const csv=[cols.join(','),...hist.map(x=>cols.map(k=>cell(x[k])).join(','))].join('\r\n');
+      download('jkt48-radar-riwayat-'+new Date().toISOString().slice(0,10)+'.csv','\ufeff'+csv,'text/csv;charset=utf-8');
+      status('CSV SIAP',hist.length+' baris riwayat diekspor.');
+    };
+    $('r12BackupImport').onclick=()=>$('r12BackupFile').click();
+    $('r12BackupFile').onchange=async e=>{
+      const file=e.target.files?.[0]; e.target.value=''; if(!file)return;
+      try { const bundle=JSON.parse(await file.text()); applyBundle(bundle); status('DIIMPOR','Konfigurasi lokal diperbarui. Menyimpan ke server…'); await syncServer(); status('DIIMPOR + SYNC','Konfigurasi diimpor dan disimpan ke server. Halaman akan dimuat ulang agar semua preferensi aktif.'); setTimeout(()=>location.reload(),700); }
+      catch(err){status('IMPOR GAGAL',err.message||'File JSON tidak valid.',true);}
+    };
+    // Restore from server on first load; server data is authoritative when present.
+    (async()=>{
+      try {
+        const j=await loadServer();
+        try { const prof=JSON.parse(localStorage.getItem('r12_profile')||'{}'); $('r12ProfileName').value=String(prof.name||'').slice(0,60); $('r12ProfileDensity').value=prof.density==='compact'?'compact':'comfortable'; } catch{}
+        if(j.found && j.local_changed){ status('SERVER OK','Preferensi berhasil dipulihkan dari server. Memuat ulang tampilan…'); setTimeout(()=>location.reload(),400); return; }
+        if(!j.found){ await syncServer(); status('TERSIMPAN','Konfigurasi perangkat ini sudah disimpan ke server. Perubahan berikutnya disimpan otomatis.'); }
+        else status('SERVER OK','Preferensi server aktif. Perubahan berikutnya disimpan otomatis.');
+        syncReady=true;
+      } catch(e) { status('OFFLINE',e.message+' Ekspor/impor file JSON tetap tersedia; sinkronisasi server membutuhkan autentikasi.',true); }
+    })();
+    // Autosave changes from both the core dashboard and Radar Suite local preferences.
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key,value){
+      const result=originalSetItem.call(this,key,value);
+      if(this===localStorage && syncReady && !applyingBundle && STORAGE_KEYS.includes(String(key))){
+        clearTimeout(syncTimer);
+        syncTimer=setTimeout(async()=>{
+          try { const j=await syncServer(); lastServerUpdated=String(j.updated_at||new Date().toISOString()); status('TERSINKRON','Perubahan otomatis tersimpan · '+new Date().toLocaleTimeString('id-ID')); }
+          catch(e){ status('BELUM TERSINKRON',e.message+' Tekan Sinkronkan sekarang untuk mencoba lagi.',true); }
+        },1200);
+      }
+      return result;
+    };
+    // Check for updates made on another device when this tab becomes active.
+    document.addEventListener('visibilitychange',async()=>{
+      if(document.visibilityState!=='visible'||!syncReady)return;
+      try {
+        const r=await fetch(API,{cache:'no-store'}), j=await r.json();
+        if(!r.ok||!j.ok||!j.found||!validBundle(j.bundle))return;
+        const remote=Date.parse(j.bundle.updated_at||''); const local=Date.parse(lastServerUpdated||'');
+        if(Number.isFinite(remote)&&(!Number.isFinite(local)||remote>local+1000)){
+          const changed=applyBundle(j.bundle); lastServerUpdated=String(j.bundle.updated_at||'');
+          if(changed){status('UPDATE PERANGKAT','Konfigurasi terbaru dari perangkat lain diterapkan. Memuat ulang…');setTimeout(()=>location.reload(),350);}
+        }
+      }catch{}
+    });
   })();
   </script>
   </body>
