@@ -1766,6 +1766,8 @@
     set(k, v) { try { localStorage.setItem("jr_" + k, JSON.stringify(v)); } catch {} }
   };
   let data = null, tab = store.get("tab", null), prevQuota = new Map(), firstLoad = true, dateKey = "";
+  // Kode event yang sudah terlihat agar event baru bisa diberi notifikasi tanpa refresh manual.
+  let knownEventCodes = null;
   let favs = new Set(store.get("favs", [])), feed = store.get("feed", []), buyPrep = store.get("buyPrep", []);
   let timelineExpanded = false;
   const openMembers = new Set();
@@ -3146,7 +3148,8 @@
     if (!tab || !data.events[tab]) tab = codes[0];
     const tabs = $("tabs"); tabs.textContent = "";
     for (const c of codes) {
-      const b = el("button", "tab" + (c === tab ? " on" : ""), data.events[c].name);
+      const eventLabel = (data.events[c].discovered ? "🆕 " : "") + data.events[c].name;
+      const b = el("button", "tab" + (c === tab ? " on" : ""), eventLabel);
       b.onclick = () => selTab(c);
       tabs.append(b);
     }
@@ -3154,7 +3157,8 @@
     $("buy").href = buyUrl;
     const bt = $("barTabs"); bt.textContent = "";
     for (const c of codes) {
-      const b = el("button", "tab" + (c === tab ? " on" : ""), data.events[c].name);
+      const eventLabel = (data.events[c].discovered ? "🆕 " : "") + data.events[c].name;
+      const b = el("button", "tab" + (c === tab ? " on" : ""), eventLabel);
       b.onclick = () => selTab(c);
       bt.append(b);
     }
@@ -3411,6 +3415,29 @@
       const r = await fetch(API, { cache: "no-store" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       data = await r.json();
+      const currentEventCodes = Object.keys(data.events || {});
+      if (knownEventCodes === null) {
+        // Load pertama hanya membuat baseline supaya event lama tidak dianggap baru.
+        knownEventCodes = new Set(currentEventCodes);
+      } else {
+        const newlyDiscovered = currentEventCodes.filter(code => !knownEventCodes.has(code));
+        for (const code of newlyDiscovered) {
+          const ev = data.events[code] || {};
+          const name = ev.name || ("Event " + code);
+          const msg = "🆕 Event baru: " + name + " (" + code + ") sudah masuk dashboard.";
+          toast(msg, buyFor(code));
+          if ($("beep").checked) beep();
+          if ($("notif").checked && !PUSH.sub && window.Notification && Notification.permission === "granted") {
+            try {
+              const n = new Notification("🆕 Event JKT48 baru", {
+                body: name + " · kode " + code + " · sudah ditambahkan ke dashboard"
+              });
+              n.onclick = () => { window.focus(); window.open(buyFor(code), "_blank", "noopener"); n.close(); };
+            } catch {}
+          }
+        }
+        knownEventCodes = new Set(currentEventCodes);
+      }
       detectRestock(data);
       render();
       loadExtra();

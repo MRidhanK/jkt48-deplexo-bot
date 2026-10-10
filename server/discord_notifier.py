@@ -2896,7 +2896,9 @@ def snapshot():
                     "vip": is_vip(code, v),
                     **speed_stats((c, sdc), quota, now),
                 })
-            events[code] = {"name": name, "updated": last_report.get(code),
+            events[code] = {"name": name, "code": code,
+                            "discovered": code not in BASE_EVENTS,
+                            "updated": last_report.get(code),
                             "sale": sale_state.get(code, "open"), "lanes": lanes}
     names = {l["member"] for e in events.values() for l in e["lanes"] if l.get("member")}
     return {"now": now, "stale_after": STALE_SECONDS, "events": events, "war": war_info(),
@@ -3878,21 +3880,30 @@ def discovery_loop():
             if not found and not warned:
                 warned = True
                 print("[DISCOVER] tidak ada kode event di halaman (mungkin dirender JS).")
-            baseline = not seen_codes        # scan pertama hanya mencatat, tidak mendaftar
+            baseline = not seen_codes        # scan pertama membangun daftar awal tanpa spam notifikasi
             for code in sorted(found):
-                if code in EVENTS or code in seen_codes:
+                if code in EVENTS:
                     seen_codes.add(code)
                     continue
-                seen_codes.add(code)
-                if baseline:
+                if code in seen_codes:
+                    # Pulihkan kode yang pernah tercatat di state lama tetapi belum masuk EVENTS.
+                    if register_event(code):
+                        save_state()
+                        print(f"[DISCOVER] event dipulihkan dari state: {code}")
                     continue
+                seen_codes.add(code)
                 if register_event(code):
                     save_state()
-                    print(f"[DISCOVER] event baru: {code}")
-                    if bot.main_loop is not None and bot.is_ready():
+                    print(f"[DISCOVER] {'event awal' if baseline else 'event baru'}: {code}")
+                    # Kode yang sudah ada saat first scan ditambahkan ke dashboard/poller
+                    # tanpa notifikasi agar restart pertama tidak membanjiri Discord.
+                    if not baseline and bot.main_loop is not None and bot.is_ready():
                         asyncio.run_coroutine_threadsafe(poll_alert(
-                            f"🆕 Event baru terdeteksi: **{code}** ({buy_url(code)}). "
-                            f"Otomatis dipantau dengan nama sementara 'Event {code}'."),
+                            f"🆕 **EVENT BARU TERDETEKSI**\n"
+                            f"Nama sementara: **Event {code}**\n"
+                            f"Kode: `{code}`\n"
+                            f"Dashboard akan menampilkan event ini otomatis.\n"
+                            f"🔗 {buy_url(code)}"),
                             bot.main_loop)
         except Exception:
             traceback.print_exc()
