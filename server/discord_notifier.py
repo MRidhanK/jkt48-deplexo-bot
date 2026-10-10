@@ -7,7 +7,6 @@ Server ini juga bisa polling langsung ke jkt48.com kalau POLL_ENABLED=1.
 import asyncio
 import concurrent.futures
 import hmac
-import hashlib
 import csv
 import io
 import json
@@ -109,11 +108,8 @@ HIST_MAXLEN = 1500
 # Analytics harian ("hari ini" dihitung sejak 00:00 zona waktu ini, default WIB)
 TZ_OFFSET_HOURS = float(os.environ.get("TZ_OFFSET_HOURS", "7"))
 LOCAL_TZ = timezone(timedelta(hours=TZ_OFFSET_HOURS))
-ACTIVITY_KEEP_SECONDS = int(os.environ.get("ACTIVITY_KEEP_SECONDS", str(30 * 86400)))  # 30 hari
-ACTIVITY_MAXLEN = int(os.environ.get("ACTIVITY_MAXLEN", "100000"))
-SMART_ALERT_DROP_THRESHOLD = max(1, int(os.environ.get("SMART_ALERT_DROP_THRESHOLD", "10")))
-SMART_ALERT_COOLDOWN = max(60, int(os.environ.get("SMART_ALERT_COOLDOWN", "900")))
-SMART_ALERT_MAXLEN = max(100, int(os.environ.get("SMART_ALERT_MAXLEN", "3000")))
+ACTIVITY_KEEP_SECONDS = int(os.environ.get("ACTIVITY_KEEP_SECONDS", "172800"))  # 48 jam
+ACTIVITY_MAXLEN = 20000
 
 # Ringkasan harian ke Discord (jam lokal sesuai TZ_OFFSET_HOURS)
 SUMMARY_HOUR = int(os.environ.get("SUMMARY_HOUR", "23"))
@@ -438,22 +434,10 @@ activity = deque(maxlen=ACTIVITY_MAXLEN)   # [ts, jenis, code, sdc, jumlah, dura
 # Ini adalah inferensi dari quota sebelumnya -> quota terbaru, bukan konfirmasi identitas pembeli.
 PURCHASE_TIMELINE_MAXLEN = int(os.environ.get("PURCHASE_TIMELINE_MAXLEN", "500"))
 purchase_timeline = deque(maxlen=PURCHASE_TIMELINE_MAXLEN)  # dict event stock decrease
-smart_alerts = deque(maxlen=SMART_ALERT_MAXLEN)
-smart_alert_last = {}  # alert_key -> timestamp, cooldown anti-spam
-smart_alert_config = {
-    "enabled": True,
-    "threshold": SMART_ALERT_DROP_THRESHOLD,
-    "cooldown_seconds": SMART_ALERT_COOLDOWN,
-    "kinds": ["stock_drop", "restock", "sold_out", "poller_stale"],
-    "member_filter": "",
-    "event_filter": "",
-    "date_filter": "",
-    "session_filter": "",
-}
 activity_since = time.time()               # kapan pencatatan analytics dimulai
 
 req_log = deque(maxlen=5000)          # (ts, status) tiap respons HTTP
-summary_meta = {"day": "", "week": ""}  # tanggal/minggu terakhir ringkasan terkirim
+summary_meta = {"day": ""}            # tanggal terakhir ringkasan terkirim
 health_alerted = set()
 
 stats_lock = threading.Lock()
@@ -507,14 +491,10 @@ def speed_stats(key, quota, now):
         "last_so": last_so.get(key),
     }
 
-def log_activity(now, kind, code, sdc, n, dur=None, member=None):
-    """Dipanggil di dalam `with lock:` (jangan ambil lock lagi di sini).
-    Field member ditambahkan agar leaderboard SO historis tidak bergantung
-    pada lane_state saat ini. Baris lama dengan 6 field tetap didukung.
-    """
+def log_activity(now, kind, code, sdc, n, dur=None):
+    """Dipanggil di dalam `with lock:` (jangan ambil lock lagi di sini)."""
     activity.append([round(now, 1), kind, code, sdc, int(n),
-                     None if dur is None else round(dur, 1),
-                     str(member or "").strip()])
+                     None if dur is None else round(dur, 1)])
     cutoff = now - ACTIVITY_KEEP_SECONDS
     while activity and activity[0][0] < cutoff:
         activity.popleft()
@@ -549,7 +529,7 @@ def save_subs(data):
 
 
 def load_state():
-    global quota_state, baselined, last_restock, activity_since, smart_alert_config
+    global quota_state, baselined, last_restock, activity_since
     try:
         raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -597,25 +577,13 @@ def load_state():
         )
     activity.clear()
     purchase_timeline.clear()
-    smart_alerts.clear()
-    for alert in raw.get("smart_alerts") or []:
-        if isinstance(alert, dict):
-            smart_alerts.append(alert)
-    smart_alert_last.clear()
-    cfg = raw.get("smart_alert_config")
-    if isinstance(cfg, dict):
-        smart_alert_config.update({k: cfg[k] for k in smart_alert_config if k in cfg})
-    for k, v in (raw.get("smart_alert_last") or {}).items():
-        try: smart_alert_last[str(k)] = float(v)
-        except (TypeError, ValueError): pass
     for item in raw.get("purchase_timeline") or []:
         if isinstance(item, dict):
             purchase_timeline.append(item)
     for r in raw.get("activity") or []:
         try:
             activity.append([float(r[0]), str(r[1]), str(r[2]), str(r[3]),
-                             int(r[4]), None if r[5] is None else float(r[5]),
-                             str(r[6] or "") if len(r) > 6 else ""])
+                             int(r[4]), None if r[5] is None else float(r[5])])
         except (TypeError, ValueError, IndexError):
             pass
     try:
@@ -624,7 +592,6 @@ def load_state():
         pass
 
     summary_meta["day"] = str(raw.get("summary_day") or "")
-    summary_meta["week"] = str(raw.get("summary_week") or "")
 
     print(f"[STATE] Dimuat: {len(quota_state)} lane, {len(lane_state)} data jalur, "
           f"{len(baselined)} event, {len(history)} riwayat")
@@ -645,12 +612,8 @@ def save_state():
                 },
                 "activity": list(activity),
                 "purchase_timeline": list(purchase_timeline),
-                "smart_alerts": list(smart_alerts),
-                "smart_alert_last": dict(smart_alert_last),
-                "smart_alert_config": dict(smart_alert_config),
                 "activity_since": activity_since,
                 "summary_day": summary_meta["day"],
-                "summary_week": summary_meta.get("week", ""),
                 "extra_events": {c: n for c, n in EVENTS.items() if c not in BASE_EVENTS},
                 "seen_codes": sorted(seen_codes),
             }
@@ -1567,7 +1530,6 @@ def process_report(code, lanes):
     sold_outs = []
     deltas = {}
     sold_total = 0
-    stock_drop_alerts = []
 
     now = time.time()
 
@@ -1638,12 +1600,6 @@ def process_report(code, lanes):
                 delta_down = prev - quota
                 sold_total += delta_down
                 record_purchase_server_event(now, code, sdc, prev, quota, lane)
-                if delta_down >= int(smart_alert_config.get("threshold", SMART_ALERT_DROP_THRESHOLD) or SMART_ALERT_DROP_THRESHOLD):
-                    alert = _smart_alert_record("stock_drop", code, sdc, "Penurunan stok besar",
-                        f"{lane.get('member_name') or '-'} · {lane.get('session_label') or '-'}: {prev} → {quota} (−{delta_down})",
-                        now=now, cooldown_key=f"stock_drop|{code}|{sdc}")
-                    if alert:
-                        stock_drop_alerts.append(alert)
 
             # --------------------------------------------------
             # SOLD OUT
@@ -1673,10 +1629,7 @@ def process_report(code, lanes):
                         duration = elapsed
                         so_after[key] = elapsed
                         last_so[key] = elapsed
-                log_activity(now, "so", code, sdc, 0, duration, member=name)
-                _smart_alert_record("sold_out", code, sdc, "Sesi sold out",
-                    f"{lane.get('member_name') or name or '-'} · {lane.get('session_label') or '-'} · {lane.get('session_date') or '-'}", now=now,
-                    cooldown_key=f"sold_out|{code}|{sdc}")
+                log_activity(now, "so", code, sdc, 0, duration)
                 sold_outs.append(
                     (
                         {
@@ -1727,7 +1680,7 @@ def process_report(code, lanes):
                     is_restock = True
                     delta = quota - prev
             if is_restock and delta > 0:
-                log_activity(now, "in", code, sdc, delta, member=name)
+                log_activity(now, "in", code, sdc, delta)
             # --------------------------------------------------
             # Simpan RESTOCK
             # --------------------------------------------------
@@ -1752,9 +1705,6 @@ def process_report(code, lanes):
                     )
 
                     deltas[key] = delta
-                    _smart_alert_record("restock", code, sdc, "Restock terdeteksi",
-                        f"{lane.get('member_name') or '-'} · {lane.get('session_label') or '-'}: +{delta} tiket (tersedia {quota})",
-                        now=now, cooldown_key=f"restock|{code}|{sdc}")
 
                     # Mulai timer restock -> sold out
                     last_restock[key] = now
@@ -1774,11 +1724,6 @@ def process_report(code, lanes):
                 )
         if sold_total:
             log_activity(now, "sold", code, "", sold_total)
-    # Smart alert: kirim penurunan stok besar dengan cooldown per lane.
-    if stock_drop_alerts and bot.main_loop is not None and bot.is_ready():
-        for alert in stock_drop_alerts:
-            asyncio.run_coroutine_threadsafe(poll_alert(
-                f"📉 **Penurunan stok besar** · {alert.get('event')}\n{alert.get('message')}\nAmbang: {SMART_ALERT_DROP_THRESHOLD} tiket; cooldown {SMART_ALERT_COOLDOWN // 60} menit."), bot.main_loop)
     # Web Push: tidak bergantung pada kesiapan Discord
     if opened:
         sale_open_dispatch(code, lanes)
@@ -1917,10 +1862,6 @@ async def stale_watch_loop():
             age = now - ts
             if age > STALE_ALERT_AFTER and code not in stale_alerted:
                 stale_alerted.add(code)
-                with lock:
-                    _smart_alert_record("poller_stale", code, "", "Data poller basi",
-                        f"Tidak ada laporan selama {int(age // 60)} menit. Restock mungkin tidak terdeteksi.",
-                        now=now, cooldown_key=f"poller_stale|{code}")
                 await poll_alert(
                     f"⏰ Data **{name}** basi {int(age // 60)} menit. "
                     f"Restock tidak akan terdeteksi sampai pulih."
@@ -1936,51 +1877,14 @@ async def daily_summary_loop():
         try:
             local = datetime.now(LOCAL_TZ)
             today = local.strftime("%Y-%m-%d")
-            # Daily report
-            if local.hour >= SUMMARY_HOUR and summary_meta.get("day") != today:
-                a = analytics_snapshot(7)
-                top = top_members(5)
-                channel = await get_channel()
-                daily_embed = analytics_embed("📊 Ringkasan Harian", a, top)
-                daily_embed.add_field(name="📉 Perubahan kuota · sinyal", value=f"**{a['today'].get('purchase_tickets', 0)} tiket** dalam {a['today'].get('purchase_events', 0)} kejadian", inline=True)
-                so_top = a.get("today", {}).get("top_so_members") or []
-                if so_top:
-                    daily_embed.add_field(name="🔴 Member · kejadian SO teramati", value="\n".join(f"{i}. **{x['member']}** — {x['sold_out']} SO / {x['sessions']} sesi" for i, x in enumerate(so_top[:5], 1)), inline=False)
-                with lock:
-                    issue_count = sum(1 for x in smart_alerts if x.get("kind") == "poller_stale" and float(x.get("at", 0)) >= a["day_start"])
-                daily_embed.add_field(name="⚠️ Gangguan pemantauan", value=f"**{issue_count}** alert data basi", inline=True)
-                await safe_send(channel, embed=daily_embed)
-                summary_meta["day"] = today
-                save_state()
-            # Weekly report every Monday after SUMMARY_HOUR, once per ISO week.
-            iso = local.isocalendar()
-            week_key = f"{iso.year}-W{iso.week:02d}"
-            if local.weekday() == 0 and local.hour >= SUMMARY_HOUR and summary_meta.get("week") != week_key:
-                a = analytics_snapshot(7)
-                hist = a.get("history", {})
-                daily = hist.get("daily", [])
-                restocks = sum(int(x.get("restock", 0) or 0) for x in daily)
-                incoming = sum(int(x.get("tickets_in", 0) or 0) for x in daily)
-                drops = sum(int(x.get("drop_tickets", 0) or 0) for x in daily)
-                soldouts = sum(int(x.get("sold_out", 0) or 0) for x in daily)
-                embed = discord.Embed(title="📅 Ringkasan Analytics Mingguan", color=discord.Color.blue(),
-                    description=f"{hist.get('start_date', '-') } s.d. {hist.get('end_date', '-')}", timestamp=datetime.now(timezone.utc))
-                embed.add_field(name="📈 Restock", value=f"**{restocks}**", inline=True)
-                embed.add_field(name="🎟️ Tiket masuk", value=f"**{incoming}**", inline=True)
-                embed.add_field(name="📉 Tiket berkurang · sinyal", value=f"**{drops}**", inline=True)
-                embed.add_field(name="🔴 Sesi SO", value=f"**{soldouts}**", inline=True)
-                with lock:
-                    issue_count = sum(1 for x in smart_alerts if x.get("kind") == "poller_stale" and float(x.get("at", 0)) >= (datetime.now(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=6)).timestamp())
-                embed.add_field(name="⚠️ Gangguan pemantauan", value=f"**{issue_count}** alert data basi", inline=True)
-                embed.add_field(name="⏱ Rata-rata restock → SO", value=f"**{fmt_ms(hist.get('avg_so'))}**", inline=True)
-                members = hist.get("top_so_members") or []
-                if members:
-                    embed.add_field(name="🏆 Member · kejadian SO teramati", value="\n".join(f"{i}. **{x['member']}** — {x['sold_out']} SO / {x['sessions']} sesi" for i, x in enumerate(members[:5], 1)), inline=False)
-                embed.set_footer(text="Sinyal perubahan kuota bukan konfirmasi transaksi atau identitas pembeli.")
-                channel = await get_channel()
-                await safe_send(channel, embed=embed)
-                summary_meta["week"] = week_key
-                save_state()
+            if local.hour < SUMMARY_HOUR or summary_meta["day"] == today:
+                continue
+            a = analytics_snapshot()
+            top = top_members(5)
+            channel = await get_channel()
+            await safe_send(channel, embed=analytics_embed("📊 Ringkasan Harian", a, top))
+            summary_meta["day"] = today
+            save_state()
         except Exception:
             traceback.print_exc()
 
@@ -2074,10 +1978,6 @@ jkt48_account_session_expires_at = 0.0
 jkt48_account_access_expires_at = 0.0
 jkt48_account_last_session_refresh_at = 0.0
 jkt48_account_auto_refresh = False
-
-# Bila access token disediakan via Railway ENV, kita tetap bisa menggunakannya
-# untuk fetch langsung. Auto-refresh /api/auth/session memerlukan cookie session
-# hasil import karena Railway tidak memiliki cookie browser pengguna.
 
 # Refresh dilakukan sedikit sebelum token/session kedaluwarsa.
 JKT48_SESSION_REFRESH_MARGIN = int(os.environ.get("JKT48_SESSION_REFRESH_MARGIN", "90"))
@@ -2633,13 +2533,14 @@ my_tickets_bridge_lock = threading.Lock()
 my_tickets_bridge = {}
 # Mobile Browser Sync: HP yang sedang login di jkt48.com menjadi pembaca session.
 MOBILE_SYNC_TTL = int(os.environ.get("MOBILE_SYNC_TTL", "600"))
+# Setelah kode dipakai sync pertama kali, masa berlakunya diperpanjang (sliding) setiap sync berhasil,
+# supaya loop bookmarklet 60 detik tidak mati setelah 10 menit. Default 12 jam sejak sync terakhir.
+MOBILE_SYNC_ACTIVE_TTL = int(os.environ.get("MOBILE_SYNC_ACTIVE_TTL", "43200"))
 MOBILE_SYNC_MAX_PAYLOAD = int(os.environ.get("MOBILE_SYNC_MAX_PAYLOAD", "900000"))
 MOBILE_SYNC_ORIGINS = {"https://jkt48.com", "https://www.jkt48.com"}
 # MOBILE_SYNC_FILE sudah ditentukan lebih atas lewat _resolve_mobile_sync_file()
 mobile_sync_lock = threading.Lock()
 mobile_sync_codes = {}
-mobile_sync_last_at = 0.0
-mobile_sync_success_count = 0
 
 def create_mobile_sync_code():
     now = time.time()
@@ -2661,6 +2562,7 @@ def validate_mobile_sync_code(code):
             mobile_sync_codes.pop(code, None)
             return False
         item["hits"] = int(item.get("hits") or 0) + 1
+        item["expires_at"] = max(float(item.get("expires_at") or 0), now + max(60, MOBILE_SYNC_ACTIVE_TTL))
         return True
 
 def mobile_sync_origin_allowed(origin):
@@ -2935,158 +2837,11 @@ def purchase_timeline_snapshot(limit=100):
             "note": "Purchase di sini berarti penurunan stok yang terdeteksi server; bukan konfirmasi identitas pembeli."}
 
 
-def _smart_alert_record(kind, code, sdc, title, message, now=None, cooldown_key=None):
-    """Record a durable alert only when it matches the saved dashboard rules."""
-    now = float(now or time.time())
-    cfg = smart_alert_config
-    if not cfg.get("enabled", True):
-        return None
-    kinds = cfg.get("kinds") or []
-    if kind not in kinds:
-        return None
-    # Caller may already hold `lock` (poller path), so do not reacquire it here.
-    lane = lane_state.get((str(code), str(sdc))) or {}
-    member = str(lane.get("member_name") or "").strip()
-    event_name = str(EVENTS.get(code, code))
-    session = str(lane.get("session_label") or lane.get("label") or "")
-    session_date = str(lane.get("session_date") or "")
-    member_filter = str(cfg.get("member_filter") or "").strip().casefold()
-    event_filter = str(cfg.get("event_filter") or "").strip().casefold()
-    date_filter = str(cfg.get("date_filter") or "").strip()
-    session_filter = str(cfg.get("session_filter") or "").strip().casefold()
-    if member_filter and member_filter not in member.casefold(): return None
-    if event_filter and event_filter not in event_name.casefold() and event_filter != str(code).casefold(): return None
-    if date_filter and date_filter != session_date: return None
-    if session_filter and session_filter not in session.casefold(): return None
-    key = str(cooldown_key or f"{kind}|{code}|{sdc}")
-    cooldown = max(60, int(cfg.get("cooldown_seconds", SMART_ALERT_COOLDOWN) or SMART_ALERT_COOLDOWN))
-    last = float(smart_alert_last.get(key, 0) or 0)
-    if now - last < cooldown:
-        return None
-    smart_alert_last[key] = now
-    alert = {
-        "id": f"{int(now * 1000)}-{kind}-{code}-{sdc}",
-        "at": round(now, 1), "kind": str(kind), "code": str(code),
-        "event": event_name, "sdc": str(sdc or ""), "member": member,
-        "session": session, "date": session_date,
-        "title": str(title), "message": str(message),
-    }
-    smart_alerts.append(alert)
-    return alert
-
-
-def smart_alert_config_snapshot():
-    with lock:
-        return {**smart_alert_config, "available_kinds": ["stock_drop", "restock", "sold_out", "poller_stale"]}
-
-
-def update_smart_alert_config(data):
-    if not isinstance(data, dict): raise ValueError("Body harus berupa object JSON.")
-    kinds = data.get("kinds", smart_alert_config.get("kinds", []))
-    allowed = {"stock_drop", "restock", "sold_out", "poller_stale"}
-    if not isinstance(kinds, list): raise ValueError("kinds harus berupa array.")
-    kinds = [str(x) for x in kinds if str(x) in allowed]
-    try: threshold = max(1, min(500, int(data.get("threshold", SMART_ALERT_DROP_THRESHOLD))))
-    except (TypeError, ValueError): raise ValueError("Ambang penurunan harus angka 1–500.")
-    try: cooldown = max(60, min(86400, int(data.get("cooldown_seconds", SMART_ALERT_COOLDOWN))))
-    except (TypeError, ValueError): raise ValueError("Cooldown harus angka 60–86400 detik.")
-    date_filter = str(data.get("date_filter") or "").strip()
-    if date_filter:
-        datetime.strptime(date_filter, "%Y-%m-%d")
-    with lock:
-        smart_alert_config.update({
-            "enabled": bool(data.get("enabled", True)), "threshold": threshold,
-            "cooldown_seconds": cooldown, "kinds": kinds,
-            "member_filter": str(data.get("member_filter") or "").strip()[:100],
-            "event_filter": str(data.get("event_filter") or "").strip()[:100],
-            "date_filter": date_filter,
-            "session_filter": str(data.get("session_filter") or "").strip()[:100],
-        })
-    save_state()
-    return smart_alert_config_snapshot()
-
-def smart_alert_snapshot(limit=30):
-    try: limit = max(1, min(int(limit), 100))
-    except (TypeError, ValueError): limit = 30
-    with lock:
-        items = list(smart_alerts)[-limit:]
-        items.reverse()
-    return {"now": time.time(), "items": items,
-            "drop_threshold": int(smart_alert_config.get("threshold", SMART_ALERT_DROP_THRESHOLD) or SMART_ALERT_DROP_THRESHOLD),
-            "cooldown_seconds": int(smart_alert_config.get("cooldown_seconds", SMART_ALERT_COOLDOWN) or SMART_ALERT_COOLDOWN)}
-
-
-def analytics_snapshot(days=7):
-    try: days = 30 if int(days) >= 30 else 7
-    except (TypeError, ValueError): days = 7
+def analytics_snapshot():
     now = time.time()
     local_now = datetime.fromtimestamp(now, LOCAL_TZ)
     midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     start = midnight.timestamp()
-    range_start = (midnight - timedelta(days=days - 1)).timestamp()
-
-    # Persisted daily history (activity is retained for up to 30 days).
-    daily_map = {}
-    range_events = {}
-    duration_samples = []
-    duration_by_lane = {}
-    member_so_counts = {}
-    member_so_details = {}
-    with lock:
-        history_rows = [tuple(r) for r in activity if len(r) >= 6 and r[0] >= range_start]
-        alert_rows = list(smart_alerts)[-30:]
-        for row in history_rows:
-            ts, kind, code, sdc, n, dur = row[:6]
-            member_name = str(row[6] or "").strip() if len(row) > 6 else ""
-            if not member_name and sdc:
-                member_name = str((lane_state.get((str(code), str(sdc))) or {}).get("member_name") or "").strip()
-            day = datetime.fromtimestamp(float(ts), LOCAL_TZ).strftime("%Y-%m-%d")
-            d = daily_map.setdefault(day, {"date": day, "restock": 0, "tickets_in": 0,
-                                           "tickets_sold": 0, "sold_out": 0,
-                                           "drop_events": 0, "drop_tickets": 0})
-            ev = range_events.setdefault(str(code), {"code": str(code), "name": EVENTS.get(code, code),
-                                                     "restock": 0, "tickets_in": 0, "sold_out": 0,
-                                                     "drop_tickets": 0})
-            if kind == "in":
-                d["restock"] += 1; d["tickets_in"] += max(0, int(n)); ev["restock"] += 1; ev["tickets_in"] += max(0, int(n))
-            elif kind == "sold":
-                d["tickets_sold"] += max(0, int(n))
-            elif kind == "so":
-                d["sold_out"] += 1; ev["sold_out"] += 1
-                if member_name and member_name != "-":
-                    mk = member_name.casefold()
-                    if mk not in member_so_counts:
-                        member_so_counts[mk] = {"member": member_name, "sold_out": 0, "events": {}, "sessions": 0, "durations": []}
-                        member_so_details[mk] = set()
-                    member_so_counts[mk]["sold_out"] += 1
-                    if dur is not None:
-                        try: member_so_counts[mk]["durations"].append(max(0.0, float(dur)))
-                        except (TypeError, ValueError): pass
-                    evname = EVENTS.get(code, code)
-                    member_so_counts[mk]["events"][evname] = member_so_counts[mk]["events"].get(evname, 0) + 1
-                    lane_id = (str(code), str(sdc))
-                    if lane_id not in member_so_details[mk]:
-                        member_so_details[mk].add(lane_id)
-                        member_so_counts[mk]["sessions"] = len(member_so_details[mk])
-                if dur is not None:
-                    try:
-                        val = max(0.0, float(dur)); duration_samples.append(val)
-                        duration_by_lane.setdefault((str(code), str(sdc)), []).append(val)
-                    except (TypeError, ValueError): pass
-        for item in purchase_timeline:
-            try:
-                ts = float(item.get("at", 0)); delta = max(0, int(item.get("delta", 0) or 0))
-                if ts < range_start or delta <= 0: continue
-                day = datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d")
-                d = daily_map.setdefault(day, {"date": day, "restock": 0, "tickets_in": 0,
-                                               "tickets_sold": 0, "sold_out": 0,
-                                               "drop_events": 0, "drop_tickets": 0})
-                d["drop_events"] += 1; d["drop_tickets"] += delta
-                ev = range_events.setdefault(str(item.get("code") or ""), {"code": str(item.get("code") or ""),
-                    "name": item.get("event") or EVENTS.get(item.get("code"), item.get("code") or "-"),
-                    "restock": 0, "tickets_in": 0, "sold_out": 0, "drop_tickets": 0})
-                ev["drop_tickets"] += delta
-            except (TypeError, ValueError): pass
 
     hours = [0] * 24
     hours_in = [0] * 24
@@ -3102,12 +2857,7 @@ def analytics_snapshot(days=7):
 
     with lock:
         rows = [r for r in activity if r[0] >= start]
-        today_member_so = {}
-        for row in rows:
-            ts, kind, code, sdc, n, dur = row[:6]
-            member_name = str(row[6] or "").strip() if len(row) > 6 else ""
-            if not member_name and sdc:
-                member_name = str((lane_state.get((str(code), str(sdc))) or {}).get("member_name") or "").strip()
+        for ts, kind, code, sdc, n, dur in rows:
             pe = per_event.get(code)
             if pe is None:
                 continue
@@ -3126,13 +2876,6 @@ def analytics_snapshot(days=7):
             elif kind == "so":
                 so += 1
                 pe["sold_out"] += 1
-                if member_name and member_name != "-":
-                    mk = member_name.casefold()
-                    entry = today_member_so.setdefault(mk, {"member": member_name, "sold_out": 0, "events": {}, "sessions": set()})
-                    entry["sold_out"] += 1
-                    ename = EVENTS.get(code, code)
-                    entry["events"][ename] = entry["events"].get(ename, 0) + 1
-                    entry["sessions"].add((str(code), str(sdc)))
                 if dur is not None:
                     durs.append(dur)
                     k = (code, sdc)
@@ -3177,45 +2920,14 @@ def analytics_snapshot(days=7):
     ) if active else None
     peak_hour = max(range(24), key=lambda h: (hours[h], hours_in[h])) if any(hours) else None
 
-    calendar_sessions = []
-    timeline_sessions = []
-    with lock:
-        for (code, sdc), lane in lane_state.items():
-            quota = parse_quota(lane.get("available_quota"))
-            try:
-                session_date = str(lane.get("session_date") or "")
-                if session_date: datetime.strptime(session_date, "%Y-%m-%d")
-            except ValueError:
-                session_date = ""
-            if not session_date: continue
-            status = "unknown" if quota is None else ("sold_out" if quota <= 0 else ("low" if quota <= LOW_QUOTA else "available"))
-            entry = {"id": f"{code}|{sdc}", "code": code, "event": EVENTS.get(code, code),
-                     "member": lane.get("member_name") or "-", "session": lane.get("session_label") or lane.get("label") or "-",
-                     "date": session_date, "start": hhmm(lane.get("session_start_time")),
-                     "quota": quota, "status": status}
-            calendar_sessions.append(entry)
-            dq = history.get((code, sdc)) or []
-            points = [{"at": float(ts), "quota": int(q)} for ts, q in dq if float(ts) >= now - 86400]
-            if points:
-                markers = []
-                for act in activity:
-                    if len(act) >= 5 and str(act[2]) == str(code) and str(act[3]) == str(sdc) and float(act[0]) >= now - 86400:
-                        markers.append({"at": float(act[0]), "kind": str(act[1]), "n": int(act[4]), "duration": act[5] if len(act) > 5 else None})
-                timeline_sessions.append({**entry, "points": points, "markers": markers})
-    calendar_sessions.sort(key=lambda x: (x["date"], x["start"], x["event"], x["member"]))
-    timeline_sessions.sort(key=lambda x: (x["date"], x["start"], x["event"], x["member"]))
-
     return {
         "now": now,
-        "calendar_sessions": calendar_sessions,
-        "timeline_sessions": timeline_sessions,
         "day_start": start,
         "day_label": pretty_date(midnight.strftime("%Y-%m-%d")),
         "hour_now": local_now.hour,
         "tracked_since": tracked_since,
         "today": {"restock": restock, "tickets_in": tin,
                   "tickets_sold": sold, "sold_out": so,
-                  "top_so_members": sorted([{"member": x["member"], "sold_out": x["sold_out"], "sessions": len(x["sessions"]), "events": x["events"]} for x in today_member_so.values()], key=lambda x: (-x["sold_out"], -x["sessions"], x["member"].casefold()))[:10],
                   "purchase_events": purchase_events,
                   "purchase_tickets": purchase_tickets,
                   "largest_purchase": largest_purchase},
@@ -3234,29 +2946,6 @@ def analytics_snapshot(days=7):
         "hours_in": hours_in,
         "events": per_event,
         "fastest": fastest,
-        "history": {
-            "days": days,
-            "start_date": (midnight - timedelta(days=days - 1)).strftime("%Y-%m-%d"),
-            "end_date": midnight.strftime("%Y-%m-%d"),
-            "daily": [daily_map[k] for k in sorted(daily_map)],
-            "events": sorted(range_events.values(), key=lambda x: (-x.get("drop_tickets", 0), -x.get("restock", 0))),
-            "top_so_members": sorted([{**x, "avg_so_seconds": (sum(x["durations"])/len(x["durations"]) if x["durations"] else None), "duration_samples": len(x["durations"])} for x in member_so_counts.values()], key=lambda x: (-x["sold_out"], -x["sessions"], x["member"].casefold()))[:10],
-            "so_samples": len(duration_samples),
-            "avg_so": (sum(duration_samples) / len(duration_samples)) if duration_samples else None,
-            "median_so": (sorted(duration_samples)[len(duration_samples)//2] if len(duration_samples)%2 else ((sorted(duration_samples)[len(duration_samples)//2-1] + sorted(duration_samples)[len(duration_samples)//2]) / 2)) if duration_samples else None,
-            "fastest_lanes": [
-                {"code": code, "event": EVENTS.get(code, code), "sdc": sdc,
-                 "member": (lane_state.get((code, sdc)) or {}).get("member_name") or "-",
-                 "session": (lane_state.get((code, sdc)) or {}).get("session_label") or "-",
-                 "date": (lane_state.get((code, sdc)) or {}).get("session_date") or "",
-                 "start": hhmm((lane_state.get((code, sdc)) or {}).get("session_start_time")),
-                 "samples": len(vals), "avg_seconds": sum(vals)/len(vals),
-                 "median_seconds": sorted(vals)[len(vals)//2] if len(vals)%2 else (sorted(vals)[len(vals)//2-1]+sorted(vals)[len(vals)//2])/2}
-                for (code, sdc), vals in sorted(duration_by_lane.items(), key=lambda kv: sum(kv[1])/len(kv[1]))[:10]
-            ],
-        },
-        "smart_alerts": {"items": alert_rows, "drop_threshold": SMART_ALERT_DROP_THRESHOLD,
-                         "cooldown_seconds": int(smart_alert_config.get("cooldown_seconds", SMART_ALERT_COOLDOWN) or SMART_ALERT_COOLDOWN)},
     }
 
 
@@ -3324,45 +3013,6 @@ def health_snapshot():
             "status": worst, "label": labels[worst],
             "last": min(lasts) if lasts else None, "events": evs,
         })
-
-    # Mobile sync bridge: file health + timestamp of the last successful phone sync.
-    with mobile_sync_lock:
-        sync_last = float(mobile_sync_last_at or 0.0)
-        sync_count = int(mobile_sync_success_count or 0)
-    sync_file_ok = MOBILE_SYNC_FILE.is_file()
-    if not sync_file_ok:
-        sync_status = "bad"
-        sync_detail = "mobile-sync.html tidak ditemukan"
-    elif sync_last and now - sync_last <= 3600:
-        sync_status = "ok"
-        sync_detail = f"sync terakhir {int(now - sync_last)} dtk lalu · {sync_count} sukses"
-    else:
-        sync_status = "idle"
-        sync_detail = f"bridge tersedia · belum ada sync dalam 1 jam · {sync_count} sukses total"
-    comps.append({"id": "mobile-sync", "name": "Sync HP", "status": sync_status,
-                  "label": labels[sync_status], "detail": sync_detail,
-                  "last_sync": sync_last or None, "success_count": sync_count})
-
-    # Account status only exposes safe session metadata (never tokens/cookies).
-    try:
-        account = jkt48_account_status()
-        authenticated = bool(account.get("authenticated"))
-        expiry = account.get("seconds_to_expiry")
-        account_status = "ok" if authenticated else "idle"
-        if authenticated and expiry is not None and expiry < 300:
-            account_status = "warn"
-        account_detail = "terhubung" if authenticated else "belum terhubung"
-        if authenticated and expiry is not None:
-            account_detail += f" · sesi berlaku {expiry} dtk"
-        if account.get("auto_refresh"):
-            account_detail += " · auto-refresh aktif"
-        comps.append({"id": "jkt48-account", "name": "Akun JKT48", "status": account_status,
-                      "label": labels[account_status], "detail": account_detail,
-                      "authenticated": authenticated, "seconds_to_expiry": expiry,
-                      "auto_refresh": bool(account.get("auto_refresh"))})
-    except Exception:
-        comps.append({"id": "jkt48-account", "name": "Akun JKT48", "status": "warn",
-                      "label": labels["warn"], "detail": "status akun tidak dapat dibaca"})
 
     with stats_lock:
         total, errors = request_total, request_errors
@@ -3485,16 +3135,14 @@ def export_csv(only_today=False):
     w.writerow(["waktu_lokal", "epoch", "server/mobile-sync.html", "kode_event", "event", "member",
                 "jalur", "sesi", "tanggal_sesi", "jam_mulai", "jumlah", "durasi_detik"])
     with lock:
-        for row in activity:
-            ts, kind, code, sdc, n, dur = row[:6]
-            member_name = str(row[6] or "").strip() if len(row) > 6 else ""
+        for ts, kind, code, sdc, n, dur in activity:
             if ts < since:
                 continue
             v = lane_state.get((code, sdc)) or {}
             w.writerow([
                 datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 int(ts), CSV_KIND.get(kind, kind), code, EVENTS.get(code, code),
-                member_name or v.get("member_name") or "", v.get("label") or "",
+                v.get("member_name") or "", v.get("label") or "",
                 v.get("session_label") or "", v.get("session_date") or "",
                 hhmm(v.get("session_start_time")) if v else "",
                 n, "" if dur is None else dur,
@@ -3518,15 +3166,6 @@ def export_csv(only_today=False):
 def _same(a, b):
     """Bandingkan string secara aman dan tidak error untuk karakter non-ASCII."""
     return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
-
-
-def _dashboard_key_valid(given):
-    given = str(given or "").strip()
-    if not given:
-        return False
-    if DASHBOARD_KEY and _same(given, DASHBOARD_KEY):
-        return True
-    return any(isinstance(secret, str) and secret and _same(given, secret) for secret in DASHBOARD_USERS.values())
 
 # ------------------------------------------------------------------ Web Push
 PUSH_FILE = Path(os.environ.get("PUSH_FILE") or SUBS_FILE.with_name("push_subs.json"))
@@ -4093,19 +3732,11 @@ def fetch_my_tickets_page(session, page, date_from, date_to, access_token=""):
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
         "Referer": "https://jkt48.com/my-page",
-        "Origin": "https://jkt48.com",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
     if access_token:
         headers["Authorization"] = "Bearer " + access_token
-
-    # Pakai cookie browser yang diimpor bersama /api/auth/session.
-    # Ini membantu endpoint yang tetap memeriksa session/Cloudflare cookie.
-    with jkt48_account_lock:
-        cookie_header = jkt48_account_cookie_header
-    if cookie_header:
-        headers["Cookie"] = cookie_header
 
     response = session.get(
         MY_TICKETS_URL,
@@ -4317,62 +3948,6 @@ def fetch_my_tickets(date_from, date_to):
         "updated_at": time.time(),
     }
 
-# ------------------------------------------------------------------ User-scoped dashboard preferences (Backup & Multi-Device Sync)
-# DASHBOARD_USERS_JSON optional format: {"user-a":"secret-key-a","user-b":"secret-key-b"}.
-# If omitted, the existing DASHBOARD_KEY is the single authenticated owner.
-try:
-    DASHBOARD_USERS = json.loads(os.environ.get("DASHBOARD_USERS_JSON", "{}") or "{}")
-    if not isinstance(DASHBOARD_USERS, dict):
-        DASHBOARD_USERS = {}
-except (TypeError, json.JSONDecodeError):
-    DASHBOARD_USERS = {}
-
-PREFERENCES_DIR = Path(DATA_DIR) if DATA_DIR else SUBS_FILE.parent
-PREFERENCES_DIR = PREFERENCES_DIR / "user_preferences"
-PREFERENCES_DIR.mkdir(parents=True, exist_ok=True)
-PREFERENCES_MAX_BYTES = 1_000_000
-
-
-def _preferences_identity(url, handler):
-    """Return authenticated user id, or None. Never accept anonymous preference access."""
-    given = (parse_qs(url.query).get("key") or [handler.headers.get("X-Dashboard-Key", "")])[0]
-    given = str(given or "").strip()
-    if not given:
-        return None
-    for user_id, secret in DASHBOARD_USERS.items():
-        if isinstance(user_id, str) and isinstance(secret, str) and secret and _same(given, secret):
-            return re.sub(r"[^A-Za-z0-9_-]", "_", user_id)[:80] or None
-    if DASHBOARD_KEY and _same(given, DASHBOARD_KEY):
-        return "default-" + hashlib.sha256(given.encode("utf-8")).hexdigest()[:24]
-    return None
-
-
-def _preferences_path(user_id):
-    safe_id = hashlib.sha256(str(user_id).encode("utf-8")).hexdigest()[:32]
-    return PREFERENCES_DIR / (safe_id + ".json")
-
-
-def _read_user_preferences(user_id):
-    path = _preferences_path(user_id)
-    if not path.is_file():
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else None
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def _write_user_preferences(user_id, bundle):
-    path = _preferences_path(user_id)
-    temp = path.with_suffix(".tmp")
-    raw = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
-    if len(raw.encode("utf-8")) > PREFERENCES_MAX_BYTES:
-        raise ValueError("Konfigurasi terlalu besar (maksimum 1 MB).")
-    temp.write_text(raw, encoding="utf-8")
-    temp.replace(path)
-
-
 # ------------------------------------------------------------------ HTTP
 class Handler(BaseHTTPRequestHandler):
     def send_response(self, code, message=None):
@@ -4426,10 +4001,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _dash_ok(self, url):
-        if not DASHBOARD_KEY and not DASHBOARD_USERS:
+        if not DASHBOARD_KEY:
             return True
         given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
-        return _dashboard_key_valid(given)
+        return _same(given, DASHBOARD_KEY)
 
     def handle_push_post(self, url):
         if not self._dash_ok(url):
@@ -4615,16 +4190,9 @@ class Handler(BaseHTTPRequestHandler):
             code, expires_at = create_mobile_sync_code()
             return self.send_json(200, {"ok": True, "code": code, "expires_at": expires_at, "ttl_seconds": max(60, MOBILE_SYNC_TTL)})
 
-        if url.path == "/api/preferences":
-            user_id = _preferences_identity(url, self)
-            if not user_id:
-                return self.send_json(401 if (DASHBOARD_KEY or DASHBOARD_USERS) else 503, {"ok": False, "error": "Backup server memerlukan autentikasi. Atur DASHBOARD_KEY atau DASHBOARD_USERS_JSON dan buka dashboard dengan ?key=..."})
-            bundle = _read_user_preferences(user_id)
-            return self.send_json(200, {"ok": True, "found": bundle is not None, "bundle": bundle, "user_scope": hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:12]})
-
-        if DASHBOARD_KEY or DASHBOARD_USERS:
+        if DASHBOARD_KEY:
             given = (parse_qs(url.query).get("key") or [self.headers.get("X-Dashboard-Key", "")])[0]
-            if not _dashboard_key_valid(given):
+            if not _same(given, DASHBOARD_KEY):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
         if url.path == "/api/jkt48/account/status":
@@ -4674,19 +4242,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, snapshot())
 
         if url.path == "/api/analytics":
-            try: days = int((parse_qs(url.query).get("days") or ["7"])[0])
-            except (TypeError, ValueError): days = 7
-            return self.send_json(200, analytics_snapshot(days))
-
-        if url.path == "/api/smart-alerts":
-            try: limit = int((parse_qs(url.query).get("limit") or ["30"])[0])
-            except (TypeError, ValueError): limit = 30
-            return self.send_json(200, smart_alert_snapshot(limit))
-
-        if url.path == "/api/smart-alert-settings":
-            if not self._dash_ok(url):
-                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            return self.send_json(200, smart_alert_config_snapshot())
+            return self.send_json(200, analytics_snapshot())
 
         if url.path == "/api/purchase-timeline":
             try:
@@ -4770,49 +4326,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        global my_tickets_cache, my_tickets_fetching, mobile_sync_last_at, mobile_sync_success_count
+        global my_tickets_cache, my_tickets_fetching
         url0 = urlparse(self.path)
-        if url0.path == "/api/smart-alert-settings":
-            if not self._dash_ok(url0):
-                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            try:
-                length = int(self.headers.get("Content-Length", "0") or 0)
-                if length <= 0 or length > 20000: return self.send_json(413, {"ok": False, "error": "Payload kosong atau terlalu besar."})
-                data = json.loads(self.rfile.read(length).decode("utf-8"))
-                result = update_smart_alert_config(data)
-                return self.send_json(200, {"ok": True, **result})
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                return self.send_json(400, {"ok": False, "error": str(exc)[:200]})
-        if url0.path == "/api/preferences":
-            user_id = _preferences_identity(url0, self)
-            if not user_id:
-                return self.send_json(401 if (DASHBOARD_KEY or DASHBOARD_USERS) else 503, {"ok": False, "error": "Backup server memerlukan autentikasi. Atur DASHBOARD_KEY atau DASHBOARD_USERS_JSON."})
-            try:
-                length = int(self.headers.get("Content-Length", "0") or 0)
-            except (TypeError, ValueError):
-                length = 0
-            if length <= 0 or length > PREFERENCES_MAX_BYTES:
-                return self.send_json(413, {"ok": False, "error": "Ukuran konfigurasi kosong atau melebihi 1 MB."})
-            try:
-                bundle = json.loads(self.rfile.read(length).decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                return self.send_json(400, {"ok": False, "error": "Body harus JSON valid."})
-            if not isinstance(bundle, dict) or bundle.get("schema") != "jkt48-radar-preferences" or bundle.get("version") != 1 or not isinstance(bundle.get("data"), dict):
-                return self.send_json(400, {"ok": False, "error": "Format konfigurasi tidak valid."})
-            allowed = {
-                "jr_favs","jr_only","jr_favOnly","jr_vipOnly","jr_hotOnly","jr_compact","jr_beep","jr_notif","jr_wake",
-                "jr_sort","jr_theme","jr_tab","jr_view","jr_feed","jr_buyPrep","jr_alerts","jr_alertMember","jr_alertScope","jr_alertEvent",
-                "r12_watch","r12_history","r12_rules","r12_bookmarks","r12_profile",
-                "jkt48-radar-feature-visibility-v3","jkt48-radar-feature-visibility-open-v2"
-            }
-            clean_data = {k: v for k, v in bundle["data"].items() if k in allowed and isinstance(v, str)}
-            clean_bundle = {"schema": "jkt48-radar-preferences", "version": 1, "updated_at": str(bundle.get("updated_at") or datetime.now(timezone.utc).isoformat()), "data": clean_data}
-            try:
-                _write_user_preferences(user_id, clean_bundle)
-                return self.send_json(200, {"ok": True, "saved": len(clean_data), "updated_at": clean_bundle["updated_at"]})
-            except (OSError, ValueError) as exc:
-                return self.send_json(500, {"ok": False, "error": str(exc)[:250]})
-
         if url0.path == "/api/jkt48/mobile-sync":
             origin = self.headers.get("Origin", "")
             if not mobile_sync_origin_allowed(origin):
@@ -4834,6 +4349,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"ok": False, "error": "Payload mobile sync tidak valid."})
             if not validate_mobile_sync_code(code):
                 return self.send_json(410, {"ok": False, "error": "Kode pairing kedaluwarsa atau tidak valid."})
+            # Auto-connect: bookmarklet di jkt48.com membaca /api/auth/session lalu
+            # mengirim isinya di sini, sehingga dashboard tidak perlu tempel JSON manual.
+            session_result = None
+            sess_payload = payload.get("session")
+            if isinstance(sess_payload, dict):
+                try:
+                    session_result = jkt48_account_import_session(sess_payload)
+                    print("[JKT48] Session diterima otomatis dari browser (mobile-sync).")
+                except Exception as error:
+                    with jkt48_account_lock:
+                        jkt48_account_last_error = f"{type(error).__name__}: {str(error)[:300]}"
+                    session_result = {"ok": False, "error": str(error)[:300]}
+                if payload.get("session_only"):
+                    ok_s = bool(session_result.get("ok"))
+                    return self.send_json(200 if ok_s else 400, session_result)
             rows = payload.get("tickets")
             if not isinstance(rows, list) or len(rows) > 500:
                 return self.send_json(400, {"ok": False, "error": "Daftar ticket tidak valid."})
@@ -4850,12 +4380,10 @@ class Handler(BaseHTTPRequestHandler):
                 pages = 1
             result = _prepare_browser_my_tickets(rows, date_from, date_to, pages)
             result.update({"bridge": True, "source": "mobile-browser", "sync_device": "mobile", "browser_fetched_at": payload.get("fetched_at")})
+            result["session_imported"] = bool(session_result and session_result.get("ok"))
             with my_tickets_cache_lock:
                 my_tickets_cache = dict(result)
                 my_tickets_fetching = False
-            with mobile_sync_lock:
-                mobile_sync_last_at = time.time()
-                mobile_sync_success_count += 1
             print(f"[MY TICKETS] Mobile sync imported: records={len(result['tickets'])} pages={result['pages_fetched']}")
             return self.send_json(200, result)
 
