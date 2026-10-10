@@ -1979,6 +1979,10 @@ jkt48_account_access_expires_at = 0.0
 jkt48_account_last_session_refresh_at = 0.0
 jkt48_account_auto_refresh = False
 
+# Bila access token disediakan via Railway ENV, kita tetap bisa menggunakannya
+# untuk fetch langsung. Auto-refresh /api/auth/session memerlukan cookie session
+# hasil import karena Railway tidak memiliki cookie browser pengguna.
+
 # Refresh dilakukan sedikit sebelum token/session kedaluwarsa.
 JKT48_SESSION_REFRESH_MARGIN = int(os.environ.get("JKT48_SESSION_REFRESH_MARGIN", "90"))
 JKT48_SESSION_REFRESH_INTERVAL = int(os.environ.get("JKT48_SESSION_REFRESH_INTERVAL", "30"))
@@ -2533,14 +2537,13 @@ my_tickets_bridge_lock = threading.Lock()
 my_tickets_bridge = {}
 # Mobile Browser Sync: HP yang sedang login di jkt48.com menjadi pembaca session.
 MOBILE_SYNC_TTL = int(os.environ.get("MOBILE_SYNC_TTL", "600"))
-# Setelah kode dipakai sync pertama kali, masa berlakunya diperpanjang (sliding) setiap sync berhasil,
-# supaya loop bookmarklet 60 detik tidak mati setelah 10 menit. Default 12 jam sejak sync terakhir.
-MOBILE_SYNC_ACTIVE_TTL = int(os.environ.get("MOBILE_SYNC_ACTIVE_TTL", "43200"))
 MOBILE_SYNC_MAX_PAYLOAD = int(os.environ.get("MOBILE_SYNC_MAX_PAYLOAD", "900000"))
 MOBILE_SYNC_ORIGINS = {"https://jkt48.com", "https://www.jkt48.com"}
 # MOBILE_SYNC_FILE sudah ditentukan lebih atas lewat _resolve_mobile_sync_file()
 mobile_sync_lock = threading.Lock()
 mobile_sync_codes = {}
+mobile_sync_last_at = 0.0
+mobile_sync_success_count = 0
 
 def create_mobile_sync_code():
     now = time.time()
@@ -2562,7 +2565,6 @@ def validate_mobile_sync_code(code):
             mobile_sync_codes.pop(code, None)
             return False
         item["hits"] = int(item.get("hits") or 0) + 1
-        item["expires_at"] = max(float(item.get("expires_at") or 0), now + max(60, MOBILE_SYNC_ACTIVE_TTL))
         return True
 
 def mobile_sync_origin_allowed(origin):
@@ -3013,6 +3015,45 @@ def health_snapshot():
             "status": worst, "label": labels[worst],
             "last": min(lasts) if lasts else None, "events": evs,
         })
+
+    # Mobile sync bridge: file health + timestamp of the last successful phone sync.
+    with mobile_sync_lock:
+        sync_last = float(mobile_sync_last_at or 0.0)
+        sync_count = int(mobile_sync_success_count or 0)
+    sync_file_ok = MOBILE_SYNC_FILE.is_file()
+    if not sync_file_ok:
+        sync_status = "bad"
+        sync_detail = "mobile-sync.html tidak ditemukan"
+    elif sync_last and now - sync_last <= 3600:
+        sync_status = "ok"
+        sync_detail = f"sync terakhir {int(now - sync_last)} dtk lalu · {sync_count} sukses"
+    else:
+        sync_status = "idle"
+        sync_detail = f"bridge tersedia · belum ada sync dalam 1 jam · {sync_count} sukses total"
+    comps.append({"id": "mobile-sync", "name": "Sync HP", "status": sync_status,
+                  "label": labels[sync_status], "detail": sync_detail,
+                  "last_sync": sync_last or None, "success_count": sync_count})
+
+    # Account status only exposes safe session metadata (never tokens/cookies).
+    try:
+        account = jkt48_account_status()
+        authenticated = bool(account.get("authenticated"))
+        expiry = account.get("seconds_to_expiry")
+        account_status = "ok" if authenticated else "idle"
+        if authenticated and expiry is not None and expiry < 300:
+            account_status = "warn"
+        account_detail = "terhubung" if authenticated else "belum terhubung"
+        if authenticated and expiry is not None:
+            account_detail += f" · sesi berlaku {expiry} dtk"
+        if account.get("auto_refresh"):
+            account_detail += " · auto-refresh aktif"
+        comps.append({"id": "jkt48-account", "name": "Akun JKT48", "status": account_status,
+                      "label": labels[account_status], "detail": account_detail,
+                      "authenticated": authenticated, "seconds_to_expiry": expiry,
+                      "auto_refresh": bool(account.get("auto_refresh"))})
+    except Exception:
+        comps.append({"id": "jkt48-account", "name": "Akun JKT48", "status": "warn",
+                      "label": labels["warn"], "detail": "status akun tidak dapat dibaca"})
 
     with stats_lock:
         total, errors = request_total, request_errors
@@ -3732,11 +3773,19 @@ def fetch_my_tickets_page(session, page, date_from, date_to, access_token=""):
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
         "Referer": "https://jkt48.com/my-page",
+        "Origin": "https://jkt48.com",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
     if access_token:
         headers["Authorization"] = "Bearer " + access_token
+
+    # Pakai cookie browser yang diimpor bersama /api/auth/session.
+    # Ini membantu endpoint yang tetap memeriksa session/Cloudflare cookie.
+    with jkt48_account_lock:
+        cookie_header = jkt48_account_cookie_header
+    if cookie_header:
+        headers["Cookie"] = cookie_header
 
     response = session.get(
         MY_TICKETS_URL,
@@ -4326,7 +4375,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        global my_tickets_cache, my_tickets_fetching
+        global my_tickets_cache, my_tickets_fetching, mobile_sync_last_at, mobile_sync_success_count
         url0 = urlparse(self.path)
         if url0.path == "/api/jkt48/mobile-sync":
             origin = self.headers.get("Origin", "")
@@ -4349,21 +4398,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"ok": False, "error": "Payload mobile sync tidak valid."})
             if not validate_mobile_sync_code(code):
                 return self.send_json(410, {"ok": False, "error": "Kode pairing kedaluwarsa atau tidak valid."})
-            # Auto-connect: bookmarklet di jkt48.com membaca /api/auth/session lalu
-            # mengirim isinya di sini, sehingga dashboard tidak perlu tempel JSON manual.
-            session_result = None
-            sess_payload = payload.get("session")
-            if isinstance(sess_payload, dict):
-                try:
-                    session_result = jkt48_account_import_session(sess_payload)
-                    print("[JKT48] Session diterima otomatis dari browser (mobile-sync).")
-                except Exception as error:
-                    with jkt48_account_lock:
-                        jkt48_account_last_error = f"{type(error).__name__}: {str(error)[:300]}"
-                    session_result = {"ok": False, "error": str(error)[:300]}
-                if payload.get("session_only"):
-                    ok_s = bool(session_result.get("ok"))
-                    return self.send_json(200 if ok_s else 400, session_result)
             rows = payload.get("tickets")
             if not isinstance(rows, list) or len(rows) > 500:
                 return self.send_json(400, {"ok": False, "error": "Daftar ticket tidak valid."})
@@ -4380,10 +4414,12 @@ class Handler(BaseHTTPRequestHandler):
                 pages = 1
             result = _prepare_browser_my_tickets(rows, date_from, date_to, pages)
             result.update({"bridge": True, "source": "mobile-browser", "sync_device": "mobile", "browser_fetched_at": payload.get("fetched_at")})
-            result["session_imported"] = bool(session_result and session_result.get("ok"))
             with my_tickets_cache_lock:
                 my_tickets_cache = dict(result)
                 my_tickets_fetching = False
+            with mobile_sync_lock:
+                mobile_sync_last_at = time.time()
+                mobile_sync_success_count += 1
             print(f"[MY TICKETS] Mobile sync imported: records={len(result['tickets'])} pages={result['pages_fetched']}")
             return self.send_json(200, result)
 
