@@ -109,8 +109,11 @@ HIST_MAXLEN = 1500
 # Analytics harian ("hari ini" dihitung sejak 00:00 zona waktu ini, default WIB)
 TZ_OFFSET_HOURS = float(os.environ.get("TZ_OFFSET_HOURS", "7"))
 LOCAL_TZ = timezone(timedelta(hours=TZ_OFFSET_HOURS))
-ACTIVITY_KEEP_SECONDS = int(os.environ.get("ACTIVITY_KEEP_SECONDS", "172800"))  # 48 jam
-ACTIVITY_MAXLEN = 20000
+ACTIVITY_KEEP_SECONDS = int(os.environ.get("ACTIVITY_KEEP_SECONDS", str(30 * 86400)))  # 30 hari
+ACTIVITY_MAXLEN = int(os.environ.get("ACTIVITY_MAXLEN", "100000"))
+SMART_ALERT_DROP_THRESHOLD = max(1, int(os.environ.get("SMART_ALERT_DROP_THRESHOLD", "10")))
+SMART_ALERT_COOLDOWN = max(60, int(os.environ.get("SMART_ALERT_COOLDOWN", "900")))
+SMART_ALERT_MAXLEN = max(100, int(os.environ.get("SMART_ALERT_MAXLEN", "3000")))
 
 # Ringkasan harian ke Discord (jam lokal sesuai TZ_OFFSET_HOURS)
 SUMMARY_HOUR = int(os.environ.get("SUMMARY_HOUR", "23"))
@@ -435,6 +438,8 @@ activity = deque(maxlen=ACTIVITY_MAXLEN)   # [ts, jenis, code, sdc, jumlah, dura
 # Ini adalah inferensi dari quota sebelumnya -> quota terbaru, bukan konfirmasi identitas pembeli.
 PURCHASE_TIMELINE_MAXLEN = int(os.environ.get("PURCHASE_TIMELINE_MAXLEN", "500"))
 purchase_timeline = deque(maxlen=PURCHASE_TIMELINE_MAXLEN)  # dict event stock decrease
+smart_alerts = deque(maxlen=SMART_ALERT_MAXLEN)
+smart_alert_last = {}  # alert_key -> timestamp, cooldown anti-spam
 activity_since = time.time()               # kapan pencatatan analytics dimulai
 
 req_log = deque(maxlen=5000)          # (ts, status) tiap respons HTTP
@@ -578,6 +583,14 @@ def load_state():
         )
     activity.clear()
     purchase_timeline.clear()
+    smart_alerts.clear()
+    for alert in raw.get("smart_alerts") or []:
+        if isinstance(alert, dict):
+            smart_alerts.append(alert)
+    smart_alert_last.clear()
+    for k, v in (raw.get("smart_alert_last") or {}).items():
+        try: smart_alert_last[str(k)] = float(v)
+        except (TypeError, ValueError): pass
     for item in raw.get("purchase_timeline") or []:
         if isinstance(item, dict):
             purchase_timeline.append(item)
@@ -613,6 +626,8 @@ def save_state():
                 },
                 "activity": list(activity),
                 "purchase_timeline": list(purchase_timeline),
+                "smart_alerts": list(smart_alerts),
+                "smart_alert_last": dict(smart_alert_last),
                 "activity_since": activity_since,
                 "summary_day": summary_meta["day"],
                 "extra_events": {c: n for c, n in EVENTS.items() if c not in BASE_EVENTS},
@@ -1531,6 +1546,7 @@ def process_report(code, lanes):
     sold_outs = []
     deltas = {}
     sold_total = 0
+    stock_drop_alerts = []
 
     now = time.time()
 
@@ -1601,6 +1617,12 @@ def process_report(code, lanes):
                 delta_down = prev - quota
                 sold_total += delta_down
                 record_purchase_server_event(now, code, sdc, prev, quota, lane)
+                if delta_down >= SMART_ALERT_DROP_THRESHOLD:
+                    alert = _smart_alert_record("stock_drop", code, sdc, "Penurunan stok besar",
+                        f"{lane.get('member_name') or '-'} · {lane.get('session_label') or '-'}: {prev} → {quota} (−{delta_down})",
+                        now=now, cooldown_key=f"stock_drop|{code}|{sdc}")
+                    if alert:
+                        stock_drop_alerts.append(alert)
 
             # --------------------------------------------------
             # SOLD OUT
@@ -1706,6 +1728,9 @@ def process_report(code, lanes):
                     )
 
                     deltas[key] = delta
+                    _smart_alert_record("restock", code, sdc, "Restock terdeteksi",
+                        f"{lane.get('member_name') or '-'} · {lane.get('session_label') or '-'}: +{delta} tiket (tersedia {quota})",
+                        now=now, cooldown_key=f"restock|{code}|{sdc}")
 
                     # Mulai timer restock -> sold out
                     last_restock[key] = now
@@ -1725,6 +1750,11 @@ def process_report(code, lanes):
                 )
         if sold_total:
             log_activity(now, "sold", code, "", sold_total)
+    # Smart alert: kirim penurunan stok besar dengan cooldown per lane.
+    if stock_drop_alerts and bot.main_loop is not None and bot.is_ready():
+        for alert in stock_drop_alerts:
+            asyncio.run_coroutine_threadsafe(poll_alert(
+                f"📉 **Penurunan stok besar** · {alert.get('event')}\n{alert.get('message')}\nAmbang: {SMART_ALERT_DROP_THRESHOLD} tiket; cooldown {SMART_ALERT_COOLDOWN // 60} menit."), bot.main_loop)
     # Web Push: tidak bergantung pada kesiapan Discord
     if opened:
         sale_open_dispatch(code, lanes)
@@ -1863,6 +1893,10 @@ async def stale_watch_loop():
             age = now - ts
             if age > STALE_ALERT_AFTER and code not in stale_alerted:
                 stale_alerted.add(code)
+                with lock:
+                    _smart_alert_record("poller_stale", code, "", "Data poller basi",
+                        f"Tidak ada laporan selama {int(age // 60)} menit. Restock mungkin tidak terdeteksi.",
+                        now=now, cooldown_key=f"poller_stale|{code}")
                 await poll_alert(
                     f"⏰ Data **{name}** basi {int(age // 60)} menit. "
                     f"Restock tidak akan terdeteksi sampai pulih."
@@ -2840,11 +2874,85 @@ def purchase_timeline_snapshot(limit=100):
             "note": "Purchase di sini berarti penurunan stok yang terdeteksi server; bukan konfirmasi identitas pembeli."}
 
 
-def analytics_snapshot():
+def _smart_alert_record(kind, code, sdc, title, message, now=None, cooldown_key=None):
+    """Record one durable smart alert; caller may already hold `lock`."""
+    now = float(now or time.time())
+    key = str(cooldown_key or f"{kind}|{code}|{sdc}")
+    last = float(smart_alert_last.get(key, 0) or 0)
+    if now - last < SMART_ALERT_COOLDOWN:
+        return None
+    smart_alert_last[key] = now
+    alert = {
+        "id": f"{int(now * 1000)}-{kind}-{code}-{sdc}",
+        "at": round(now, 1), "kind": str(kind), "code": str(code),
+        "event": EVENTS.get(code, code), "sdc": str(sdc or ""),
+        "title": str(title), "message": str(message),
+    }
+    smart_alerts.append(alert)
+    return alert
+
+
+def smart_alert_snapshot(limit=30):
+    try: limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError): limit = 30
+    with lock:
+        items = list(smart_alerts)[-limit:]
+        items.reverse()
+    return {"now": time.time(), "items": items,
+            "drop_threshold": SMART_ALERT_DROP_THRESHOLD,
+            "cooldown_seconds": SMART_ALERT_COOLDOWN}
+
+
+def analytics_snapshot(days=7):
+    try: days = 30 if int(days) >= 30 else 7
+    except (TypeError, ValueError): days = 7
     now = time.time()
     local_now = datetime.fromtimestamp(now, LOCAL_TZ)
     midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     start = midnight.timestamp()
+    range_start = (midnight - timedelta(days=days - 1)).timestamp()
+
+    # Persisted daily history (activity is retained for up to 30 days).
+    daily_map = {}
+    range_events = {}
+    duration_samples = []
+    duration_by_lane = {}
+    with lock:
+        history_rows = [tuple(r) for r in activity if len(r) >= 6 and r[0] >= range_start]
+        alert_rows = list(smart_alerts)[-30:]
+        for ts, kind, code, sdc, n, dur in history_rows:
+            day = datetime.fromtimestamp(float(ts), LOCAL_TZ).strftime("%Y-%m-%d")
+            d = daily_map.setdefault(day, {"date": day, "restock": 0, "tickets_in": 0,
+                                           "tickets_sold": 0, "sold_out": 0,
+                                           "drop_events": 0, "drop_tickets": 0})
+            ev = range_events.setdefault(str(code), {"code": str(code), "name": EVENTS.get(code, code),
+                                                     "restock": 0, "tickets_in": 0, "sold_out": 0,
+                                                     "drop_tickets": 0})
+            if kind == "in":
+                d["restock"] += 1; d["tickets_in"] += max(0, int(n)); ev["restock"] += 1; ev["tickets_in"] += max(0, int(n))
+            elif kind == "sold":
+                d["tickets_sold"] += max(0, int(n))
+            elif kind == "so":
+                d["sold_out"] += 1; ev["sold_out"] += 1
+                if dur is not None:
+                    try:
+                        val = max(0.0, float(dur)); duration_samples.append(val)
+                        duration_by_lane.setdefault((str(code), str(sdc)), []).append(val)
+                    except (TypeError, ValueError): pass
+        for item in purchase_timeline:
+            try:
+                ts = float(item.get("at", 0)); delta = max(0, int(item.get("delta", 0) or 0))
+                if ts < range_start or delta <= 0: continue
+                day = datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d")
+                d = daily_map.setdefault(day, {"date": day, "restock": 0, "tickets_in": 0,
+                                               "tickets_sold": 0, "sold_out": 0,
+                                               "drop_events": 0, "drop_tickets": 0})
+                d["drop_events"] += 1; d["drop_tickets"] += delta
+                ev = range_events.setdefault(str(item.get("code") or ""), {"code": str(item.get("code") or ""),
+                    "name": item.get("event") or EVENTS.get(item.get("code"), item.get("code") or "-"),
+                    "restock": 0, "tickets_in": 0, "sold_out": 0, "drop_tickets": 0})
+                ev["drop_tickets"] += delta
+            except (TypeError, ValueError): pass
 
     hours = [0] * 24
     hours_in = [0] * 24
@@ -2949,6 +3057,28 @@ def analytics_snapshot():
         "hours_in": hours_in,
         "events": per_event,
         "fastest": fastest,
+        "history": {
+            "days": days,
+            "start_date": (midnight - timedelta(days=days - 1)).strftime("%Y-%m-%d"),
+            "end_date": midnight.strftime("%Y-%m-%d"),
+            "daily": [daily_map[k] for k in sorted(daily_map)],
+            "events": sorted(range_events.values(), key=lambda x: (-x.get("drop_tickets", 0), -x.get("restock", 0))),
+            "so_samples": len(duration_samples),
+            "avg_so": (sum(duration_samples) / len(duration_samples)) if duration_samples else None,
+            "median_so": (sorted(duration_samples)[len(duration_samples)//2] if len(duration_samples)%2 else ((sorted(duration_samples)[len(duration_samples)//2-1] + sorted(duration_samples)[len(duration_samples)//2]) / 2)) if duration_samples else None,
+            "fastest_lanes": [
+                {"code": code, "event": EVENTS.get(code, code), "sdc": sdc,
+                 "member": (lane_state.get((code, sdc)) or {}).get("member_name") or "-",
+                 "session": (lane_state.get((code, sdc)) or {}).get("session_label") or "-",
+                 "date": (lane_state.get((code, sdc)) or {}).get("session_date") or "",
+                 "start": hhmm((lane_state.get((code, sdc)) or {}).get("session_start_time")),
+                 "samples": len(vals), "avg_seconds": sum(vals)/len(vals),
+                 "median_seconds": sorted(vals)[len(vals)//2] if len(vals)%2 else (sorted(vals)[len(vals)//2-1]+sorted(vals)[len(vals)//2])/2}
+                for (code, sdc), vals in sorted(duration_by_lane.items(), key=lambda kv: sum(kv[1])/len(kv[1]))[:10]
+            ],
+        },
+        "smart_alerts": {"items": alert_rows, "drop_threshold": SMART_ALERT_DROP_THRESHOLD,
+                         "cooldown_seconds": SMART_ALERT_COOLDOWN},
     }
 
 
@@ -4364,7 +4494,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, snapshot())
 
         if url.path == "/api/analytics":
-            return self.send_json(200, analytics_snapshot())
+            try: days = int((parse_qs(url.query).get("days") or ["7"])[0])
+            except (TypeError, ValueError): days = 7
+            return self.send_json(200, analytics_snapshot(days))
+
+        if url.path == "/api/smart-alerts":
+            try: limit = int((parse_qs(url.query).get("limit") or ["30"])[0])
+            except (TypeError, ValueError): limit = 30
+            return self.send_json(200, smart_alert_snapshot(limit))
 
         if url.path == "/api/purchase-timeline":
             try:

@@ -990,6 +990,23 @@
   @media(max-width:700px){.psv-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.psv-row{grid-template-columns:58px 1fr auto}.psv-drop{font-size:12px}.psv-note{max-width:230px}}
 
 
+
+  /* Analytics enhancements */
+  .ana-insights{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
+  .ana-insight{border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:13px;background:linear-gradient(145deg,rgba(96,165,250,.09),rgba(255,255,255,.02));min-width:0}
+  .ana-insight .ai-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;opacity:.58;font-weight:800}
+  .ana-insight b{display:block;font-size:15px;margin:5px 0;overflow-wrap:anywhere}
+  .ana-insight p{font-size:11px;opacity:.65;line-height:1.5;margin:0}
+  .ana-bars{display:grid;gap:10px;margin-top:12px}
+  .ana-bar-row{display:grid;grid-template-columns:minmax(90px,1fr) minmax(90px,2fr) 48px;align-items:center;gap:10px;font-size:12px}
+  .ana-bar-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ana-bar-track{height:8px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden}
+  .ana-bar-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#60a5fa,#34d399)}
+  .ana-bar-value{text-align:right;font-variant-numeric:tabular-nums;font-weight:800}
+  .ana-chart-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+  .ana-switch{display:flex;gap:5px}.ana-switch button{font:inherit;font-size:11px;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--text);cursor:pointer}.ana-switch button.on{background:var(--acc);border-color:var(--acc);color:white}
+  @media(max-width:650px){.ana-insights{grid-template-columns:1fr}.ana-bar-row{grid-template-columns:90px minmax(60px,1fr) 40px}}
+
   /* ===== JALUR FOCUS — very prominent personal ticket lanes ===== */
   .my-ticket-lane-focus{
     margin:4px 0 10px;
@@ -1739,6 +1756,8 @@
   const VIEWS = ["cards", "heat", "analytics", "status", "tickets"];
   let view = store.get("view", "cards"); if (!VIEWS.includes(view)) view = "cards";
   let ana = null, sysd = null, extraErr = "";
+  let analyticsDays = 7;
+  let lastSmartAlertId = "";
   let myTickets = null, myTicketsError = "", myTicketsLoading = false;
   // Setup Sync HP ditampilkan langsung di halaman Jadwal Saya, bukan membuka /mobile-sync.
   let mobileSyncSetup = null; // {code, expires_at, ttl_seconds, url, bookmarklet}
@@ -2138,7 +2157,8 @@
     }
     if (v !== "analytics" && v !== "status") return;
     try {
-      const r = await fetch((v === "analytics" ? "/api/analytics" : "/api/status") + (KEY ? "?key=" + encodeURIComponent(KEY) : ""), { cache: "no-store" });
+      const params = new URLSearchParams(); if (KEY) params.set("key", KEY); if (v === "analytics") params.set("days", String(analyticsDays));
+      const r = await fetch((v === "analytics" ? "/api/analytics" : "/api/status") + (params.toString() ? "?" + params.toString() : ""), { cache: "no-store" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
       if (v === "analytics") ana = j; else sysd = j;
@@ -2800,6 +2820,30 @@
     if (!ana) { pg.append(el("div", "empty", extraErr ? "Gagal memuat analytics: " + extraErr : "Memuat analytics…")); return pg; }
     const a = ana, t = a.today, evs = a.events || {};
     pg.append(el("h2", "ph", "HARI INI · " + a.day_label));
+    const rangeCard = el("div", "card");
+    const rangeHead = el("div", "ana-chart-head");
+    rangeHead.append(el("h2", "", "RIWAYAT ANALYTICS"));
+    const rangeSwitch = el("div", "ana-switch");
+    for (const d of [7, 30]) { const b = el("button", analyticsDays === d ? "on" : "", d + " hari"); b.type="button"; b.onclick=()=>{if(analyticsDays===d)return;analyticsDays=d;loadExtra();}; rangeSwitch.append(b); }
+    rangeHead.append(rangeSwitch); rangeCard.append(rangeHead);
+    rangeCard.append(el("div", "note", "Riwayat disimpan di backend dan bertahan setelah restart selama file state berada di penyimpanan persisten. Data lama sebelum retensi 30 hari diterapkan tidak bisa dipulihkan jika sebelumnya sudah terhapus."));
+    const hist = a.history || {}, daily = hist.daily || [];
+    const hstats = el("div", "sum txt");
+    hstats.append(kcard(daily.reduce((n,x)=>n+Number(x.restock||0),0), "restock · " + analyticsDays + " hari"),
+      kcard(daily.reduce((n,x)=>n+Number(x.drop_tickets||0),0), "tiket berkurang · sinyal"),
+      kcard(hist.median_so != null ? fmtMS(hist.median_so) : "-", "median restock → SO"),
+      kcard(hist.so_samples || 0, "sampel sold out terukur"));
+    rangeCard.append(hstats);
+    const dh = el("div", "ana-bars");
+    const maxDaily = Math.max(1, ...daily.map(x=>Number(x.restock||0)));
+    if (!daily.length) dh.append(el("div", "empty", "Riwayat akan terisi setelah backend merekam aktivitas."));
+    else daily.forEach(x=>{const row=el("div","ana-bar-row"), name=el("div","ana-bar-name",x.date), track=el("div","ana-bar-track"), fill=el("div","ana-bar-fill"), val=el("div","ana-bar-value",String(x.restock||0));fill.style.width=Math.max(1,Number(x.restock||0)/maxDaily*100)+"%";track.append(fill);row.append(name,track,val);row.title=`${x.restock||0} restock · ${x.tickets_in||0} tiket masuk · ${x.drop_tickets||0} tiket berkurang · ${x.sold_out||0} sold out`;dh.append(row);});
+    rangeCard.append(dh);
+    const topHist = (hist.events||[]).filter(x=>Number(x.drop_tickets||0)>0 || Number(x.restock||0)>0).slice(0,5);
+    const topHistBox=el("div","ana-bars"); topHistBox.append(el("h3","","EVENT TERAKTIF DALAM RENTANG INI"));
+    if(!topHist.length)topHistBox.append(el("div","empty","Belum ada aktivitas historis yang cukup."));
+    else topHist.forEach(x=>{const row=el("div","ana-bar-row"),name=el("div","ana-bar-name",x.name||x.code),track=el("div","ana-bar-track"),fill=el("div","ana-bar-fill"),val=el("div","ana-bar-value",String(x.drop_tickets||x.restock||0));fill.style.width=Math.max(2,Math.min(100,Number(x.drop_tickets||x.restock||0)/Math.max(1,...topHist.map(y=>Number(y.drop_tickets||y.restock||0)))*100))+"%";track.append(fill);row.append(name,track,val);row.title=`${x.restock||0} restock · ${x.drop_tickets||0} tiket berkurang · ${x.sold_out||0} sold out`;topHistBox.append(row);});
+    rangeCard.append(topHistBox); pg.append(rangeCard);
     if (a.tracked_since && a.tracked_since > a.day_start + 60)
       pg.append(el("div", "note", "Pencatatan baru dimulai pukul " + hm(a.tracked_since) + ", jadi kejadian sebelum jam itu tidak ikut terhitung."));
 
@@ -2818,28 +2862,78 @@
     pg.append(pr);
     pg.append(renderPurchaseServerTimeline(a));
 
+    // Ringkasan otomatis yang menjelaskan angka tanpa mengklaim identitas pembeli.
+    const insight = el("div", "card");
+    insight.append(el("h2", "", "INSIGHT OTOMATIS"));
+    const insightGrid = el("div", "ana-insights");
+    const peakText = a.peak_hour == null ? "Belum ada pola" : hourRange(a.peak_hour);
+    const peakCount = a.peak_hour == null ? 0 : Number((a.hours || [])[a.peak_hour] || 0);
+    const topEvent = a.most_active && evs[a.most_active] ? evs[a.most_active].name : "Belum ada";
+    const avgText = a.avg_so != null ? fmtMS(a.avg_so) : "Belum cukup data";
+    const insightItems = [
+      ["Jam paling aktif", peakText, peakCount ? peakCount + " kejadian restock tercatat pada jam ini." : "Belum ada restock yang tercatat hari ini."],
+      ["Event paling aktif", topEvent, "Diurutkan dari jumlah restock, lalu tiket masuk sebagai pembanding."],
+      ["Kecepatan sold out", avgText, a.so_samples ? "Rata-rata dari " + a.so_samples + " sampel sold out yang memiliki durasi terukur." : "Durasi akan muncul setelah ada data restock hingga sold out yang terukur."]
+    ];
+    for (const it of insightItems) { const card = el("div", "ana-insight"); card.append(el("div", "ai-label", it[0]), el("b", "", it[1]), el("p", "", it[2])); insightGrid.append(card); }
+    insight.append(insightGrid);
+    insight.append(el("div", "note", "Insight mengikuti data yang berhasil direkam server hari ini. Jika poller sempat offline, hasilnya tidak mewakili aktivitas yang terlewat."));
+    pg.append(insight);
+
     const f0 = (a.fastest || [])[0];
     const r2 = el("div", "sum txt");
     r2.append(
       kcard(fmtMS(a.avg_so), "rata-rata sampai SO" + (a.so_samples ? " (" + a.so_samples + " sampel)" : "")),
+      kcard((a.history && a.history.median_so != null) ? fmtMS(a.history.median_so) : "-", "median SO · " + analyticsDays + " hari"),
       kcard(a.most_active && evs[a.most_active] ? evs[a.most_active].name : "-", "event paling aktif"),
       kcard(hourRange(a.peak_hour), "jam restock terbanyak"),
       kcard(f0 ? fmtMS(f0.duration) : "-", f0 ? "turnover tercepat · " + f0.member : "turnover tercepat")
     );
     pg.append(r2);
 
-    const hc = el("div", "card"); hc.append(el("h2", "", "RESTOCK PER JAM"));
-    const bars = el("div", "hbars"), mx = Math.max(1, ...a.hours);
-    a.hours.forEach((n, h) => {
-      const b = el("div", "hb" + (n > 0 && h === a.peak_hour ? " pk" : "") + (h === a.hour_now ? " now" : "")), i = el("i");
-      i.style.height = (n ? Math.max(6, n / mx * 100) : 2) + "%";
-      b.title = hourRange(h) + " · " + n + " restock · " + a.hours_in[h] + " tiket";
-      b.append(i); bars.append(b);
-    });
+    const hc = el("div", "card");
+    const chartHead = el("div", "ana-chart-head"), chartTitle = el("h2", "", "AKTIVITAS PER JAM");
+    const chartSwitch = el("div", "ana-switch"), chartButtons = [];
+    let chartMetric = "restock";
+    const bars = el("div", "hbars");
+    function paintHourlyChart() {
+      bars.textContent = "";
+      const values = chartMetric === "restock" ? (a.hours || []) : (a.hours_in || []);
+      const mx = Math.max(1, ...values);
+      values.forEach((n, h) => {
+        const b = el("div", "hb" + (n > 0 && h === a.peak_hour ? " pk" : "") + (h === a.hour_now ? " now" : "")), i = el("i");
+        i.style.height = (n ? Math.max(6, n / mx * 100) : 2) + "%";
+        b.title = hourRange(h) + " · " + n + (chartMetric === "restock" ? " restock" : " tiket masuk") + " · " + (a.hours || [])[h] + " restock";
+        b.append(i); bars.append(b);
+      });
+      chartButtons.forEach(([name, btn]) => btn.classList.toggle("on", name === chartMetric));
+      chartTitle.textContent = chartMetric === "restock" ? "AKTIVITAS PER JAM · RESTOCK" : "AKTIVITAS PER JAM · TIKET MASUK";
+    }
+    for (const [name, label] of [["restock", "Jumlah restock"], ["tickets", "Tiket masuk"]]) {
+      const btn = el("button", "", label); btn.type = "button";
+      const key = name === "tickets" ? "tickets" : "restock";
+      btn.onclick = () => { chartMetric = key; paintHourlyChart(); };
+      chartButtons.push([key, btn]); chartSwitch.append(btn);
+    }
+    chartHead.append(chartTitle, chartSwitch); hc.append(chartHead);
+    paintHourlyChart();
     hc.append(bars);
     const ax = el("div", "haxis");
     for (const h of ["00", "06", "12", "18", "23"]) ax.append(el("span", "", h));
     hc.append(ax); pg.append(hc);
+
+    const pbe = el("div", "card");
+    pbe.append(el("h2", "", "PENURUNAN STOK PER EVENT"));
+    pbe.append(el("div", "note", "Berdasarkan sinyal pengurangan quota yang terlihat oleh server; bukan bukti siapa yang membeli."));
+    const pbeRows = Object.entries(ps.by_event || {}).map(([code, value]) => ({code, name: (evs[code] && evs[code].name) || code, value: Number(value || 0)})).sort((x,y) => y.value - x.value);
+    const pbeMax = Math.max(1, ...pbeRows.map(x => x.value));
+    const pbeBars = el("div", "ana-bars");
+    if (!pbeRows.some(x => x.value > 0)) pbeBars.append(el("div", "empty", "Belum ada sinyal penurunan stok per event hari ini."));
+    else for (const item of pbeRows.filter(x => x.value > 0)) {
+      const row = el("div", "ana-bar-row"), name = el("div", "ana-bar-name", item.name), track = el("div", "ana-bar-track"), fill = el("div", "ana-bar-fill"), val = el("div", "ana-bar-value", String(item.value));
+      fill.style.width = Math.max(2, item.value / pbeMax * 100) + "%"; track.append(fill); row.append(name, track, val); pbeBars.append(row);
+    }
+    pbe.append(pbeBars); pg.append(pbe);
 
     const ec = el("div", "card"), ew = el("div", "tw"), et = el("table", "at"), eh = el("thead"), er = el("tr");
     ec.append(el("h2", "", "PER EVENT"));
@@ -2869,6 +2963,12 @@
       ft.append(fb); fw.append(ft); fc.append(fw);
     }
     pg.append(fc);
+    const al = el("div", "card"); al.append(el("h2", "", "SMART ALERT · RIWAYAT"));
+    const smart = (a.smart_alerts || {}).items || [];
+    al.append(el("div", "note", "Alert restock, penurunan stok besar (≥ " + Number((a.smart_alerts||{}).drop_threshold||10) + " tiket), dan poller basi. Cooldown penurunan stok: " + Math.round(Number((a.smart_alerts||{}).cooldown_seconds||900)/60) + " menit per jalur."));
+    if(!smart.length) al.append(el("div", "empty", "Belum ada smart alert terekam."));
+    else { const list=el("div","psv-list"); smart.slice(0,20).forEach(x=>{const row=el("div","psv-row"),tm=el("time","psv-time",hm(x.at)),main=el("div","psv-main"),drop=el("div","psv-drop",x.kind==="stock_drop"?"📉":x.kind==="poller_stale"?"⚠️":"🟢");main.append(el("b","",x.title||x.kind),el("div","psv-meta",(x.event||"-")+" · "+(x.message||"")));row.append(tm,main,drop);list.append(row);});al.append(list); }
+    pg.append(al);
     const dl = el("div", "acts"), kq = KEY ? "&key=" + encodeURIComponent(KEY) : "";
     const d1 = el("a", "btn", "⬇ CSV hari ini"); d1.href = "/api/export.csv?range=today" + kq; d1.download = "";
     const d2 = el("a", "btn", "⬇ CSV semua (48 jam)"); d2.href = "/api/export.csv?range=all" + kq; d2.download = "";
