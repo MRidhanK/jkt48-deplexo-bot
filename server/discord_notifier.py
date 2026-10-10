@@ -497,10 +497,14 @@ def speed_stats(key, quota, now):
         "last_so": last_so.get(key),
     }
 
-def log_activity(now, kind, code, sdc, n, dur=None):
-    """Dipanggil di dalam `with lock:` (jangan ambil lock lagi di sini)."""
+def log_activity(now, kind, code, sdc, n, dur=None, member=None):
+    """Dipanggil di dalam `with lock:` (jangan ambil lock lagi di sini).
+    Field member ditambahkan agar leaderboard SO historis tidak bergantung
+    pada lane_state saat ini. Baris lama dengan 6 field tetap didukung.
+    """
     activity.append([round(now, 1), kind, code, sdc, int(n),
-                     None if dur is None else round(dur, 1)])
+                     None if dur is None else round(dur, 1),
+                     str(member or "").strip()])
     cutoff = now - ACTIVITY_KEEP_SECONDS
     while activity and activity[0][0] < cutoff:
         activity.popleft()
@@ -597,7 +601,8 @@ def load_state():
     for r in raw.get("activity") or []:
         try:
             activity.append([float(r[0]), str(r[1]), str(r[2]), str(r[3]),
-                             int(r[4]), None if r[5] is None else float(r[5])])
+                             int(r[4]), None if r[5] is None else float(r[5]),
+                             str(r[6] or "") if len(r) > 6 else ""])
         except (TypeError, ValueError, IndexError):
             pass
     try:
@@ -1652,7 +1657,7 @@ def process_report(code, lanes):
                         duration = elapsed
                         so_after[key] = elapsed
                         last_so[key] = elapsed
-                log_activity(now, "so", code, sdc, 0, duration)
+                log_activity(now, "so", code, sdc, 0, duration, member=name)
                 sold_outs.append(
                     (
                         {
@@ -1703,7 +1708,7 @@ def process_report(code, lanes):
                     is_restock = True
                     delta = quota - prev
             if is_restock and delta > 0:
-                log_activity(now, "in", code, sdc, delta)
+                log_activity(now, "in", code, sdc, delta, member=name)
             # --------------------------------------------------
             # Simpan RESTOCK
             # --------------------------------------------------
@@ -2917,10 +2922,16 @@ def analytics_snapshot(days=7):
     range_events = {}
     duration_samples = []
     duration_by_lane = {}
+    member_so_counts = {}
+    member_so_details = {}
     with lock:
         history_rows = [tuple(r) for r in activity if len(r) >= 6 and r[0] >= range_start]
         alert_rows = list(smart_alerts)[-30:]
-        for ts, kind, code, sdc, n, dur in history_rows:
+        for row in history_rows:
+            ts, kind, code, sdc, n, dur = row[:6]
+            member_name = str(row[6] or "").strip() if len(row) > 6 else ""
+            if not member_name and sdc:
+                member_name = str((lane_state.get((str(code), str(sdc))) or {}).get("member_name") or "").strip()
             day = datetime.fromtimestamp(float(ts), LOCAL_TZ).strftime("%Y-%m-%d")
             d = daily_map.setdefault(day, {"date": day, "restock": 0, "tickets_in": 0,
                                            "tickets_sold": 0, "sold_out": 0,
@@ -2934,6 +2945,18 @@ def analytics_snapshot(days=7):
                 d["tickets_sold"] += max(0, int(n))
             elif kind == "so":
                 d["sold_out"] += 1; ev["sold_out"] += 1
+                if member_name and member_name != "-":
+                    mk = member_name.casefold()
+                    if mk not in member_so_counts:
+                        member_so_counts[mk] = {"member": member_name, "sold_out": 0, "events": {}, "sessions": 0}
+                        member_so_details[mk] = set()
+                    member_so_counts[mk]["sold_out"] += 1
+                    evname = EVENTS.get(code, code)
+                    member_so_counts[mk]["events"][evname] = member_so_counts[mk]["events"].get(evname, 0) + 1
+                    lane_id = (str(code), str(sdc))
+                    if lane_id not in member_so_details[mk]:
+                        member_so_details[mk].add(lane_id)
+                        member_so_counts[mk]["sessions"] = len(member_so_details[mk])
                 if dur is not None:
                     try:
                         val = max(0.0, float(dur)); duration_samples.append(val)
@@ -2968,7 +2991,12 @@ def analytics_snapshot(days=7):
 
     with lock:
         rows = [r for r in activity if r[0] >= start]
-        for ts, kind, code, sdc, n, dur in rows:
+        today_member_so = {}
+        for row in rows:
+            ts, kind, code, sdc, n, dur = row[:6]
+            member_name = str(row[6] or "").strip() if len(row) > 6 else ""
+            if not member_name and sdc:
+                member_name = str((lane_state.get((str(code), str(sdc))) or {}).get("member_name") or "").strip()
             pe = per_event.get(code)
             if pe is None:
                 continue
@@ -2987,6 +3015,13 @@ def analytics_snapshot(days=7):
             elif kind == "so":
                 so += 1
                 pe["sold_out"] += 1
+                if member_name and member_name != "-":
+                    mk = member_name.casefold()
+                    entry = today_member_so.setdefault(mk, {"member": member_name, "sold_out": 0, "events": {}, "sessions": set()})
+                    entry["sold_out"] += 1
+                    ename = EVENTS.get(code, code)
+                    entry["events"][ename] = entry["events"].get(ename, 0) + 1
+                    entry["sessions"].add((str(code), str(sdc)))
                 if dur is not None:
                     durs.append(dur)
                     k = (code, sdc)
@@ -3039,6 +3074,7 @@ def analytics_snapshot(days=7):
         "tracked_since": tracked_since,
         "today": {"restock": restock, "tickets_in": tin,
                   "tickets_sold": sold, "sold_out": so,
+                  "top_so_members": sorted([{"member": x["member"], "sold_out": x["sold_out"], "sessions": len(x["sessions"]), "events": x["events"]} for x in today_member_so.values()], key=lambda x: (-x["sold_out"], -x["sessions"], x["member"].casefold()))[:10],
                   "purchase_events": purchase_events,
                   "purchase_tickets": purchase_tickets,
                   "largest_purchase": largest_purchase},
@@ -3063,6 +3099,7 @@ def analytics_snapshot(days=7):
             "end_date": midnight.strftime("%Y-%m-%d"),
             "daily": [daily_map[k] for k in sorted(daily_map)],
             "events": sorted(range_events.values(), key=lambda x: (-x.get("drop_tickets", 0), -x.get("restock", 0))),
+            "top_so_members": sorted(member_so_counts.values(), key=lambda x: (-x["sold_out"], -x["sessions"], x["member"].casefold()))[:10],
             "so_samples": len(duration_samples),
             "avg_so": (sum(duration_samples) / len(duration_samples)) if duration_samples else None,
             "median_so": (sorted(duration_samples)[len(duration_samples)//2] if len(duration_samples)%2 else ((sorted(duration_samples)[len(duration_samples)//2-1] + sorted(duration_samples)[len(duration_samples)//2]) / 2)) if duration_samples else None,
@@ -3307,14 +3344,16 @@ def export_csv(only_today=False):
     w.writerow(["waktu_lokal", "epoch", "server/mobile-sync.html", "kode_event", "event", "member",
                 "jalur", "sesi", "tanggal_sesi", "jam_mulai", "jumlah", "durasi_detik"])
     with lock:
-        for ts, kind, code, sdc, n, dur in activity:
+        for row in activity:
+            ts, kind, code, sdc, n, dur = row[:6]
+            member_name = str(row[6] or "").strip() if len(row) > 6 else ""
             if ts < since:
                 continue
             v = lane_state.get((code, sdc)) or {}
             w.writerow([
                 datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 int(ts), CSV_KIND.get(kind, kind), code, EVENTS.get(code, code),
-                v.get("member_name") or "", v.get("label") or "",
+                member_name or v.get("member_name") or "", v.get("label") or "",
                 v.get("session_label") or "", v.get("session_date") or "",
                 hhmm(v.get("session_start_time")) if v else "",
                 n, "" if dur is None else dur,

@@ -2843,7 +2843,29 @@
     const topHistBox=el("div","ana-bars"); topHistBox.append(el("h3","","EVENT TERAKTIF DALAM RENTANG INI"));
     if(!topHist.length)topHistBox.append(el("div","empty","Belum ada aktivitas historis yang cukup."));
     else topHist.forEach(x=>{const row=el("div","ana-bar-row"),name=el("div","ana-bar-name",x.name||x.code),track=el("div","ana-bar-track"),fill=el("div","ana-bar-fill"),val=el("div","ana-bar-value",String(x.drop_tickets||x.restock||0));fill.style.width=Math.max(2,Math.min(100,Number(x.drop_tickets||x.restock||0)/Math.max(1,...topHist.map(y=>Number(y.drop_tickets||y.restock||0)))*100))+"%";track.append(fill);row.append(name,track,val);row.title=`${x.restock||0} restock · ${x.drop_tickets||0} tiket berkurang · ${x.sold_out||0} sold out`;topHistBox.append(row);});
-    rangeCard.append(topHistBox); pg.append(rangeCard);
+    rangeCard.append(topHistBox);
+
+    // Member paling banyak SO dalam rentang riwayat yang dipilih.
+    const soMembers = (hist.top_so_members || []).slice(0, 10);
+    const soMemberBox = el("div", "ana-bars");
+    soMemberBox.append(el("h3", "", "MEMBER PALING BANYAK SO · " + analyticsDays + " HARI"));
+    soMemberBox.append(el("div", "note", "Peringkat berdasarkan jumlah sesi/jalur yang teramati berubah menjadi sold out, bukan jumlah tiket yang dibeli oleh member tersebut."));
+    if (!soMembers.length) {
+      soMemberBox.append(el("div", "empty", "Belum ada data SO per member dalam rentang ini. Peringkat mulai terisi saat backend merekam kejadian SO baru."));
+    } else {
+      const soMax = Math.max(1, ...soMembers.map(x => Number(x.sold_out || 0)));
+      soMembers.forEach((x, i) => {
+        const row = el("div", "ana-bar-row"), name = el("div", "ana-bar-name", (i + 1) + ". " + (x.member || "-"));
+        const track = el("div", "ana-bar-track"), fill = el("div", "ana-bar-fill"), val = el("div", "ana-bar-value", String(x.sold_out || 0) + " SO");
+        fill.style.width = Math.max(2, Number(x.sold_out || 0) / soMax * 100) + "%";
+        track.append(fill); row.append(name, track, val);
+        const eventCounts = x.events || {};
+        const topEvent = Object.entries(eventCounts).sort((a,b) => Number(b[1]) - Number(a[1]))[0];
+        row.title = (x.sold_out || 0) + " kejadian SO · " + (x.sessions || 0) + " sesi/jalur teramati" + (topEvent ? " · event terbanyak: " + topEvent[0] + " (" + topEvent[1] + ")" : "");
+        soMemberBox.append(row);
+      });
+    }
+    rangeCard.append(soMemberBox); pg.append(rangeCard);
     if (a.tracked_since && a.tracked_since > a.day_start + 60)
       pg.append(el("div", "note", "Pencatatan baru dimulai pukul " + hm(a.tracked_since) + ", jadi kejadian sebelum jam itu tidak ikut terhitung."));
 
