@@ -146,7 +146,7 @@ PUSH_HOSTS = (
 EVENT_GROUP = {"EX5B99": "JKT", "EX24AE": "JKT", "EXD1A1": "AKB", "EXA6F1": "AKB"}
 GROUP_LABEL = {"JKT": "Poller JKT48", "AKB": "Poller AKB"}
 
-EVENTS = {"EX5B99": "2 Shoot JKT", "EX24AE": "MNG JKT", "EXD1A1" : "2Shoot AKB", "EXA6F1": "MNG AKB"}
+EVENTS = {"EX5B99": "2 Shoot JKT", "EX24AE": "MNG JKT", "EXD1A1" : "2Shoot AKB", "EXA6F1": "MNG AKB", "EX2F12": "VC"}
 
 # Alert jika worker melaporkan error berturut-turut sebanyak ini.
 POLL_FAIL_ALERT = int(os.environ.get("POLL_FAIL_ALERT", "5"))
@@ -857,6 +857,7 @@ EVENT_CHOICES = [
     app_commands.Choice(name="MNG JKT", value="EX24AE"),
     app_commands.Choice(name="2 Shoot AKB", value="EXD1A1"),
     app_commands.Choice(name="MNG AKB", value="EXA6F1"),
+    app_commands.Choice(name="VC", value="EX2F12"),
     app_commands.Choice(name="Semua event", value="*"),
 ]
 
