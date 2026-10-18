@@ -3159,13 +3159,34 @@
 
   // ---- Spending Tracker: transaksi lokal, jadwal dari My Tickets, nominal tidak ditebak.
   const SPEND_KEY = "jr_spending_transactions_v1";
+  let spendServerLoaded = false, spendServerLoading = false, spendSyncStatus = "Belum disinkronkan";
   const spendRead = () => { try { const x=JSON.parse(localStorage.getItem(SPEND_KEY)||"[]"); return Array.isArray(x)?x:[]; } catch { return []; } };
-  const spendWrite = rows => { localStorage.setItem(SPEND_KEY,JSON.stringify(rows)); };
+  const spendWrite = rows => {
+    try { localStorage.setItem(SPEND_KEY,JSON.stringify(rows)); } catch {}
+    if (!spendServerLoaded) { spendSyncStatus = "Tersimpan lokal; menunggu sinkronisasi server"; return; }
+    spendSyncStatus = "Menyimpan ke server…";
+    fetch("/api/spending" + dashQuery(), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"replace",transactions:rows}),cache:"no-store"})
+      .then(async r=>{const j=await r.json();if(!r.ok||!j.ok)throw Error(j.error||("HTTP "+r.status));spendSyncStatus="Tersimpan di server ✓";})
+      .catch(e=>{spendSyncStatus="Gagal sinkron server: "+e.message+" · salinan lokal tetap ada";});
+  };
+  async function loadSpendingServer(){
+    if(spendServerLoaded||spendServerLoading)return;spendServerLoading=true;
+    try{
+      const r=await fetch("/api/spending"+dashQuery(),{cache:"no-store"});const j=await r.json();if(!r.ok||!j.ok)throw Error(j.error||("HTTP "+r.status));
+      const local=spendRead(), server=Array.isArray(j.transactions)?j.transactions:[], ids=new Set(server.map(x=>String(x.id)));
+      const merged=server.concat(local.filter(x=>!ids.has(String(x.id))));
+      try{localStorage.setItem(SPEND_KEY,JSON.stringify(merged));}catch{}
+      spendServerLoaded=true;spendSyncStatus="Tersimpan di server ✓";
+      if(merged.length!==server.length)spendWrite(merged);
+    }catch(e){spendSyncStatus="Server belum tersedia: "+e.message+" · memakai penyimpanan browser";}
+    finally{spendServerLoading=false;if(view==="spending")render();}
+  }
   const rupiah = n => n==null || n==="" || !Number.isFinite(Number(n)) ? "Belum diisi" : "Rp"+Math.round(Number(n)).toLocaleString("id-ID");
   const spendCategories = [["THEATER","Theater"],["VC","Video Call"],["MNG","M&G"],["2SHOT","2-Shot"],["EVENT","Event"],["TICKET","Tiket / Show"],["PRODUCT","Merchandise / Produk"],["POINT","Pembelian Poin"],["OTHER","Lainnya"]];
   function spendGuessCategory(t){const s=[t.category,t.ticket_type,t.ticket_label,t.name,t.session_label].join(" ").toLowerCase();if(/2.?shot/.test(s))return "2SHOT";if(/video.?call|vc/.test(s))return "VC";if(/m.?&.?g|meet.?and.?greet|meet.?greet/.test(s))return "MNG";if(/theater|teater/.test(s))return "THEATER";if(/show|pertunjukan/.test(s))return "TICKET";return "EVENT";}
   function renderSpending(){
     const wrap=el("div","spend-page");
+    if(!spendServerLoaded&&!spendServerLoading) loadSpendingServer();
     let rows=spendRead();
     const known=rows.filter(x=>x.amount!==null&&x.amount!==undefined&&x.amount!==""&&Number.isFinite(Number(x.amount)));
     const total=known.reduce((a,x)=>a+Number(x.amount),0), thisMonth=new Date().toISOString().slice(0,7);
@@ -3190,7 +3211,7 @@
     csvBtn.onclick=()=>file.click();file.onchange=async()=>{const f=file.files?.[0];if(!f)return;const txt=await f.text();const lines=txt.split(/\r?\n/).filter(Boolean);if(lines.length<2){alert("CSV kosong atau tidak memiliki baris data.");return;}const headers=lines.shift().split(",").map(x=>x.trim().toLowerCase());const ix=k=>headers.indexOf(k);let count=0;for(const line of lines){const cols=line.split(",").map(x=>x.trim().replace(/^"|"$/g,""));const get=k=>ix(k)>=0?cols[ix(k)]||"":"";const val=get("amount");rows.push({id:"csv:"+Date.now()+":"+count,date:get("date")||new Date().toISOString().slice(0,10),category:get("category")||"OTHER",member:get("member"),item:get("item")||get("product")||"Transaksi impor",amount:val===""?null:Number(val.replace(/[^0-9.-]/g,"")),qty:Number(get("qty")||1),ref:get("ref"),note:get("note"),source:"csv",created_at:new Date().toISOString()});count++;}spendWrite(rows);alert(`${count} baris CSV diimpor.`);render();};
     const grid=el("div","sgrid");
     const catCard=el("section","card");catCard.append(el("h2","","PENGELUARAN PER KATEGORI"));const max=Math.max(1,...Object.values(byCat));if(!Object.keys(byCat).length)catCard.append(el("div","spend-muted","Belum ada transaksi yang memiliki nominal."));for(const [key,val] of Object.entries(byCat).sort((a,b)=>b[1]-a[1])){const row=el("div");row.append(el("div","",`${(spendCategories.find(x=>x[0]===key)||[key,key])[1]} · ${rupiah(val)}`));const bar=el("div","spend-bar");const i=el("i");i.style.width=(val/max*100)+"%";bar.append(i);row.append(bar);catCard.append(row)}grid.append(catCard);
-    const noteCard=el("section","card");noteCard.append(el("h2","","SUMBER DATA & KELENGKAPAN"),el("div","note","Jadwal Saya menyediakan catatan tiket/sesi dan kode referensi, tetapi tidak selalu menyertakan harga transaksi."),el("div","note","Riwayat pembelian poin dan produk memerlukan endpoint/ekspor transaksi resmi yang benar-benar tersedia. Fitur ini belum mengklaim mengambilnya otomatis; impor CSV atau input manual bisa digunakan sementara."),el("div","spend-muted",`Jadwal tersinkron: ${myTickets?.fetched?"ya":"belum"} · record tiket: ${(myTickets?.tickets||[]).length}`));grid.append(noteCard);wrap.append(grid);
+    const noteCard=el("section","card");noteCard.append(el("h2","","SUMBER DATA & KELENGKAPAN"),el("div","note","Jadwal Saya menyediakan catatan tiket/sesi dan kode referensi, tetapi tidak selalu menyertakan harga transaksi."),el("div","note","Data pengeluaran kini disimpan di server Radar dan tetap punya cache lokal. Riwayat pembelian poin/produk otomatis hanya bisa diaktifkan setelah format atau endpoint transaksi resmi tersedia; tidak ada endpoint transaksi yang bisa dipastikan dari data akun saat ini. Gunakan impor CSV atau input manual untuk transaksi tersebut."),el("div","spend-muted",`Sinkronisasi pengeluaran: ${spendSyncStatus} · Jadwal tersinkron: ${myTickets?.fetched?"ya":"belum"} · record tiket: ${(myTickets?.tickets||[]).length}`));grid.append(noteCard);wrap.append(grid);
     const listCard=el("section","card");listCard.append(el("h2","","RIWAYAT TRANSAKSI"));const toolbar=el("div","spend-actions");const search=el("input");search.type="search";search.placeholder="Cari member, event, produk, referensi…";search.style.flex="1";const filter=el("select");filter.append(new Option("Semua kategori",""));spendCategories.forEach(([v,l])=>filter.append(new Option(l,v)));toolbar.append(search,filter);listCard.append(toolbar);
     const tableWrap=el("div","spend-table-wrap");const table=el("table","spend-table");const thead=el("thead");const tr=el("tr");["Tanggal / kategori","Detail","Qty","Total","Aksi"].forEach(x=>tr.append(el("th","",x)));thead.append(tr);table.append(thead);const tbody=el("tbody");table.append(tbody);tableWrap.append(table);listCard.append(tableWrap);wrap.append(listCard);
     const fill=()=>{tbody.textContent="";const q=search.value.toLowerCase();const visible=rows.filter(x=>(!filter.value||x.category===filter.value)&&[x.date,x.member,x.item,x.ref,x.note,x.category].join(" ").toLowerCase().includes(q)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));if(!visible.length){const tr=el("tr");const td=el("td");td.colSpan=5;td.textContent="Belum ada transaksi yang cocok.";tr.append(td);tbody.append(tr);return;}for(const x of visible){const tr=el("tr"),dateCell=el("td"),detail=el("td"),qtyCell=el("td"),amt=el("td","amount"),act=el("td");dateCell.append(el("b","",x.date||"-"),el("small","",(spendCategories.find(c=>c[0]===x.category)||[x.category,x.category])[1]));detail.append(el("b","",x.item||"-"),el("small","",[x.member,x.ref,x.note].filter(Boolean).join(" · ")));qtyCell.textContent=String(x.qty||1);amt.textContent=rupiah(x.amount);const edit=el("button","btn","Edit");edit.onclick=()=>{const val=prompt("Masukkan total harga transaksi (angka rupiah), kosongkan untuk belum diketahui:",x.amount==null?"":String(x.amount));if(val===null)return;x.amount=val.trim()===""?null:Number(val.replace(/[^0-9.-]/g,""));if(x.amount!==null&&(!Number.isFinite(x.amount)||x.amount<0)){alert("Nominal tidak valid.");return;}spendWrite(rows);render();};const del=el("button","spend-del","Hapus");del.onclick=()=>{if(!confirm("Hapus catatan transaksi ini?"))return;spendWrite(rows.filter(y=>y.id!==x.id));render();};act.append(edit,del);tr.append(dateCell,detail,qtyCell,amt,act);tbody.append(tr)}};search.oninput=fill;filter.onchange=fill;fill();
