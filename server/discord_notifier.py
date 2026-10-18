@@ -257,6 +257,37 @@ SPENDING_MAX_ROWS = int(os.environ.get("SPENDING_MAX_ROWS", "10000"))
 spending_lock = threading.RLock()
 spending_transactions = []
 
+SPENDING_DEFAULT_UNIT_PRICES = {"MNG": 60000, "2SHOT": 200000, "THEATER": 200000, "VC": 120000}
+SPENDING_EVENT_CATEGORY_BY_CODE = {
+    "EX24AE": "MNG", "EX5B99": "2SHOT", "EXD1A1": "2SHOT",
+    "EXA6F1": "MNG", "EX2F12": "VC",
+}
+
+def _spending_category(category, item="", ref="", row=None):
+    """Infer spending category from Radar My Tickets fields, event codes, or imported history text."""
+    row = row if isinstance(row, dict) else {}
+    cat = str(category or "").strip().upper().replace(" ", "")
+    parts = [str(row.get(k) or "") for k in (
+        "category", "ticket_type", "ticket_label", "name", "session_label",
+        "item", "type", "event", "raw_text", "description", "title"
+    )]
+    text = " ".join(parts + [str(item or ""), str(ref or "")]).lower()
+    code = (str(ref or "") + " " + " ".join(parts)).upper()
+    for known_code, known_category in SPENDING_EVENT_CATEGORY_BY_CODE.items():
+        if known_code in code:
+            return known_category
+    if cat in {"SHOW", "THEATRE", "THEATER", "TEATER"} or re.search(r"theater|teater|pertunjukan", text):
+        return "THEATER"
+    if cat in {"MNG", "M&G", "MEETANDGREET", "MEET&GREET"} or re.search(r"meet\s*(?:and|&)\s*greet|\bm\s*&\s*g\b|\bmng\b", text):
+        return "MNG"
+    if cat in {"2SHOT", "2-SHOT", "2_SHOT"} or re.search(r"2\s*-?\s*shot|2shot", text):
+        return "2SHOT"
+    if cat == "VC" or re.search(r"video\s*call|virtual\s*call|\bvc\b", text):
+        return "VC"
+    if cat in {"EVENT", "TICKET", "PRODUCT", "POINT", "OTHER"}:
+        return cat
+    return "THEATER" if cat == "SHOW" else "OTHER"
+
 def _clean_spending_transaction(row):
     if not isinstance(row, dict):
         raise ValueError("Setiap transaksi harus berupa object.")
@@ -269,12 +300,21 @@ def _clean_spending_transaction(row):
             datetime.strptime(date_value, "%Y-%m-%d")
         except ValueError:
             raise ValueError("Tanggal transaksi harus YYYY-MM-DD.")
-    category = str(row.get("category") or "OTHER").strip().upper()[:24]
+    item = str(row.get("item") or row.get("ticket_label") or row.get("name") or "Transaksi JKT48").strip()[:300]
+    ref = str(row.get("ref") or row.get("reference_code") or row.get("order_id") or "").strip()[:200]
+    category = _spending_category(row.get("category") or row.get("ticket_type"), item, ref, row)
     allowed_categories = {"THEATER", "VC", "MNG", "2SHOT", "EVENT", "TICKET", "PRODUCT", "POINT", "OTHER"}
     if category not in allowed_categories:
         category = "OTHER"
+    try:
+        qty = max(1, min(100000, int(row.get("qty") or row.get("quantity") or row.get("bought_count") or 1)))
+    except (TypeError, ValueError, OverflowError):
+        qty = 1
     amount = row.get("amount")
-    if amount in (None, ""):
+    auto_price = amount in (None, "") and category in SPENDING_DEFAULT_UNIT_PRICES
+    if auto_price:
+        amount = SPENDING_DEFAULT_UNIT_PRICES[category] * qty
+    elif amount in (None, ""):
         amount = None
     else:
         try:
@@ -284,17 +324,16 @@ def _clean_spending_transaction(row):
             amount = int(amount)
         except (TypeError, ValueError, OverflowError):
             raise ValueError("Nominal harus angka rupiah antara 0 sampai 1 miliar.")
-    try:
-        qty = max(1, min(100000, int(row.get("qty") or 1)))
-    except (TypeError, ValueError, OverflowError):
-        qty = 1
+    note = str(row.get("note") or "").strip()
+    if auto_price:
+        price_note = f"Estimasi otomatis backend Rp{SPENDING_DEFAULT_UNIT_PRICES[category]:,}/tiket × {qty}; sesuaikan jika harga berbeda.".replace(",", ".")
+        if "Estimasi otomatis backend" not in note:
+            note = (note + " · " if note else "") + price_note
     return {
         "id": tx_id, "date": date_value, "category": category,
-        "member": str(row.get("member") or "").strip()[:200],
-        "item": str(row.get("item") or "Transaksi JKT48").strip()[:300],
-        "amount": amount, "qty": qty,
-        "ref": str(row.get("ref") or "").strip()[:200],
-        "note": str(row.get("note") or "").strip()[:1000],
+        "member": str(row.get("member") or row.get("member_name") or "").strip()[:200],
+        "item": item, "amount": amount, "qty": qty, "ref": ref,
+        "note": note[:1000],
         "source": str(row.get("source") or "manual").strip()[:40],
         "created_at": str(row.get("created_at") or datetime.now(timezone.utc).isoformat())[:50],
         "updated_at": datetime.now(timezone.utc).isoformat(),
