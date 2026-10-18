@@ -251,160 +251,6 @@ else:
     SUBS_FILE = Path(os.environ.get("SUBS_FILE") or SEED_FILE)
 STATE_FILE = Path(os.environ.get("STATE_FILE") or SUBS_FILE.with_name("state.json"))
 
-# Spending tracker: persistent user-entered/imported transactions.
-SPENDING_FILE = Path(os.environ.get("SPENDING_FILE") or SUBS_FILE.with_name("spending_transactions.json"))
-SPENDING_MAX_ROWS = int(os.environ.get("SPENDING_MAX_ROWS", "10000"))
-spending_lock = threading.RLock()
-spending_transactions = []
-
-SPENDING_DEFAULT_UNIT_PRICES = {
-    "MNG": 60000,
-    "2SHOT": 200000,
-    "THEATER": 200000,
-    "VC": 120000,
-}
-SPENDING_EVENT_CATEGORY_BY_CODE = {
-    "EX24AE": "MNG", "EX5B99": "2SHOT", "EXD1A1": "2SHOT",
-    "EXA6F1": "MNG", "EX2F12": "VC",
-}
-
-
-def _spending_category(category, item="", ref="", row=None):
-    """Normalize JKT48 ticket categories for the spending tracker."""
-    row = row if isinstance(row, dict) else {}
-
-    parts = [
-        str(row.get(k) or "")
-        for k in (
-            "category", "ticket_type", "ticket_label", "name",
-            "session_label", "item", "type", "event", "raw_text",
-            "description", "title", "event_name"
-        )
-    ]
-
-    text = " ".join(
-        [str(category or ""), *parts, str(item or ""), str(ref or "")]
-    ).lower()
-
-    code = (str(ref or "") + " " + " ".join(parts)).upper()
-
-    # Kode tiket yang diketahui: utamakan kode resmi.
-    for known_code, known_category in SPENDING_EVENT_CATEGORY_BY_CODE.items():
-        if known_code in code:
-            return known_category
-
-    # 2Shot harus diperiksa sebelum M&G karena nama event
-    # 2Shot juga mengandung frasa Meet and Greet.
-    if re.search(r"\b2\s*-?\s*shot\b|\b2shot\b", text):
-        return "2SHOT"
-
-    # SHOW memakai harga default THEATER.
-    cat = str(category or row.get("ticket_type") or "").strip().upper()
-    if (
-        cat in {"SHOW", "THEATER", "THEATRE", "TEATER"}
-        or re.search(r"pertaruhan cinta|pajama drive|theater|theatre|teater", text)
-    ):
-        return "THEATER"
-
-    if (
-        cat in {"MNG", "M&G", "MEETANDGREET", "MEET&GREET"}
-        or re.search(r"meet\s*(?:and|&)\s*greet|\bm\s*&\s*g\b|\bmng\b", text)
-    ):
-        return "MNG"
-
-    if cat == "VC" or re.search(r"video\s*call|virtual\s*call|\bvc\b", text):
-        return "VC"
-
-    if cat in {"EVENT", "TICKET", "PRODUCT", "POINT", "OTHER"}:
-        return cat
-
-    return "OTHER"
-
-
-def _clean_spending_transaction(row):
-    if not isinstance(row, dict):
-        raise ValueError("Setiap transaksi harus berupa object.")
-    tx_id = str(row.get("id") or "").strip()[:160]
-    if not tx_id:
-        tx_id = hashlib.sha256(json.dumps(row, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:32]
-    date_value = str(row.get("date") or "").strip()[:10]
-    if date_value:
-        try:
-            datetime.strptime(date_value, "%Y-%m-%d")
-        except ValueError:
-            raise ValueError("Tanggal transaksi harus YYYY-MM-DD.")
-    item = str(row.get("item") or row.get("ticket_label") or row.get("name") or "Transaksi JKT48").strip()[:300]
-    ref = str(row.get("ref") or row.get("reference_code") or row.get("order_id") or "").strip()[:200]
-    category = _spending_category(row.get("category") or row.get("ticket_type"), item, ref, row)
-    allowed_categories = {"THEATER", "VC", "MNG", "2SHOT", "EVENT", "TICKET", "PRODUCT", "POINT", "OTHER"}
-    if category not in allowed_categories:
-        category = "OTHER"
-    try:
-        qty = max(1, min(100000, int(row.get("qty") or row.get("quantity") or row.get("bought_count") or 1)))
-    except (TypeError, ValueError, OverflowError):
-        qty = 1
-    amount = row.get("amount")
-    auto_price = amount in (None, "") and category in SPENDING_DEFAULT_UNIT_PRICES
-    if auto_price:
-        amount = SPENDING_DEFAULT_UNIT_PRICES[category] * qty
-    elif amount in (None, ""):
-        amount = None
-    else:
-        try:
-            amount = float(amount)
-            if not (0 <= amount <= 1_000_000_000):
-                raise ValueError
-            amount = int(amount)
-        except (TypeError, ValueError, OverflowError):
-            raise ValueError("Nominal harus angka rupiah antara 0 sampai 1 miliar.")
-    note = str(row.get("note") or "").strip()
-    if auto_price:
-        price_note = f"Estimasi otomatis backend Rp{SPENDING_DEFAULT_UNIT_PRICES[category]:,}/tiket × {qty}; sesuaikan jika harga berbeda.".replace(",", ".")
-        if "Estimasi otomatis backend" not in note:
-            note = (note + " · " if note else "") + price_note
-    return {
-        "id": tx_id, "date": date_value, "category": category,
-        "member": str(row.get("member") or row.get("member_name") or "").strip()[:200],
-        "item": item, "amount": amount, "qty": qty, "ref": ref,
-        "note": note[:1000],
-        "source": str(row.get("source") or "manual").strip()[:40],
-        "created_at": str(row.get("created_at") or datetime.now(timezone.utc).isoformat())[:50],
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-def load_spending_transactions():
-    global spending_transactions
-    try:
-        raw = json.loads(SPENDING_FILE.read_text(encoding="utf-8"))
-        rows = raw.get("transactions", []) if isinstance(raw, dict) else []
-        clean = [_clean_spending_transaction(x) for x in rows[:SPENDING_MAX_ROWS] if isinstance(x, dict)]
-    except FileNotFoundError:
-        clean = []
-    except Exception as exc:
-        print(f"[SPENDING] Gagal membaca file transaksi: {type(exc).__name__}: {exc}")
-        clean = []
-    with spending_lock:
-        spending_transactions = clean
-
-def save_spending_transactions(rows):
-    global spending_transactions
-    clean = [_clean_spending_transaction(x) for x in rows if isinstance(x, dict)]
-    if len(clean) > SPENDING_MAX_ROWS:
-        raise ValueError(f"Maksimum {SPENDING_MAX_ROWS} transaksi.")
-    # Last duplicate ID wins, while preserving deterministic ordering.
-    by_id = {}
-    for row in clean:
-        by_id[row["id"]] = row
-    clean = list(by_id.values())
-    SPENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temp = SPENDING_FILE.with_suffix(".tmp")
-    temp.write_text(json.dumps({"version": 1, "updated_at": datetime.now(timezone.utc).isoformat(), "transactions": clean}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    temp.replace(SPENDING_FILE)
-    with spending_lock:
-        spending_transactions = clean
-    return clean
-
-
 DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "").strip()
 
 
@@ -4540,8 +4386,6 @@ def _write_user_preferences(user_id, bundle):
 
 
 # ------------------------------------------------------------------ HTTP
-load_spending_transactions()
-
 class Handler(BaseHTTPRequestHandler):
     def send_response(self, code, message=None):
         count_request(code)
@@ -4795,19 +4639,6 @@ class Handler(BaseHTTPRequestHandler):
             if not _dashboard_key_valid(given):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
 
-        if url.path == "/api/spending":
-            if not self._dash_ok(url):
-                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            with spending_lock:
-                rows = [dict(x) for x in spending_transactions]
-            known = [x for x in rows if x.get("amount") is not None]
-            return self.send_json(200, {
-                "ok": True, "transactions": rows,
-                "count": len(rows), "priced_count": len(known),
-                "total_amount": sum(int(x["amount"]) for x in known),
-                "updated_at": max((x.get("updated_at", "") for x in rows), default="")
-            })
-
         if url.path == "/api/jkt48/account/status":
             if not self._dash_ok(url):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
@@ -4953,49 +4784,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         global my_tickets_cache, my_tickets_fetching, mobile_sync_last_at, mobile_sync_success_count
         url0 = urlparse(self.path)
-        if url0.path == "/api/spending":
-            if not self._dash_ok(url0):
-                return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
-            try:
-                length = int(self.headers.get("Content-Length", "0") or 0)
-            except (TypeError, ValueError):
-                length = 0
-            if length <= 0 or length > 2_000_000:
-                return self.send_json(413, {"ok": False, "error": "Payload transaksi kosong atau melebihi 2 MB."})
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("Payload harus object JSON.")
-                action = str(payload.get("action") or "replace")
-                if action == "replace":
-                    rows = payload.get("transactions")
-                    if not isinstance(rows, list):
-                        raise ValueError("transactions harus berupa array.")
-                    saved = save_spending_transactions(rows)
-                elif action == "upsert":
-                    row = payload.get("transaction")
-                    if not isinstance(row, dict):
-                        raise ValueError("transaction harus berupa object.")
-                    with spending_lock:
-                        existing = [dict(x) for x in spending_transactions]
-                    tx = _clean_spending_transaction(row)
-                    existing = [x for x in existing if x.get("id") != tx["id"]]
-                    existing.append(tx)
-                    saved = save_spending_transactions(existing)
-                elif action == "delete":
-                    tx_id = str(payload.get("id") or "")
-                    with spending_lock:
-                        existing = [dict(x) for x in spending_transactions if x.get("id") != tx_id]
-                    saved = save_spending_transactions(existing)
-                else:
-                    raise ValueError("Action tidak dikenal.")
-                known = [x for x in saved if x.get("amount") is not None]
-                return self.send_json(200, {"ok": True, "transactions": saved, "count": len(saved), "priced_count": len(known), "total_amount": sum(int(x["amount"]) for x in known)})
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                return self.send_json(400, {"ok": False, "error": str(exc)[:250]})
-            except OSError as exc:
-                return self.send_json(500, {"ok": False, "error": "Gagal menyimpan transaksi ke disk: " + str(exc)[:180]})
-
         if url0.path == "/api/smart-alert-settings":
             if not self._dash_ok(url0):
                 return self.send_json(401, {"ok": False, "error": "Key dashboard salah."})
