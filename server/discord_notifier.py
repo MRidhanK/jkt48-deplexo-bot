@@ -257,36 +257,69 @@ SPENDING_MAX_ROWS = int(os.environ.get("SPENDING_MAX_ROWS", "10000"))
 spending_lock = threading.RLock()
 spending_transactions = []
 
-SPENDING_DEFAULT_UNIT_PRICES = {"MNG": 60000, "2SHOT": 200000, "THEATER": 200000, "SHOW": 200000, "VC": 120000}
+SPENDING_DEFAULT_UNIT_PRICES = {
+    "MNG": 60000,
+    "2SHOT": 200000,
+    "THEATER": 200000,
+    "VC": 120000,
+}
 SPENDING_EVENT_CATEGORY_BY_CODE = {
     "EX24AE": "MNG", "EX5B99": "2SHOT", "EXD1A1": "2SHOT",
     "EXA6F1": "MNG", "EX2F12": "VC",
 }
 
+
 def _spending_category(category, item="", ref="", row=None):
-    """Infer spending category from Radar My Tickets fields, event codes, or imported history text."""
+    """Normalize JKT48 ticket categories for the spending tracker."""
     row = row if isinstance(row, dict) else {}
-    cat = str(category or "").strip().upper().replace(" ", "")
-    parts = [str(row.get(k) or "") for k in (
-        "category", "ticket_type", "ticket_label", "name", "session_label",
-        "item", "type", "event", "raw_text", "description", "title"
-    )]
-    text = " ".join(parts + [str(item or ""), str(ref or "")]).lower()
+
+    parts = [
+        str(row.get(k) or "")
+        for k in (
+            "category", "ticket_type", "ticket_label", "name",
+            "session_label", "item", "type", "event", "raw_text",
+            "description", "title", "event_name"
+        )
+    ]
+
+    text = " ".join(
+        [str(category or ""), *parts, str(item or ""), str(ref or "")]
+    ).lower()
+
     code = (str(ref or "") + " " + " ".join(parts)).upper()
+
+    # Kode tiket yang diketahui: utamakan kode resmi.
     for known_code, known_category in SPENDING_EVENT_CATEGORY_BY_CODE.items():
         if known_code in code:
             return known_category
-    if cat in {"SHOW", "THEATRE", "THEATER", "TEATER"} or re.search(r"theater|teater|pertunjukan", text):
-        return "THEATER"
-    if cat in {"MNG", "M&G", "MEETANDGREET", "MEET&GREET"} or re.search(r"meet\s*(?:and|&)\s*greet|\bm\s*&\s*g\b|\bmng\b", text):
-        return "MNG"
-    if cat in {"2SHOT", "2-SHOT", "2_SHOT"} or re.search(r"2\s*-?\s*shot|2shot", text):
+
+    # 2Shot harus diperiksa sebelum M&G karena nama event
+    # 2Shot juga mengandung frasa Meet and Greet.
+    if re.search(r"\b2\s*-?\s*shot\b|\b2shot\b", text):
         return "2SHOT"
+
+    # SHOW memakai harga default THEATER.
+    cat = str(category or row.get("ticket_type") or "").strip().upper()
+    if (
+        cat in {"SHOW", "THEATER", "THEATRE", "TEATER"}
+        or re.search(r"pertaruhan cinta|pajama drive|theater|theatre|teater", text)
+    ):
+        return "THEATER"
+
+    if (
+        cat in {"MNG", "M&G", "MEETANDGREET", "MEET&GREET"}
+        or re.search(r"meet\s*(?:and|&)\s*greet|\bm\s*&\s*g\b|\bmng\b", text)
+    ):
+        return "MNG"
+
     if cat == "VC" or re.search(r"video\s*call|virtual\s*call|\bvc\b", text):
         return "VC"
+
     if cat in {"EVENT", "TICKET", "PRODUCT", "POINT", "OTHER"}:
         return cat
-    return "THEATER" if cat == "SHOW" else "OTHER"
+
+    return "OTHER"
+
 
 def _clean_spending_transaction(row):
     if not isinstance(row, dict):
