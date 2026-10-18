@@ -1413,6 +1413,20 @@
     .my-ticket-member-top{align-items:flex-start;flex-direction:column;gap:4px}
     .my-ticket-member-lane{max-width:100%;overflow:hidden;text-overflow:ellipsis}
   }
+
+  /* ===== JKT48 Spending Tracker ===== */
+  .spend-page{display:grid;gap:12px;grid-column:1/-1;min-width:0}
+  .spend-hero{background:linear-gradient(135deg,rgba(255,23,99,.14),rgba(108,140,255,.08));border:1px solid var(--line);border-radius:16px;padding:20px}
+  .spend-hero .eyebrow{font-size:11px;letter-spacing:.16em;color:var(--acc);font-weight:800}
+  .spend-total{font-size:clamp(26px,4vw,42px);font-weight:900;letter-spacing:-.04em;margin:6px 0}
+  .spend-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .spend-kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+  .spend-kpi b{display:block;font-size:18px;overflow-wrap:anywhere}.spend-kpi span{color:var(--mut);font-size:12px}
+  .spend-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .spend-form input,.spend-form select{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--text);font:inherit}
+  .spend-form .wide{grid-column:span 2}.spend-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .spend-table-wrap{overflow:auto}.spend-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}.spend-table th,.spend-table td{padding:9px 8px;border-top:1px solid var(--line);text-align:left;vertical-align:top}.spend-table th{font-size:12px;color:var(--mut);white-space:nowrap}.spend-table td.amount{text-align:right;white-space:nowrap;font-weight:800}.spend-muted{color:var(--mut);font-size:12px}.spend-bar{height:7px;background:var(--soft);border-radius:99px;overflow:hidden;margin:6px 0 10px}.spend-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),#ff6b9b);border-radius:99px}.spend-del{border:1px solid var(--line);background:transparent;color:var(--no);border-radius:7px;padding:4px 8px;cursor:pointer}
+  @media(max-width:760px){.spend-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.spend-form{grid-template-columns:repeat(2,minmax(0,1fr))}.spend-form .wide{grid-column:span 2}}
   </style>
   </head>
   <body>
@@ -1777,7 +1791,7 @@
   let unseen = 0, wl = null;
   const flashAt = new Map();            // "EVENT|member" / "EVENT|sdc" -> waktu restock terdeteksi
   const isFlash = k => Date.now() - (flashAt.get(k) || 0) < 2500;
-  const VIEWS = ["cards", "heat", "analytics", "status", "tickets"];
+  const VIEWS = ["cards", "heat", "analytics", "status", "tickets", "spending"];
   let view = store.get("view", "cards"); if (!VIEWS.includes(view)) view = "cards";
   let ana = null, sysd = null, extraErr = "";
   let analyticsDays = 7;
@@ -2173,10 +2187,10 @@
   // ---- ambil data tab Analytics / Status / My Tickets
   async function loadExtra() {
     const v = view;
-    if (v === "tickets") {
+    if (v === "tickets" || v === "spending") {
       loadMyTicketsFromLocalCache();
       refreshJkt48AccountStatus(true);
-      pullMyTicketsCache().then(x=>{if(x==="changed"&&view==="tickets")render();});
+      pullMyTicketsCache().then(x=>{if(x==="changed"&&(view==="tickets"||view==="spending"))render();});
       return;
     }
     if (v !== "analytics" && v !== "status") return;
@@ -3142,6 +3156,69 @@
     return pg;
   }
 
+
+  // ---- Spending Tracker: transaksi lokal, jadwal dari My Tickets, nominal tidak ditebak.
+  const SPEND_KEY = "jr_spending_transactions_v1";
+  let spendServerLoaded = false, spendServerLoading = false, spendSyncStatus = "Belum disinkronkan";
+  const spendRead = () => { try { const x=JSON.parse(localStorage.getItem(SPEND_KEY)||"[]"); return Array.isArray(x)?x:[]; } catch { return []; } };
+  const spendWrite = rows => {
+    try { localStorage.setItem(SPEND_KEY,JSON.stringify(rows)); } catch {}
+    if (!spendServerLoaded) { spendSyncStatus = "Tersimpan lokal; menunggu sinkronisasi server"; return; }
+    spendSyncStatus = "Menyimpan ke server…";
+    fetch("/api/spending" + dashQuery(), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"replace",transactions:rows}),cache:"no-store"})
+      .then(async r=>{const j=await r.json();if(!r.ok||!j.ok)throw Error(j.error||("HTTP "+r.status));spendSyncStatus="Tersimpan di server ✓";})
+      .catch(e=>{spendSyncStatus="Gagal sinkron server: "+e.message+" · salinan lokal tetap ada";});
+  };
+  async function loadSpendingServer(){
+    if(spendServerLoaded||spendServerLoading)return;spendServerLoading=true;
+    try{
+      const r=await fetch("/api/spending"+dashQuery(),{cache:"no-store"});const j=await r.json();if(!r.ok||!j.ok)throw Error(j.error||("HTTP "+r.status));
+      const local=spendRead(), server=Array.isArray(j.transactions)?j.transactions:[], ids=new Set(server.map(x=>String(x.id)));
+      const merged=server.concat(local.filter(x=>!ids.has(String(x.id))));
+      try{localStorage.setItem(SPEND_KEY,JSON.stringify(merged));}catch{}
+      spendServerLoaded=true;spendSyncStatus="Tersimpan di server ✓";
+      if(merged.length!==server.length)spendWrite(merged);
+    }catch(e){spendSyncStatus="Server belum tersedia: "+e.message+" · memakai penyimpanan browser";}
+    finally{spendServerLoading=false;if(view==="spending")render();}
+  }
+  const rupiah = n => n==null || n==="" || !Number.isFinite(Number(n)) ? "Belum diisi" : "Rp"+Math.round(Number(n)).toLocaleString("id-ID");
+  const spendCategories = [["THEATER","Theater"],["VC","Video Call"],["MNG","M&G"],["2SHOT","2-Shot"],["EVENT","Event"],["TICKET","Tiket / Show"],["PRODUCT","Merchandise / Produk"],["POINT","Pembelian Poin"],["OTHER","Lainnya"]];
+  function spendGuessCategory(t){const s=[t.category,t.ticket_type,t.ticket_label,t.name,t.session_label].join(" ").toLowerCase();if(/2.?shot/.test(s))return "2SHOT";if(/video.?call|vc/.test(s))return "VC";if(/m.?&.?g|meet.?and.?greet|meet.?greet/.test(s))return "MNG";if(/theater|teater/.test(s))return "THEATER";if(/show|pertunjukan/.test(s))return "TICKET";return "EVENT";}
+  function renderSpending(){
+    const wrap=el("div","spend-page");
+    if(!spendServerLoaded&&!spendServerLoading) loadSpendingServer();
+    let rows=spendRead();
+    const known=rows.filter(x=>x.amount!==null&&x.amount!==undefined&&x.amount!==""&&Number.isFinite(Number(x.amount)));
+    const total=known.reduce((a,x)=>a+Number(x.amount),0), thisMonth=new Date().toISOString().slice(0,7);
+    const monthRows=known.filter(x=>String(x.date||"").slice(0,7)===thisMonth);
+    const byCat={};for(const x of known)byCat[x.category]=(byCat[x.category]||0)+Number(x.amount);
+    const hero=el("section","spend-hero");hero.append(el("div","eyebrow","JKT48 SPENDING TRACKER"),el("div","spend-total",rupiah(total)),el("div","spend-muted",`${known.length} transaksi bernominal · ${rows.length-known.length} transaksi belum ada harga`),el("div","spend-muted","Nominal hanya dihitung jika kamu mengisi harga; sistem tidak mengarang harga tiket atau produk."));wrap.append(hero);
+    const kpis=el("div","spend-grid");[[rupiah(monthRows.reduce((a,x)=>a+Number(x.amount),0)),"Pengeluaran bulan ini"],[known.length,"Transaksi berharga"],[rows.length,"Total catatan"],[Object.keys(byCat).length,"Kategori aktif"]].forEach(([v,l])=>{const c=el("div","spend-kpi");c.append(el("b","",String(v)),el("span","",l));kpis.append(c)});wrap.append(kpis);
+    const formCard=el("section","card");formCard.append(el("h2","","＋ CATAT PENGELUARAN"),el("div","spend-muted","Catat Theater, VC, M&G, 2-Shot, event, produk, atau pembelian poin. Data disimpan di browser ini."));
+    const form=el("form","spend-form");
+    const date=el("input");date.type="date";date.name="date";date.value=new Date().toISOString().slice(0,10);date.required=true;
+    const cat=el("select");cat.name="category";spendCategories.forEach(([v,l])=>{const o=el("option");o.value=v;o.textContent=l;cat.append(o)});
+    const member=el("input");member.name="member";member.placeholder="Member / nama event";
+    const item=el("input");item.name="item";item.placeholder="Detail tiket / produk";item.required=true;
+    const amount=el("input");amount.name="amount";amount.type="number";amount.min="0";amount.step="1";amount.placeholder="Total harga (Rp)";
+    const qty=el("input");qty.name="qty";qty.type="number";qty.min="1";qty.step="1";qty.value="1";qty.placeholder="Jumlah";
+    const ref=el("input");ref.name="ref";ref.placeholder="Kode transaksi / referensi";
+    const note=el("input");note.name="note";note.placeholder="Catatan / status pembayaran";note.className="wide";
+    [date,cat,member,item,amount,qty,ref,note].forEach(x=>form.append(x));
+    const actions=el("div","spend-actions");const save=el("button","btn buyp","Simpan transaksi");save.type="submit";const importBtn=el("button","btn","Impor sesi dari Jadwal Saya");importBtn.type="button";const csvBtn=el("button","btn","Impor CSV / JSON Akun");csvBtn.type="button";const file=el("input");file.type="file";file.accept=".csv,.json,text/csv,application/json";file.hidden=true;actions.append(save,importBtn,csvBtn,file);formCard.append(form,actions);wrap.append(formCard);
+    form.onsubmit=e=>{e.preventDefault();const fd=new FormData(form);const raw=fd.get("amount");const tx={id:crypto.randomUUID?crypto.randomUUID():String(Date.now()),date:fd.get("date"),category:fd.get("category"),member:String(fd.get("member")||"").trim(),item:String(fd.get("item")||"").trim(),amount:raw===""?null:Number(raw),qty:Math.max(1,Number(fd.get("qty")||1)),ref:String(fd.get("ref")||"").trim(),note:String(fd.get("note")||"").trim(),source:"manual",created_at:new Date().toISOString()};rows.push(tx);spendWrite(rows);render();};
+    importBtn.onclick=()=>{const tickets=myTickets?.tickets||[];if(!tickets.length){alert("Data Jadwal Saya belum tersedia. Buka tab Jadwal Saya dan sinkronkan akun JKT48 dulu.");return;}let added=0;for(const t of tickets){const refCode=String(t.reference_code||"");const itemName=String(t.ticket_label||t.name||"Tiket JKT48");const id="ticket:"+(refCode||[t.date,itemName,t.member_name].join("|"));if(rows.some(x=>x.id===id))continue;rows.push({id,date:String(t.date||t.expired_date||new Date().toISOString().slice(0,10)).slice(0,10),category:spendGuessCategory(t),member:String(t.member_name||""),item:itemName,amount:null,qty:Number(t.bought_count||1),ref:refCode,note:"Diimpor dari Jadwal Saya; isi harga pembelian untuk menghitung pengeluaran.",source:"my-tickets",created_at:new Date().toISOString()});added++;}spendWrite(rows);alert(`${added} catatan sesi ditambahkan. Nominal belum tersedia dari My Tickets, jadi silakan isi harga transaksi.`);render();};
+    csvBtn.onclick=()=>file.click();file.onchange=async()=>{const f=file.files?.[0];if(!f)return;const txt=await f.text();let count=0;const makeTx=(o,i)=>{const rawDate=String(o.date||o.tanggal||o.created_at||o.createdAt||"");const dm=rawDate.match(/(20\d{2})[-\/](\d{1,2})[-\/](\d{1,2})/);const date=dm?`${dm[1]}-${String(dm[2]).padStart(2,"0")}-${String(dm[3]).padStart(2,"0")}`:new Date().toISOString().slice(0,10);const item=String(o.item||o.product||o.product_name||o.name||o.detail||o.description||o.title||o.raw_text||"Riwayat akun JKT48");const textBlob=(item+" "+String(o.category||"")+" "+String(o.type||"")).toLowerCase();let category=String(o.category||o.type||"").toUpperCase();if(!spendCategories.some(c=>c[0]===category)){category=/point|poin|top.?up|top up/.test(textBlob)?"POINT":/2.?shot/.test(textBlob)?"2SHOT":/video.?call|\bvc\b/.test(textBlob)?"VC":/meet.?and.?greet|\bmng\b/.test(textBlob)?"MNG":/theater|teater/.test(textBlob)?"THEATER":/merch|product|produk|goods/.test(textBlob)?"PRODUCT":/event|festival/.test(textBlob)?"EVENT":/ticket|tiket|show/.test(textBlob)?"TICKET":"OTHER";}const av=o.amount??o.total_amount??o.total??o.price??o.nominal??null;let amount=null;if(av!==null&&av!==""){const n=typeof av==="number"?av:Number(String(av).replace(/[^0-9-]/g,""));if(Number.isFinite(n)&&n>=0)amount=n;}const id=String(o.id||o.ref||o.reference||o.reference_code||o.order_id||`import:${Date.now()}:${i}`);return {id:"import:"+id,date,category,member:String(o.member||o.member_name||""),item,amount,qty:Math.max(1,Number(o.qty||o.quantity||o.bought_count||1)),ref:String(o.ref||o.reference||o.reference_code||o.order_id||""),note:String(o.note||o.status||o.payment_status||o.raw_text||"Diimpor dari riwayat akun; periksa nominal sebelum mengandalkan total."),source:"account-import",created_at:new Date().toISOString()};};if(/\.json$/i.test(f.name)){let data;try{data=JSON.parse(txt)}catch(e){alert("File JSON tidak valid.");return;}let list=Array.isArray(data)?data:(data.transactions||data.rows||data.records||[]);if(!Array.isArray(list)||!list.length){alert("JSON tidak berisi transaksi/rows/records. Gunakan exporter pada halaman riwayat akun JKT48.");return;}for(let i=0;i<list.length;i++){const tx=makeTx(list[i],i);if(!rows.some(x=>x.id===tx.id)) {rows.push(tx);count++;}}}else{const parseCSV=line=>{const out=[];let cur="",q=false;for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'&&line[i+1]==='"'&&q){cur+='"';i++;}else if(c==='"')q=!q;else if(c===','&&!q){out.push(cur);cur="";}else cur+=c;}out.push(cur);return out;};const lines=txt.split(/\r?\n/).filter(Boolean);if(lines.length<2){alert("CSV kosong atau tidak memiliki baris data.");return;}const headers=parseCSV(lines.shift()).map(x=>x.trim().toLowerCase());for(const line of lines){const cols=parseCSV(line);const o={};headers.forEach((h,i)=>o[h]=cols[i]||"");const tx=makeTx(o,count);if(!rows.some(x=>x.id===tx.id)){rows.push(tx);count++;}}}spendWrite(rows);file.value="";alert(`${count} baris diimpor. Periksa nominal dan kategori sebelum memakai total sebagai angka final.`);render();};
+    const grid=el("div","sgrid");
+    const catCard=el("section","card");catCard.append(el("h2","","PENGELUARAN PER KATEGORI"));const max=Math.max(1,...Object.values(byCat));if(!Object.keys(byCat).length)catCard.append(el("div","spend-muted","Belum ada transaksi yang memiliki nominal."));for(const [key,val] of Object.entries(byCat).sort((a,b)=>b[1]-a[1])){const row=el("div");row.append(el("div","",`${(spendCategories.find(x=>x[0]===key)||[key,key])[1]} · ${rupiah(val)}`));const bar=el("div","spend-bar");const i=el("i");i.style.width=(val/max*100)+"%";bar.append(i);row.append(bar);catCard.append(row)}grid.append(catCard);
+    const noteCard=el("section","card");noteCard.append(el("h2","","SUMBER DATA & KELENGKAPAN"),el("div","note","Jadwal Saya menyediakan catatan tiket/sesi dan kode referensi, tetapi tidak selalu menyertakan harga transaksi."),el("div","note","Data pengeluaran kini disimpan di server Radar dan tetap punya cache lokal. Untuk membantu impor riwayat yang tampil pada halaman akun resmi, gunakan file jkt48_history_exporter.js yang disertakan: buka halaman riwayat setelah login, jalankan script di Console browser, lalu impor JSON yang diunduh di sini. Script hanya membaca tabel yang tampil pada halaman aktif; buka tiap halaman riwayat yang relevan dan jalankan ulang. Data yang tidak terlihat di halaman tidak akan diambil."),el("div","spend-muted",`Sinkronisasi pengeluaran: ${spendSyncStatus} · Jadwal tersinkron: ${myTickets?.fetched?"ya":"belum"} · record tiket: ${(myTickets?.tickets||[]).length}`));grid.append(noteCard);wrap.append(grid);
+    const listCard=el("section","card");listCard.append(el("h2","","RIWAYAT TRANSAKSI"));const toolbar=el("div","spend-actions");const search=el("input");search.type="search";search.placeholder="Cari member, event, produk, referensi…";search.style.flex="1";const filter=el("select");filter.append(new Option("Semua kategori",""));spendCategories.forEach(([v,l])=>filter.append(new Option(l,v)));toolbar.append(search,filter);listCard.append(toolbar);
+    const tableWrap=el("div","spend-table-wrap");const table=el("table","spend-table");const thead=el("thead");const tr=el("tr");["Tanggal / kategori","Detail","Qty","Total","Aksi"].forEach(x=>tr.append(el("th","",x)));thead.append(tr);table.append(thead);const tbody=el("tbody");table.append(tbody);tableWrap.append(table);listCard.append(tableWrap);wrap.append(listCard);
+    const fill=()=>{tbody.textContent="";const q=search.value.toLowerCase();const visible=rows.filter(x=>(!filter.value||x.category===filter.value)&&[x.date,x.member,x.item,x.ref,x.note,x.category].join(" ").toLowerCase().includes(q)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));if(!visible.length){const tr=el("tr");const td=el("td");td.colSpan=5;td.textContent="Belum ada transaksi yang cocok.";tr.append(td);tbody.append(tr);return;}for(const x of visible){const tr=el("tr"),dateCell=el("td"),detail=el("td"),qtyCell=el("td"),amt=el("td","amount"),act=el("td");dateCell.append(el("b","",x.date||"-"),el("small","",(spendCategories.find(c=>c[0]===x.category)||[x.category,x.category])[1]));detail.append(el("b","",x.item||"-"),el("small","",[x.member,x.ref,x.note].filter(Boolean).join(" · ")));qtyCell.textContent=String(x.qty||1);amt.textContent=rupiah(x.amount);const edit=el("button","btn","Edit");edit.onclick=()=>{const val=prompt("Masukkan total harga transaksi (angka rupiah), kosongkan untuk belum diketahui:",x.amount==null?"":String(x.amount));if(val===null)return;x.amount=val.trim()===""?null:Number(val.replace(/[^0-9.-]/g,""));if(x.amount!==null&&(!Number.isFinite(x.amount)||x.amount<0)){alert("Nominal tidak valid.");return;}spendWrite(rows);render();};const del=el("button","spend-del","Hapus");del.onclick=()=>{if(!confirm("Hapus catatan transaksi ini?"))return;spendWrite(rows.filter(y=>y.id!==x.id));render();};act.append(edit,del);tr.append(dateCell,detail,qtyCell,amt,act);tbody.append(tr)}};search.oninput=fill;filter.onchange=fill;fill();
+    const exportBtn=el("button","btn","Ekspor CSV");exportBtn.onclick=()=>{const esc=v=>'"'+String(v??"").replace(/"/g,'""')+'"';const csv=["date,category,member,item,amount,qty,ref,note",...rows.map(x=>[x.date,x.category,x.member,x.item,x.amount??"",x.qty,x.ref,x.note].map(esc).join(",")) ].join("\r\n");const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));a.download="jkt48-spending-history.csv";a.click();URL.revokeObjectURL(a.href)};listCard.append(exportBtn);
+    return wrap;
+  }
+
   function render() {
     if (!data) return;
     const codes = Object.keys(data.events);
@@ -3164,7 +3241,7 @@
     }
     $("barBuy").href = buyUrl;
     const vw = $("views"); vw.textContent = "";
-    for (const [k, lab] of [["cards", "Kartu"], ["heat", "Heatmap"], ["analytics", "Analytics"], ["status", "Status"], ["tickets", "🎟️ Jadwal Saya"]]) {
+    for (const [k, lab] of [["cards", "Kartu"], ["heat", "Heatmap"], ["analytics", "Analytics"], ["status", "Status"], ["tickets", "🎟️ Jadwal Saya"], ["spending", "💸 Spending"]]) {
       const b = el("button", "tab" + (view === k ? " on" : ""), lab);
       b.setAttribute("aria-pressed", view === k ? "true" : "false");
       b.onclick = () => { view = k; store.set("view", k); render(); loadExtra(); };
@@ -3194,12 +3271,13 @@
     else if (ps && !ps.ok) { pb.hidden = false; pb.textContent = "⚠️ Poller gagal " + ps.fails + "x: " + ps.error; }
     else pb.hidden = true;
 
-    const special = view === "analytics" || view === "status" || view === "tickets";
+    const special = view === "analytics" || view === "status" || view === "tickets" || view === "spending";
     document.querySelector(".sum").style.display = special ? "none" : "";
     if (special) {
       const sl = $("list"); sl.textContent = "";
       sl.classList.remove("compact", "stale");
       if (view === "tickets") sl.append(renderMyTickets());
+      else if (view === "spending") sl.append(renderSpending());
       else sl.append(view === "analytics" ? renderAnalytics() : renderStatus());
       return;
     }
