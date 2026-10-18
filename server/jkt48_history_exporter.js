@@ -1,147 +1,212 @@
-/* JKT48 History Exporter v3
- * Jalankan di DevTools Console pada https://jkt48.com/my-page saat sudah login.
- * Mencoba membaca endpoint My Tickets resmi yang dipakai halaman akun, menggunakan
- * sesi browser yang sudah login (credentials same-origin). Tidak membaca cookie/token,
- * tidak mengirim data ke server lain, dan hanya mengunduh JSON ke perangkat sendiri.
- * Jika API tidak tersedia, fallback ke tabel/daftar yang terlihat di halaman aktif.
- */
-(async () => {
-  const norm = s => String(s ?? '').replace(/\s+/g, ' ').trim();
-  const guessCategory = t => {
-    const s = String(t || '').toUpperCase();
-    if (/EX5B99|EXD1A1|2\s*[- ]?SHOT/.test(s)) return '2SHOT';
-    if (/EX2F12|VIDEO\s*CALL|VIRTUAL\s*CALL|\bVC\b/.test(s)) return 'VC';
-    if (/EX24AE|EXA6F1|MEET\s*(?:AND|&)\s*GREET|PERSONAL MEET|PHOTOCARD|M\s*&\s*G|\bMNG\b/.test(s)) return 'MNG';
-    if (/THEATER|TEATER|PERTUNJUKAN/.test(s)) return 'THEATER';
-    if (/POINT|POIN|TOP.?UP/.test(s)) return 'POINT';
-    if (/MERCH|PRODUCT|PRODUK|GOODS/.test(s)) return 'PRODUCT';
-    return 'OTHER';
-  };
-  const tables = [...document.querySelectorAll('table')].map((table, ti) => {
-    const rows = [...table.querySelectorAll('tr')].map(tr => [...tr.querySelectorAll('th,td')].map(td => norm(td.innerText || td.textContent))).filter(r => r.some(Boolean));
-    if (!rows.length) return null;
-    const hasHeader = table.querySelector('thead tr') || table.querySelector('tr th');
-    const headers = hasHeader ? rows.shift() : rows[0].map((_, i) => `kolom_${i + 1}`);
-    return { table_index: ti, headers, rows: rows.map(cells => ({ cells, raw_text: cells.join(' | ') })) };
-  }).filter(Boolean);
-  const visibleRows = [...document.querySelectorAll('[role="row"], .history-item, .transaction-item, li')]
-    .map((el, i) => ({ row_index: i, raw_text: norm(el.innerText || el.textContent) }))
-    .filter(x => x.raw_text && x.raw_text.length > 8)
-    .filter((x, i, a) => a.findIndex(y => y.raw_text === x.raw_text) === i)
-    .slice(0, 1000);
 
-  let apiTickets = [];
-  let apiError = '';
-  if (/^(www\.)?jkt48\.com$/i.test(location.hostname)) {
-    try {
-      const from = '2020-01-01';
-      const to = '2035-12-31';
-      let page = 1;
-      let totalPages = 1;
-      const maxPages = 100;
-      while (page <= totalPages && page <= maxPages) {
-        const params = new URLSearchParams({ lang: 'id', limit: '100', page: String(page), from, to });
-        const response = await fetch(`/api/v1/accounts/my-tickets?${params.toString()}`, {
-          method: 'GET', credentials: 'same-origin', cache: 'no-store',
-          headers: { Accept: 'application/json, text/plain, */*' }
-        });
-        if (!response.ok) throw new Error(`My Tickets HTTP ${response.status}`);
-        const payload = await response.json();
-        if (!payload || !Array.isArray(payload.data)) throw new Error('Respons API tidak memiliki array data');
-        apiTickets.push(...payload.data);
-        totalPages = Math.max(1, Number(payload._meta?.total_page || 1));
-        if (!payload.data.length) break;
-        page += 1;
-      }
-    } catch (err) {
-      apiError = String(err?.message || err);
-      apiTickets = [];
+/*
+ * JKT48 History Exporter v2
+ *
+ * Jalankan di DevTools Console saat login di halaman My Page.
+ * Membaca tabel/daftar yang dirender pada halaman aktif.
+ * Tidak membaca cookie/token dan tidak mengirim data ke server.
+ * Status PENDING tetap disimpan.
+ */
+
+(() => {
+  const norm = s => String(s ?? "").replace(/\s+/g, " ").trim();
+
+  // Klasifikasi tiket.
+  function detectTicketCategory(ticket) {
+    const type = norm(ticket.ticket_type).toUpperCase();
+
+    const text = [
+      ticket.name,
+      ticket.event_name,
+      ticket.item,
+      ticket.ticket_label,
+      ticket.raw_text
+    ].filter(Boolean).join(" ");
+
+    // Gunakan tipe tiket resmi jika tersedia.
+    if (type === "SHOW") return "SHOW";
+
+    // Fallback untuk show jika ticket_type tidak tersedia di tabel.
+    if (
+      /\bpertaruhan cinta\b/i.test(text) ||
+      /\bdalam undian\b/i.test(text)
+    ) {
+      return "SHOW";
     }
-  } else {
-    apiError = 'Buka exporter di halaman jkt48.com agar sesi My Tickets bisa digunakan.';
+
+    // Periksa 2Shot sebelum M&G.
+    if (/\b2\s*shot\b/i.test(text)) return "2Shot";
+
+    if (
+      /\bphotocard\b/i.test(text) ||
+      /\bmeet\s*(?:and|&)\s*greet\b/i.test(text) ||
+      /\bm\s*&\s*g\b/i.test(text) ||
+      /\bmng\b/i.test(text)
+    ) {
+      return "M&G";
+    }
+
+    if (type === "EXCLUSIVE") return "M&G";
+
+    return "Others";
   }
 
+  // Ekstrak tabel.
+  const tables = [...document.querySelectorAll("table")]
+    .map((table, ti) => {
+      const rows = [...table.querySelectorAll("tr")]
+        .map(tr =>
+          [...tr.querySelectorAll("th, td")]
+            .map(td => norm(td.innerText || td.textContent))
+        )
+        .filter(row => row.some(Boolean));
+
+      if (!rows.length) return null;
+
+      const hasHeader = Boolean(
+        table.querySelector("thead tr") ||
+        table.querySelector("tr th")
+      );
+
+      const headers = hasHeader
+        ? rows.shift()
+        : rows[0].map((_, i) => `kolom_${i + 1}`);
+
+      return {
+        table_index: ti,
+        headers,
+        rows: rows.map(cells => ({
+          cells,
+          raw_text: cells.join(" | ")
+        }))
+      };
+    })
+    .filter(Boolean);
+
+  // Ekstrak daftar yang terlihat.
+  const lists = [
+    ...document.querySelectorAll(
+      '[role="row"], .history-item, .transaction-item, li'
+    )
+  ]
+    .map((el, i) => ({
+      row_index: i,
+      raw_text: norm(el.innerText || el.textContent)
+    }))
+    .filter(x => x.raw_text && x.raw_text.length > 8)
+    .filter((x, i, arr) =>
+      arr.findIndex(y => y.raw_text === x.raw_text) === i
+    )
+    .slice(0, 1000);
+
   const transactions = [];
-  if (apiTickets.length) {
-    for (const t of apiTickets) {
-      const ref = norm(t.reference_code);
-      const transactionNumbers = Array.isArray(t.transaction_numbers) ? t.transaction_numbers : [];
-      const qty = Math.max(1, Number(t.bought_count ?? t.quantity ?? t.qty ?? 1) || 1);
-      const used = Math.max(0, Number(t.used_count ?? 0) || 0);
-      const item = norm(t.name || t.ticket_label || 'Tiket JKT48');
-      const member = norm(t.member_name || '');
-      const eventDetail = [t.session_label, t.lane_label, t.date, t.start_time, t.end_time].filter(Boolean).join(' | ');
-      transactions.push({
-        ...t,
-        id: [ref, transactionNumbers.join(','), t.date || '', t.session_label || '', t.lane_label || '', member, item].join('|'),
-        reference_code: ref,
-        transaction_numbers: transactionNumbers,
-        item,
-        event_name: item,
-        event_detail: eventDetail,
-        member,
-        member_name: member,
-        qty,
-        bought_count: qty,
-        used_count: used,
-        category: guessCategory([ref, t.ticket_type, t.ticket_label, item].join(' ')),
+
+  // Konversi baris tabel menjadi transaksi.
+  for (const table of tables) {
+    for (const row of table.rows || []) {
+      const o = {
+        raw_text: row.raw_text || row.cells.join(" | "),
         source_page: location.href
+      };
+
+      (table.headers || []).forEach((header, i) => {
+        const h = norm(header).toLowerCase();
+        const value = norm(row.cells[i]);
+
+        if (!value) return;
+
+        // Pemetaan nama acara secara eksplisit.
+        if (/acara\s*\/?\s*kegiatan|nama acara|event name/.test(h)) {
+          o.name = value;
+          o.event_name = value;
+          o.item = value;
+        } else if (/nama member|member/.test(h)) {
+          o.member_name = value;
+        } else if (/detail event/.test(h)) {
+          o.event_detail = value;
+        } else if (/tanggal|date|waktu|created/.test(h)) {
+          o.date = value;
+        } else if (/nominal|amount|total|harga|price|rupiah|idr/.test(h)) {
+          o.amount = value;
+        } else if (/status|payment|pembayaran/.test(h)) {
+          o.status = value;
+        } else if (/referensi|reference|invoice|order|transaksi|transaction|kode/.test(h)) {
+          o.ref = value;
+          o.reference_code = value;
+        } else if (/ticket.?type|tipe.?tiket/.test(h)) {
+          o.ticket_type = value.toUpperCase();
+        } else if (/ticket.?label|label.?tiket/.test(h)) {
+          o.ticket_label = value;
+        } else if (/produk|product|deskripsi|description|layanan|jenis/.test(h)) {
+          if (!o.item) o.item = value;
+        }
       });
+
+      // Jangan biarkan nama member menggantikan nama acara.
+      o.category = detectTicketCategory(o);
+      transactions.push(o);
     }
-  } else {
-    for (const table of tables) {
-      for (const row of table.rows || []) {
-        const cells = row.cells || [];
-        const o = { raw_text: row.raw_text || cells.join(' | '), source_page: location.href };
-        table.headers.forEach((header, i) => {
-          const h = norm(header).toLowerCase();
-          const value = norm(cells[i]);
-          if (!value) return;
-          if (/reference.?code|kode referensi|referensi|reference|invoice|order|transaction.?number/.test(h)) o.reference_code = value;
-          if (/^sesi|session/.test(h)) o.session_label = value;
-          if (/tanggal|date|waktu|created/.test(h)) o.date = value;
-          if (/nominal|amount|total|harga|price|rupiah|idr/.test(h)) o.amount = value;
-          if (/status|payment|pembayaran/.test(h)) o.status = value;
-          if (/acara|kegiatan|event/.test(h)) o.event_name = value;
-          if (/detail event|detail kegiatan/.test(h)) o.event_detail = value;
-          if (/produk|product|deskripsi|description|item|nama|layanan|jenis/.test(h) && !/member/.test(h)) o.item = value;
-          if (/nama member|member/.test(h)) o.member = value;
-          if (/\bbeli\b|bought|quantity|qty/.test(h)) { o.qty = Math.max(1, Number(value.replace(/[^0-9]/g, '')) || 1); o.bought_count = o.qty; }
-          if (/terpakai|used/.test(h)) o.used_count = Number(value.replace(/[^0-9]/g, '')) || 0;
-        });
-        o.item = o.event_name || o.item || o.raw_text;
-        o.member_name = o.member || '';
-        o.reference_code = o.reference_code || '';
-        o.category = guessCategory([o.reference_code, o.event_name, o.event_detail, o.item, o.raw_text].join(' '));
-        o.id = [o.reference_code, o.date || '', o.session_label || '', o.event_detail || '', o.member || '', o.qty || 1].join('|');
-        transactions.push(o);
-      }
-    }
-    if (!transactions.length) {
-      for (const row of visibleRows) transactions.push({ raw_text: row.raw_text, source_page: location.href, item: row.raw_text, qty: 1, category: guessCategory(row.raw_text), reference_code: '' });
+  }
+
+  // Fallback jika halaman tidak mempunyai tabel.
+  if (!transactions.length) {
+    for (const row of lists) {
+      const o = {
+        raw_text: row.raw_text,
+        source_page: location.href
+      };
+
+      o.category = detectTicketCategory(o);
+      transactions.push(o);
     }
   }
 
   const payload = {
-    exporter: 'jkt48-history-exporter-v3',
+    exporter: "jkt48-history-exporter-v2",
     exported_at: new Date().toISOString(),
     page_title: document.title,
     page_url: location.href,
-    source: apiTickets.length ? 'jkt48-my-tickets-api-same-origin' : 'visible-page-fallback',
-    api_error: apiError || null,
-    count: transactions.length,
     tables,
     transactions,
-    tickets: transactions,
-    visible_rows: visibleRows
+    visible_rows: lists,
+    summary: {
+      total_transactions: transactions.length,
+      categories: transactions.reduce((acc, ticket) => {
+        const category = ticket.category || "Others";
+        acc[category] = (acc[category] || 0) + 1;
+        return acc;
+      }, {}),
+      pending_count: transactions.filter(ticket =>
+        /\bpending\b/i.test(
+          `${ticket.status || ""} ${ticket.raw_text || ""}`
+        )
+      ).length
+    }
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+
+  // Download file JSON.
+  const blob = new Blob(
+    [JSON.stringify(payload, null, 2)],
+    { type: "application/json" }
+  );
+
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const a = document.createElement("a");
+
   a.href = url;
   a.download = `jkt48-history-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.append(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
-  console.info(`JKT48 History Exporter v3: ${transactions.length} transaksi diekspor; sumber=${payload.source}; reference_code tersedia pada data My Tickets API.`);
-  if (!apiTickets.length) console.warn(`API My Tickets tidak berhasil dibaca: ${apiError}. JSON memakai fallback tabel/daftar yang terlihat; reference_code mungkin tidak tersedia jika tidak tampil di halaman.`);
+
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  console.info("JKT48 History Exporter selesai.");
+  console.info("Tabel:", tables.length);
+  console.info("Baris daftar:", lists.length);
+  console.info("Transaksi:", transactions.length);
+  console.info("Kategori:", payload.summary.categories);
+  console.info("Status PENDING:", payload.summary.pending_count);
+  console.info("Periksa JSON hasil ekspor sebelum mengimpor.");
 })();
